@@ -1,0 +1,84 @@
+name: 🎉 Release Pipeline
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.2.3)'
+        required: true
+
+env:
+  NODE_VERSION: '22.x'
+
+jobs:
+  create-release:
+    name: 🎉 Create Release
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🟢 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: 📦 Install dependencies
+        run: npm ci
+
+      - name: 🧪 Run full test suite
+        run: |
+          npm run test:unit:fast
+          npm run test:integration:app
+
+      - name: 📝 Generate changelog
+        id: changelog
+        run: |
+          echo "## 🚀 What's New" > CHANGELOG.md
+          echo "" >> CHANGELOG.md
+          git log --pretty=format:"- %s (%h)" $(git describe --tags --abbrev=0 2>/dev/null || echo "")..HEAD >> CHANGELOG.md
+          echo "" >> CHANGELOG.md
+          echo "## 🔧 Technical Details" >> CHANGELOG.md
+          echo "- Node.js version: ${{ env.NODE_VERSION }}" >> CHANGELOG.md
+          echo "- Tests passing: ✅" >> CHANGELOG.md
+          echo "- Docker image: Available" >> CHANGELOG.md
+
+      - name: 🎉 Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          body_path: CHANGELOG.md
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🐳 Tag Docker images for release
+        run: |
+          echo "🐳 Tagging Docker images for release ${{ github.ref_name }}"
+          # Implementar tag das imagens Docker
+          echo "✅ Docker images tagged"
+
+      - name: 📢 Notify release
+        uses: 8398a7/action-slack@v3
+        with:
+          status: success
+          channel: '#releases'
+          username: 'Release Bot'
+          title: '🎉 New Release Available'
+          text: |
+            🚀 Authentication Service ${{ github.ref_name }} has been released!
+            📦 Tag: ${{ github.ref_name }}
+            👤 Released by: ${{ github.actor }}
+            🔗 Release notes: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

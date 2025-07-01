@@ -1,0 +1,172 @@
+# ====================================
+# DOCKER COMPOSE - DESENVOLVIMENTO
+# Authentication Microservice
+# ====================================
+
+version: '3.8'
+
+services:
+  # =====================================
+  # APLICAÇÃO PRINCIPAL
+  # =====================================
+  auth-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: auth-service-dev
+    ports:
+      - "3000:3000"
+      - "9229:9229" # Debug port
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - URI_MONGODB=mongodb://mongodb:27017/auth_dev
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=dev-secret-key-123
+      - JWT_EXPIRES=24h
+      - RATE_LIMIT_IP_POINTS=1000
+      - RATE_LIMIT_LOGIN_POINTS=100
+    volumes:
+      - ./src:/app/src
+      - ./tests:/app/tests
+      - ./logs:/app/logs
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - auth-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # =====================================
+  # MONGODB
+  # =====================================
+  mongodb:
+    image: mongo:7-jammy
+    container_name: auth-mongodb-dev
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=password123
+      - MONGO_INITDB_DATABASE=auth_dev
+    volumes:
+      - mongodb_data:/data/db
+      - ./scripts/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    networks:
+      - auth-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # =====================================
+  # REDIS
+  # =====================================
+  redis:
+    image: redis:7-alpine
+    container_name: auth-redis-dev
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --requirepass redispass123
+    volumes:
+      - redis_data:/data
+    networks:
+      - auth-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # =====================================
+  # PROMETHEUS (Métricas)
+  # =====================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: auth-prometheus-dev
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    networks:
+      - auth-network
+    restart: unless-stopped
+
+  # =====================================
+  # GRAFANA (Dashboards)
+  # =====================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: auth-grafana-dev
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    networks:
+      - auth-network
+    restart: unless-stopped
+
+  # =====================================
+  # NGINX (Load Balancer)
+  # =====================================
+  nginx:
+    image: nginx:alpine
+    container_name: auth-nginx-dev
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - auth-service
+    networks:
+      - auth-network
+    restart: unless-stopped
+
+# =====================================
+# VOLUMES
+# =====================================
+volumes:
+  mongodb_data:
+    driver: local
+  redis_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+# =====================================
+# NETWORKS
+# =====================================
+networks:
+  auth-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

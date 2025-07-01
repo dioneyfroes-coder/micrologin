@@ -1,0 +1,162 @@
+# ====================================
+# DOCKER COMPOSE - PRODUÇÃO
+# Authentication Microservice
+# ====================================
+
+version: '3.8'
+
+services:
+  # =====================================
+  # APLICAÇÃO PRINCIPAL (3 instâncias)
+  # =====================================
+  auth-service-1:
+    image: ${REGISTRY}/auth-service:${VERSION:-latest}
+    container_name: auth-service-prod-1
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - URI_MONGODB=${MONGODB_URI}
+      - REDIS_URL=${REDIS_URL}
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_EXPIRES=${JWT_EXPIRES:-1h}
+      - RATE_LIMIT_IP_POINTS=${RATE_LIMIT_IP_POINTS:-100}
+      - RATE_LIMIT_LOGIN_POINTS=${RATE_LIMIT_LOGIN_POINTS:-5}
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+    networks:
+      - auth-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  auth-service-2:
+    image: ${REGISTRY}/auth-service:${VERSION:-latest}
+    container_name: auth-service-prod-2
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - URI_MONGODB=${MONGODB_URI}
+      - REDIS_URL=${REDIS_URL}
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_EXPIRES=${JWT_EXPIRES:-1h}
+      - RATE_LIMIT_IP_POINTS=${RATE_LIMIT_IP_POINTS:-100}
+      - RATE_LIMIT_LOGIN_POINTS=${RATE_LIMIT_LOGIN_POINTS:-5}
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+    networks:
+      - auth-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  auth-service-3:
+    image: ${REGISTRY}/auth-service:${VERSION:-latest}
+    container_name: auth-service-prod-3
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - URI_MONGODB=${MONGODB_URI}
+      - REDIS_URL=${REDIS_URL}
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_EXPIRES=${JWT_EXPIRES:-1h}
+      - RATE_LIMIT_IP_POINTS=${RATE_LIMIT_IP_POINTS:-100}
+      - RATE_LIMIT_LOGIN_POINTS=${RATE_LIMIT_LOGIN_POINTS:-5}
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+    networks:
+      - auth-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # =====================================
+  # NGINX LOAD BALANCER
+  # =====================================
+  nginx:
+    image: nginx:alpine
+    container_name: auth-nginx-prod
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx-prod.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - auth-service-1
+      - auth-service-2
+      - auth-service-3
+    networks:
+      - auth-network
+    deploy:
+      restart_policy:
+        condition: on-failure
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# =====================================
+# NETWORKS
+# =====================================
+networks:
+  auth-network:
+    driver: overlay
+    attachable: true

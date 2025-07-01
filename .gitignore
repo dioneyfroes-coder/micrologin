@@ -1,0 +1,8 @@
+node_modules
+server.crt
+server.key
+.env
+ignore.js
+coverage
+logs
+tests
