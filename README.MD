@@ -194,6 +194,54 @@ pm2 logs autenticacao --lines 100
 ✅ Login bem-sucedido. Token gerado: eyJ...
 ```
 
+## 🧪 **Testes Automatizados**
+
+Este projeto inclui uma suíte completa de testes para garantir a qualidade e a confiabilidade do microserviço.
+
+### **📋 Tipos de Testes**
+
+1. **Testes Unitários**
+   - Cobrem funções e componentes isolados.
+   - Localizados em `tests/unit/`.
+
+2. **Testes de Integração**
+   - Validam a interação entre diferentes partes do sistema.
+   - Localizados em `tests/integration/`.
+
+3. **Testes de Carga**
+   - Avaliam o desempenho sob alta carga.
+   - Localizados em `tests/load/`.
+
+### **🚀 Como Executar os Testes**
+
+- **Todos os testes:**
+  ```bash
+  npm run test:all
+  ```
+
+- **Testes Unitários:**
+  ```bash
+  npm run test:unit
+  ```
+
+- **Testes de Integração:**
+  ```bash
+  npm run test:integration
+  ```
+
+- **Testes de Carga:**
+  ```bash
+  npm run test:load
+  ```
+
+### **📊 Relatórios de Cobertura**
+
+Para gerar relatórios de cobertura de código:
+```bash
+npm run test:coverage
+```
+Os relatórios estarão disponíveis no diretório `coverage/`.
+
 ## 🙏 **Agradecimentos**
 
 - **Express.js** - Framework web
