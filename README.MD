@@ -2,7 +2,7 @@
 
 Olá! 👋 Sou **Dioney Froes**, desenvolvedor fullstack, e este é meu projeto de um microserviço de autenticação enterprise construído com Node.js. 
 
-Este projeto foi desenvolvido entre **janeiro e julho de 2025** com a valiosa assistência da IA do GitHub Copilot, demonstrando como a colaboração entre humanos e IA pode criar soluções robustas e escaláveis.
+Este projeto foi desenvolvido entre **Junho e julho de 2025** com a valiosa assistência da IA do GitHub Copilot, demonstrando como a colaboração entre humanos e IA pode criar soluções robustas e escaláveis.
 
 **O que você encontrará aqui:**
 - Sistema de autenticação JWT completo e seguro
@@ -340,5 +340,5 @@ MIT License - sinta-se livre para usar este código em seus projetos.
 
 ---
 
-**Desenvolvido por Dioney Froes** | Janeiro - Julho 2025 | Com GitHub Copilot  
+**Desenvolvido por Dioney Froes** | Junho - Julho 2025 | Com GitHub Copilot  
 🚀 *Transformando ideias em código que funciona*
