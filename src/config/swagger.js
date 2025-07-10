@@ -12,17 +12,58 @@ export const setupSwagger = (app) => {
       info: {
         title: 'API de Autenticação',
         version: '1.0.0',
-        description: 'Documentação da API de autenticação com JWT'
+        description: `
+          ## Microserviço de Autenticação
+          
+          Esta API fornece endpoints para autenticação e gerenciamento de usuários usando JWT tokens.
+          
+          ### Funcionalidades:
+          - ✅ Login e registro de usuários
+          - ✅ Autenticação via JWT tokens
+          - ✅ Gerenciamento de perfil de usuário
+          - ✅ Health check e métricas
+          - ✅ Rate limiting avançado
+          
+          ### Autenticação:
+          Para endpoints protegidos, inclua o header:
+          \`Authorization: Bearer <seu_jwt_token>\`
+        `,
+        contact: {
+          name: 'Suporte',
+          email: 'suporte@exemplo.com'
+        }
       },
       servers: [
-        { url: 'https://localhost:3000' }
+        {
+          url: 'https://localhost:3000',
+          description: 'Servidor de desenvolvimento'
+        }
+      ],
+      tags: [
+        {
+          name: 'Autenticação',
+          description: 'Endpoints para login e registro de usuários'
+        },
+        {
+          name: 'Perfil',
+          description: 'Operações de gerenciamento de perfil do usuário'
+        },
+        {
+          name: 'Sistema',
+          description: 'Endpoints de monitoramento e saúde do sistema'
+        },
+        {
+          name: 'Debug',
+          description: 'Ferramentas de debug (apenas em desenvolvimento)'
+        }
       ],
       components: {
         securitySchemes: {
-          bearerAuth: {
+          BearerAuth: {
             type: 'http',
             scheme: 'bearer',
-            bearerFormat: 'JWT'
+            bearerFormat: 'JWT',
+            description: 'JWT token obtido no endpoint de login'
           }
         }
       }
@@ -31,5 +72,22 @@ export const setupSwagger = (app) => {
   };
 
   const swaggerSpec = swaggerJSDoc(options);
-  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+
+  // Configurações personalizadas do Swagger UI
+  const swaggerUiOptions = {
+    explorer: true,
+    customCss: `
+      .swagger-ui .topbar { display: none }
+      .swagger-ui .info .title { color: #1f8c4a }
+    `,
+    customSiteTitle: 'API de Autenticação - Documentação',
+    swaggerOptions: {
+      persistAuthorization: true,
+      displayRequestDuration: true,
+      filter: true,
+      tryItOutEnabled: true
+    }
+  };
+
+  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, swaggerUiOptions));
 };

@@ -1,295 +1,502 @@
 import { Router } from 'express';
-import { AuthController } from '../controllers/authController.js';
-import { authenticateJWT } from '../middleware/auth.js';
+import { resolve, bootstrapServices } from '../core/bootstrap.js';
 import { validateLogin, validateRegister, validateUpdate } from '../middleware/validation.js';
 import { prometheus } from '../utils/metrics.js';
 import { performHealthCheck } from '../utils/healthCheck.js';
 import { advancedRateLimit } from '../middleware/advancetRateLimit.js';
-
-const router = Router();
-
+import securityRoutes from './securityRoutes.js';
+import { securityAuditLogger } from '../middleware/securityAudit.js';
 
 /**
  * @swagger
- * /login:
- *   post:
- *     summary: Realiza login e retorna um token JWT.
- *     tags: [Autenticação]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
+ * components:
+ *   schemas:
+ *     User:
+ *       type: object
+ *       properties:
+ *         id:
+ *           type: string
+ *           description: ID único do usuário
+ *         username:
+ *           type: string
+ *           description: Nome de usuário
+ *         createdAt:
+ *           type: string
+ *           format: date-time
+ *           description: Data de criação
+ *         updatedAt:
+ *           type: string
+ *           format: date-time
+ *           description: Data da última atualização
+ *     LoginRequest:
+ *       type: object
+ *       required:
+ *         - user
+ *         - password
+ *       properties:
+ *         user:
+ *           type: string
+ *           minLength: 3
+ *           description: Nome de usuário
+ *         password:
+ *           type: string
+ *           minLength: 6
+ *           description: Senha do usuário
+ *     LoginResponse:
+ *       type: object
+ *       properties:
+ *         success:
+ *           type: boolean
+ *         message:
+ *           type: string
+ *         data:
+ *           type: object
+ *           properties:
+ *             user:
+ *               $ref: '#/components/schemas/User'
+ *             token:
+ *               type: string
+ *               description: JWT token
+ *     RegisterRequest:
+ *       type: object
+ *       required:
+ *         - user
+ *         - password
+ *       properties:
+ *         user:
+ *           type: string
+ *           minLength: 3
+ *           description: Nome de usuário
+ *         password:
+ *           type: string
+ *           minLength: 6
+ *           description: Senha do usuário
+ *     UpdateRequest:
+ *       type: object
+ *       properties:
+ *         user:
+ *           type: string
+ *           minLength: 3
+ *           description: Novo nome de usuário (opcional)
+ *         password:
+ *           type: string
+ *           minLength: 6
+ *           description: Nova senha (opcional)
+ *     StandardResponse:
+ *       type: object
+ *       properties:
+ *         success:
+ *           type: boolean
+ *         message:
+ *           type: string
+ *         data:
+ *           type: object
+ *     ErrorResponse:
+ *       type: object
+ *       properties:
+ *         success:
+ *           type: boolean
+ *         message:
+ *           type: string
+ *         errors:
+ *           type: array
+ *           items:
  *             type: object
- *             properties:
- *               user:
- *                 type: string
- *                 example: admin
- *               password:
- *                 type: string
- *                 example: senha123
- *     responses:
- *       200:
- *         description: Token JWT retornado com sucesso.
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 token:
- *                   type: string
- *                   example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
- *       400:
- *         description: Dados inválidos.
- *       401:
- *         description: Usuário ou senha incorretos.
+ *   securitySchemes:
+ *     BearerAuth:
+ *       type: http
+ *       scheme: bearer
+ *       bearerFormat: JWT
  */
-router.post('/login', validateLogin, AuthController.login);
 
 /**
- * @swagger
- * /register:
- *   post:
- *     summary: Registra um novo usuário.
- *     tags: [Usuário]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               user:
- *                 type: string
- *                 example: novo_usuario
- *               password:
- *                 type: string
- *                 example: senhaSegura123
- *     responses:
- *       201:
- *         description: Usuário registrado com sucesso.
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 message:
- *                   type: string
- *                   example: Usuário registrado com sucesso
- *       400:
- *         description: Dados inválidos.
- *       409:
- *         description: Usuário já existe.
- *       500:
- *         description: Erro interno do servidor.
+ * Cria e configura as rotas de autenticação
  */
-router.post('/register', validateRegister, AuthController.register);
+export function createAuthRoutes() {
+  const router = Router();
 
-/**
- * @swagger
- * /profile:
- *   get:
- *     summary: Obtém os dados do usuário autenticado.
- *     tags: [Usuário]
- *     security:
- *       - bearerAuth: []
- *     responses:
- *       200:
- *         description: Dados do usuário retornados com sucesso.
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 user:
- *                   type: string
- *       401:
- *         description: Usuário não autenticado.
- *       404:
- *         description: Usuário não encontrado.
- */
-router.get('/profile', authenticateJWT, AuthController.getProfile);
+  // Bootstrap dos serviços primeiro
+  bootstrapServices();
 
-/**
- * @swagger
- * /update:
- *   put:
- *     summary: Atualiza os dados do usuário autenticado.
- *     tags: [Usuário]
- *     security:
- *       - bearerAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               user:
- *                 type: string
- *                 example: novo_nome
- *               password:
- *                 type: string
- *                 example: novaSenha123
- *     responses:
- *       200:
- *         description: Usuário atualizado com sucesso.
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 message:
- *                   type: string
- *                   example: Usuário atualizado com sucesso
- *       400:
- *         description: Dados inválidos.
- *       401:
- *         description: Não autenticado.
- *       404:
- *         description: Usuário não encontrado.
- */
-router.put('/update', authenticateJWT, validateUpdate, AuthController.updateProfile);
+  // Resolver dependências do container
+  const authController = resolve('authController');
+  const authMiddleware = resolve('authMiddleware');
 
-/**
- * @swagger
- * /delete:
- *   delete:
- *     summary: Remove o usuário autenticado.
- *     tags: [Usuário]
- *     security:
- *       - bearerAuth: []
- *     responses:
- *       200:
- *         description: Usuário removido com sucesso.
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 message:
- *                   type: string
- *                   example: Usuário removido com sucesso
- *       401:
- *         description: Não autenticado.
- *       404:
- *         description: Usuário não encontrado.
- */
-router.delete('/delete', authenticateJWT, AuthController.deleteProfile);
+  /**
+   * @swagger
+   * /login:
+   *   post:
+   *     summary: Autenticar usuário
+   *     description: Realiza login do usuário e retorna JWT token
+   *     tags: [Autenticação]
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             $ref: '#/components/schemas/LoginRequest'
+   *     responses:
+   *       200:
+   *         description: Login realizado com sucesso
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/LoginResponse'
+   *       400:
+   *         description: Dados inválidos
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/ErrorResponse'
+   *       401:
+   *         description: Credenciais inválidas
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/ErrorResponse'
+   */
+  router.post('/login', validateLogin, authController.login);
 
-/**
- * @swagger
- * /metrics:
- *   get:
- *     summary: Métricas Prometheus para monitoramento.
- *     tags: [Sistema]
- *     responses:
- *       200:
- *         description: Métricas em formato Prometheus.
- *       503:
- *         description: Prometheus não disponível.
- */
-router.get('/metrics', async(req, res) => {
-  try {
-    // Desabilitar compressão para esta rota específica
-    res.set('Content-Type', prometheus.register.contentType);
-    res.set('Cache-Control', 'no-cache');
+  /**
+   * @swagger
+   * /register:
+   *   post:
+   *     summary: Registrar novo usuário
+   *     description: Cria uma nova conta de usuário
+   *     tags: [Autenticação]
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             $ref: '#/components/schemas/RegisterRequest'
+   *     responses:
+   *       201:
+   *         description: Usuário registrado com sucesso
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/StandardResponse'
+   *       400:
+   *         description: Dados inválidos ou usuário já existe
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/ErrorResponse'
+   */
+  router.post('/register', validateRegister, authController.register);
 
-    // Aguardar métricas como Promise
-    const metricsString = await prometheus.register.metrics();
+  /**
+   * @swagger
+   * /profile:
+   *   get:
+   *     summary: Obter perfil do usuário
+   *     description: Retorna informações do usuário autenticado
+   *     tags: [Perfil]
+   *     security:
+   *       - BearerAuth: []
+   *     responses:
+   *       200:
+   *         description: Perfil obtido com sucesso
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/StandardResponse'
+   *       401:
+   *         description: Token inválido ou não fornecido
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/ErrorResponse'
+   *       404:
+   *         description: Usuário não encontrado
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/ErrorResponse'
+   */
+  router.get('/profile', authMiddleware.authenticate, authController.getProfile);
 
-    // Verificação de segurança
-    if (!metricsString || typeof metricsString !== 'string') {
-      return res.status(503).json({
-        message: 'Métricas indisponíveis',
-        error: 'Registry vazio ou inválido'
+  /**
+   * @swagger
+   * /update:
+   *   put:
+   *     summary: Atualizar perfil do usuário
+   *     description: Atualiza informações do usuário autenticado
+   *     tags: [Perfil]
+   *     security:
+   *       - BearerAuth: []
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             $ref: '#/components/schemas/UpdateRequest'
+   *     responses:
+   *       200:
+   *         description: Perfil atualizado com sucesso
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/StandardResponse'
+   *       400:
+   *         description: Dados inválidos
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/ErrorResponse'
+   *       401:
+   *         description: Token inválido ou não fornecido
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/ErrorResponse'
+   */
+  router.put('/update', authMiddleware.authenticate, validateUpdate, authController.updateProfile);
+
+  /**
+   * @swagger
+   * /delete:
+   *   delete:
+   *     summary: Deletar perfil do usuário
+   *     description: Remove permanentemente a conta do usuário autenticado
+   *     tags: [Perfil]
+   *     security:
+   *       - BearerAuth: []
+   *     responses:
+   *       200:
+   *         description: Perfil deletado com sucesso
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/StandardResponse'
+   *       400:
+   *         description: Erro ao deletar perfil
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/ErrorResponse'
+   *       401:
+   *         description: Token inválido ou não fornecido
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/ErrorResponse'
+   */
+  router.delete('/delete', authMiddleware.authenticate, authController.deleteProfile);
+
+  // Rotas de sistema
+  /**
+   * @swagger
+   * /health:
+   *   get:
+   *     summary: Health Check
+   *     description: Verifica a saúde da aplicação e serviços conectados
+   *     tags: [Sistema]
+   *     responses:
+   *       200:
+   *         description: Sistema saudável
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               properties:
+   *                 status:
+   *                   type: string
+   *                   enum: [healthy, degraded, unhealthy]
+   *                 timestamp:
+   *                   type: string
+   *                   format: date-time
+   *                 responseTime:
+   *                   type: string
+   *                 version:
+   *                   type: string
+   *                 environment:
+   *                   type: string
+   *                 services:
+   *                   type: object
+   *                   properties:
+   *                     mongodb:
+   *                       type: object
+   *                       properties:
+   *                         status:
+   *                           type: string
+   *                         state:
+   *                           type: string
+   *                     redis:
+   *                       type: object
+   *                       properties:
+   *                         status:
+   *                           type: string
+   *                         ping:
+   *                           type: string
+   *       503:
+   *         description: Sistema com problemas
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               properties:
+   *                 status:
+   *                   type: string
+   *                 error:
+   *                   type: string
+   */
+  router.get('/health', async(req, res) => {
+    try {
+      const result = await performHealthCheck();
+      const statusCode = result.status === 'healthy' ? 200 : 503;
+      res.status(statusCode).json(result);
+    } catch (error) {
+      res.status(500).json({
+        status: 'error',
+        message: 'Erro ao executar health check',
+        error: error.message
       });
     }
+  });
 
-    // Usar send() em vez de end() para melhor compatibilidade
-    res.send(metricsString);
+  /**
+   * @swagger
+   * /metrics:
+   *   get:
+   *     summary: Métricas Prometheus
+   *     description: Retorna métricas da aplicação no formato Prometheus
+   *     tags: [Sistema]
+   *     responses:
+   *       200:
+   *         description: Métricas obtidas com sucesso
+   *         content:
+   *           text/plain:
+   *             schema:
+   *               type: string
+   *               example: |
+   *                 # HELP http_requests_total Total number of HTTP requests
+   *                 # TYPE http_requests_total counter
+   *                 http_requests_total{method="GET",route="/health",status_code="200"} 5
+   *       500:
+   *         description: Erro ao gerar métricas
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/ErrorResponse'
+   */
+  router.get('/metrics', async(req, res) => {
+    try {
+      res.set('Content-Type', prometheus.register.contentType);
+      const metrics = await prometheus.register.metrics();
+      res.end(metrics);
+    } catch (error) {
+      console.error('Erro ao gerar métricas:', error);
+      res.status(500).json({
+        status: 'error',
+        message: 'Erro ao gerar métricas',
+        error: error.message
+      });
+    }
+  });
 
-  } catch (error) {
-    console.error('❌ Erro ao obter métricas:', error);
-    res.status(503).json({
-      message: 'Métricas não disponíveis',
-      error: error.message
+  // Rotas de debug (apenas em desenvolvimento)
+  if (process.env.NODE_ENV === 'development') {
+    /**
+     * @swagger
+     * /debug/ratelimit:
+     *   get:
+     *     summary: Status do Rate Limit
+     *     description: Retorna informações sobre os rate limits configurados (apenas em desenvolvimento)
+     *     tags: [Debug]
+     *     responses:
+     *       200:
+     *         description: Status dos rate limits
+     *         content:
+     *           application/json:
+     *             schema:
+     *               type: object
+     *               properties:
+     *                 limits:
+     *                   type: object
+     *                 blocked:
+     *                   type: array
+     *                 stats:
+     *                   type: object
+     */
+    router.get('/debug/ratelimit', (req, res) => {
+      res.json(advancedRateLimit.getStatus());
+    });
+
+    /**
+     * @swagger
+     * /debug/ratelimit/reset:
+     *   post:
+     *     summary: Resetar Rate Limits
+     *     description: Reseta todos os contadores de rate limit (apenas em desenvolvimento)
+     *     tags: [Debug]
+     *     responses:
+     *       200:
+     *         description: Rate limits resetados
+     *         content:
+     *           application/json:
+     *             schema:
+     *               type: object
+     *               properties:
+     *                 message:
+     *                   type: string
+     */
+    router.post('/debug/ratelimit/reset', (req, res) => {
+      advancedRateLimit.resetLimits();
+      res.json({ message: 'Rate limits resetados' });
+    });
+
+    /**
+     * @swagger
+     * /debug/ratelimit/update:
+     *   post:
+     *     summary: Atualizar Rate Limits
+     *     description: Atualiza configurações de rate limit (apenas em desenvolvimento)
+     *     tags: [Debug]
+     *     requestBody:
+     *       required: true
+     *       content:
+     *         application/json:
+     *           schema:
+     *             type: object
+     *             properties:
+     *               ipPoints:
+     *                 type: number
+     *                 description: Limite de requisições por IP
+     *               loginPoints:
+     *                 type: number
+     *                 description: Limite de tentativas de login
+     *     responses:
+     *       200:
+     *         description: Configuração atualizada
+     *         content:
+     *           application/json:
+     *             schema:
+     *               type: object
+     *               properties:
+     *                 success:
+     *                   type: boolean
+     *                 message:
+     *                   type: string
+     *                 newConfig:
+     *                   type: object
+     */
+    router.post('/debug/ratelimit/update', (req, res) => {
+      const success = advancedRateLimit.updateConfig(req.body);
+      res.json({
+        success,
+        message: success ? 'Configuração atualizada' : 'Atualização não permitida',
+        newConfig: advancedRateLimit.getStatus().config
+      });
     });
   }
-});
 
-/**
- * @swagger
- * /health:
- *   get:
- *     summary: Health check do serviço
- *     tags: [Sistema]
- *     responses:
- *       200:
- *         description: Serviço saudável
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 status:
- *                   type: string
- *                   enum: [healthy, degraded, unhealthy]
- *                 timestamp:
- *                   type: string
- *                 responseTime:
- *                   type: string
- *                 services:
- *                   type: object
- *       503:
- *         description: Serviço não saudável
- */
-router.get('/health', async(req, res) => {
-  try {
-    const healthStatus = await performHealthCheck();
+  // Rotas de segurança (dashboard e monitoramento)
+  router.use('/security', securityRoutes);
 
-    // Status HTTP baseado na saúde
-    const statusCode = healthStatus.status === 'healthy' ? 200 :
-      healthStatus.status === 'degraded' ? 200 : 503;
+  return router;
+}
 
-    res.status(statusCode).json(healthStatus);
-
-  } catch (error) {
-    res.status(503).json({
-      status: 'unhealthy',
-      timestamp: new Date().toISOString(),
-      error: error.message
-    });
-  }
-});
-
-// ✅ Endpoints de debug para rate limiting (apenas em desenvolvimento)
-if (process.env.NODE_ENV === 'development') {
-  router.get('/debug/ratelimit/status', (req, res) => {
-    res.json({
-      status: advancedRateLimit.getStatus(),
-      headers: {
-        'x-forwarded-for': req.get('x-forwarded-for'),
-        'x-real-ip': req.get('x-real-ip'),
-        'ip': req.ip,
-        'ips': req.ips
-      }
-    });
-  });
-
-  router.post('/debug/ratelimit/reset', async(req, res) => {
-    await advancedRateLimit.reset();
-    res.json({ message: 'Rate limits resetados' });
-  });
-
-  router.post('/debug/ratelimit/update', (req, res) => {
-    const success = advancedRateLimit.updateConfig(req.body);
-    res.json({
-      success,
-      message: success ? 'Configuração atualizada' : 'Atualização não permitida',
-      newConfig: advancedRateLimit.getStatus().config
-    });
-  });
-};
-
-export default router;
+// Export padrão para compatibilidade
+export default createAuthRoutes();

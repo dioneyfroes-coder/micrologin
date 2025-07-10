@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard de Segurança - Auth Service</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 30px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .header h1 {
+            color: white;
+            text-align: center;
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            color: rgba(255, 255, 255, 0.8);
+            text-align: center;
+            font-size: 1.1em;
+        }
+        
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .card {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 12px 48px rgba(0, 0, 0, 0.15);
+        }
+        
+        .card-header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        
+        .card-icon {
+            font-size: 2em;
+            margin-right: 15px;
+        }
+        
+        .card-title {
+            font-size: 1.3em;
+            font-weight: 600;
+            color: #333;
+        }
+        
+        .metric {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 0;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .metric:last-child {
+            border-bottom: none;
+        }
+        
+        .metric-label {
+            color: #666;
+            font-weight: 500;
+        }
+        
+        .metric-value {
+            font-weight: 700;
+            font-size: 1.1em;
+        }
+        
+        .status-healthy {
+            color: #28a745;
+        }
+        
+        .status-warning {
+            color: #ffc107;
+        }
+        
+        .status-danger {
+            color: #dc3545;
+        }
+        
+        .risk-level {
+            display: inline-block;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.9em;
+        }
+        
+        .risk-low {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .risk-medium {
+            background: #fff3cd;
+            color: #856404;
+        }
+        
+        .risk-high {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        
+        .events-list {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        
+        .event-item {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 10px;
+            border-left: 4px solid #007bff;
+        }
+        
+        .event-critical {
+            border-left-color: #dc3545;
+        }
+        
+        .event-warning {
+            border-left-color: #ffc107;
+        }
+        
+        .event-info {
+            border-left-color: #17a2b8;
+        }
+        
+        .event-time {
+            font-size: 0.8em;
+            color: #666;
+            margin-bottom: 5px;
+        }
+        
+        .event-type {
+            font-weight: 600;
+            margin-bottom: 3px;
+        }
+        
+        .event-description {
+            color: #555;
+            font-size: 0.9em;
+        }
+        
+        .refresh-btn {
+            background: linear-gradient(45deg, #007bff, #0056b3);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 1em;
+            transition: all 0.3s ease;
+            margin: 10px 5px;
+        }
+        
+        .refresh-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0, 123, 255, 0.4);
+        }
+        
+        .loading {
+            text-align: center;
+            color: #666;
+            font-style: italic;
+        }
+        
+        .error {
+            color: #dc3545;
+            background: #f8d7da;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+        
+        .controls {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        
+        .auto-refresh {
+            margin-left: 20px;
+        }
+        
+        .auto-refresh label {
+            color: white;
+            margin-left: 8px;
+        }
+        
+        @media (max-width: 768px) {
+            .dashboard-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .header h1 {
+                font-size: 2em;
+            }
+            
+            .card {
+                padding: 15px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🛡️ Dashboard de Segurança</h1>
+            <p>Monitoramento em tempo real do microserviço de autenticação</p>
+        </div>
+        
+        <div class="controls">
+            <button class="refresh-btn" onclick="refreshAll()">🔄 Atualizar Dados</button>
+            <div class="auto-refresh">
+                <input type="checkbox" id="autoRefresh" onchange="toggleAutoRefresh()">
+                <label for="autoRefresh">Atualização automática (30s)</label>
+            </div>
+        </div>
+        
+        <div class="dashboard-grid">
+            <!-- Card de Status Geral -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-icon">💚</span>
+                    <span class="card-title">Status do Sistema</span>
+                </div>
+                <div id="system-status">
+                    <div class="loading">Carregando...</div>
+                </div>
+            </div>
+            
+            <!-- Card de Estatísticas de Segurança -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-icon">🔒</span>
+                    <span class="card-title">Estatísticas de Segurança</span>
+                </div>
+                <div id="security-stats">
+                    <div class="loading">Carregando...</div>
+                </div>
+            </div>
+            
+            <!-- Card de Rate Limiting -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-icon">⚡</span>
+                    <span class="card-title">Rate Limiting</span>
+                </div>
+                <div id="rate-limit-stats">
+                    <div class="loading">Carregando...</div>
+                </div>
+            </div>
+            
+            <!-- Card de Métricas do Sistema -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-icon">📊</span>
+                    <span class="card-title">Métricas do Sistema</span>
+                </div>
+                <div id="system-metrics">
+                    <div class="loading">Carregando...</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Card de Eventos Recentes -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-icon">📋</span>
+                <span class="card-title">Eventos de Segurança Recentes</span>
+            </div>
+            <div id="recent-events">
+                <div class="loading">Carregando...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'https://localhost:3000';
+        let autoRefreshInterval = null;
+
+        // Função para fazer requisições à API
+        async function apiRequest(endpoint) {
+            try {
+                const response = await fetch(`${API_BASE}${endpoint}`, {
+                    method: 'GET',
+                    headers: {
+                        'Accept': 'application/json'
+                    }
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                return await response.json();
+            } catch (error) {
+                console.error('API Request failed:', error);
+                throw error;
+            }
+        }
+
+        // Atualizar status do sistema
+        async function updateSystemStatus() {
+            try {
+                const health = await apiRequest('/health');
+                const statusElement = document.getElementById('system-status');
+                
+                const statusClass = health.status === 'healthy' ? 'status-healthy' : 
+                                   health.status === 'degraded' ? 'status-warning' : 'status-danger';
+                
+                statusElement.innerHTML = `
+                    <div class="metric">
+                        <span class="metric-label">Status</span>
+                        <span class="metric-value ${statusClass}">${health.status.toUpperCase()}</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Uptime</span>
+                        <span class="metric-value">${health.uptime}</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">MongoDB</span>
+                        <span class="metric-value ${health.services.mongodb.status === 'healthy' ? 'status-healthy' : 'status-danger'}">
+                            ${health.services.mongodb.status}
+                        </span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Redis</span>
+                        <span class="metric-value ${health.services.redis.status === 'healthy' ? 'status-healthy' : 'status-warning'}">
+                            ${health.services.redis.status}
+                        </span>
+                    </div>
+                `;
+            } catch (error) {
+                document.getElementById('system-status').innerHTML = 
+                    `<div class="error">Erro ao carregar status: ${error.message}</div>`;
+            }
+        }
+
+        // Atualizar estatísticas de segurança
+        async function updateSecurityStats() {
+            try {
+                const stats = await apiRequest('/security/stats');
+                const statsElement = document.getElementById('security-stats');
+                
+                const riskClass = stats.security.riskLevel === 'LOW' ? 'risk-low' : 
+                                 stats.security.riskLevel === 'MEDIUM' ? 'risk-medium' : 'risk-high';
+                
+                statsElement.innerHTML = `
+                    <div class="metric">
+                        <span class="metric-label">Total de Requisições</span>
+                        <span class="metric-value">${stats.security.totalRequests.toLocaleString()}</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Requisições Bloqueadas</span>
+                        <span class="metric-value status-danger">${stats.security.blockedRequests}</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Logins Falhados</span>
+                        <span class="metric-value status-warning">${stats.security.failedLogins}</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Atividades Suspeitas</span>
+                        <span class="metric-value status-warning">${stats.security.suspiciousActivities}</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Nível de Risco</span>
+                        <span class="risk-level ${riskClass}">${stats.security.riskLevel}</span>
+                    </div>
+                `;
+            } catch (error) {
+                document.getElementById('security-stats').innerHTML = 
+                    `<div class="error">Erro ao carregar estatísticas: ${error.message}</div>`;
+            }
+        }
+
+        // Atualizar estatísticas de rate limiting
+        async function updateRateLimitStats() {
+            try {
+                const stats = await apiRequest('/security/stats');
+                const rateLimitElement = document.getElementById('rate-limit-stats');
+                
+                rateLimitElement.innerHTML = `
+                    <div class="metric">
+                        <span class="metric-label">Bloqueios Ativos</span>
+                        <span class="metric-value status-danger">${stats.rateLimit.activeBlocks}</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Violações Recentes</span>
+                        <span class="metric-value status-warning">${stats.rateLimit.recentViolations}</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Alertas Ativos</span>
+                        <span class="metric-value">${stats.alerts.active}</span>
+                    </div>
+                `;
+            } catch (error) {
+                document.getElementById('rate-limit-stats').innerHTML = 
+                    `<div class="error">Erro ao carregar rate limiting: ${error.message}</div>`;
+            }
+        }
+
+        // Atualizar métricas do sistema
+        async function updateSystemMetrics() {
+            try {
+                const health = await apiRequest('/health');
+                const metricsElement = document.getElementById('system-metrics');
+                
+                metricsElement.innerHTML = `
+                    <div class="metric">
+                        <span class="metric-label">Uso de Memória</span>
+                        <span class="metric-value">${health.memory.total}</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Heap Memory</span>
+                        <span class="metric-value">${health.memory.heap}</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Tempo de Resposta</span>
+                        <span class="metric-value">${health.responseTime}</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Versão</span>
+                        <span class="metric-value">${health.version}</span>
+                    </div>
+                `;
+            } catch (error) {
+                document.getElementById('system-metrics').innerHTML = 
+                    `<div class="error">Erro ao carregar métricas: ${error.message}</div>`;
+            }
+        }
+
+        // Atualizar eventos recentes
+        async function updateRecentEvents() {
+            try {
+                const events = await apiRequest('/security/events?limit=10');
+                const eventsElement = document.getElementById('recent-events');
+                
+                if (events.events && events.events.length > 0) {
+                    eventsElement.innerHTML = `
+                        <div class="events-list">
+                            ${events.events.map(event => `
+                                <div class="event-item event-${event.severity}">
+                                    <div class="event-time">${new Date(event.timestamp).toLocaleString()}</div>
+                                    <div class="event-type">${event.type}</div>
+                                    <div class="event-description">${event.description}</div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    `;
+                } else {
+                    eventsElement.innerHTML = '<div class="loading">Nenhum evento recente</div>';
+                }
+            } catch (error) {
+                document.getElementById('recent-events').innerHTML = 
+                    `<div class="error">Erro ao carregar eventos: ${error.message}</div>`;
+            }
+        }
+
+        // Atualizar todos os dados
+        async function refreshAll() {
+            await Promise.all([
+                updateSystemStatus(),
+                updateSecurityStats(),
+                updateRateLimitStats(),
+                updateSystemMetrics(),
+                updateRecentEvents()
+            ]);
+            
+            console.log('Dashboard atualizado:', new Date().toLocaleTimeString());
+        }
+
+        // Toggle auto refresh
+        function toggleAutoRefresh() {
+            const checkbox = document.getElementById('autoRefresh');
+            
+            if (checkbox.checked) {
+                autoRefreshInterval = setInterval(refreshAll, 30000);
+                console.log('Auto-refresh ativado (30s)');
+            } else {
+                if (autoRefreshInterval) {
+                    clearInterval(autoRefreshInterval);
+                    autoRefreshInterval = null;
+                }
+                console.log('Auto-refresh desativado');
+            }
+        }
+
+        // Inicializar dashboard
+        document.addEventListener('DOMContentLoaded', function() {
+            refreshAll();
+            console.log('Dashboard de segurança iniciado');
+        });
+    </script>
+</body>
+</html>

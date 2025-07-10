@@ -22,15 +22,12 @@ export const sanitizeInput = (req, res, next) => {
   };
 
   try {
-    // ✅ CORREÇÃO: Sanitizar apenas req.body (que é mutável)
     if (req.body && typeof req.body === 'object') {
       req.body = sanitizeObject(req.body);
     }
 
-    // ✅ CORREÇÃO: Para query e params, criar novos objetos
     if (req.query && typeof req.query === 'object') {
       const sanitizedQuery = sanitizeObject({ ...req.query });
-      // Sobrescrever propriedades individuais em vez do objeto inteiro
       Object.keys(sanitizedQuery).forEach(key => {
         req.query[key] = sanitizedQuery[key];
       });

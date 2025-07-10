@@ -9,7 +9,7 @@
  * @param {number} defaultValue - Valor padrão
  * @returns {number}
  */
-const parseEnvNumber = (value, defaultValue) => {
+export const parseEnvNumber = (value, defaultValue) => {
   const parsed = parseInt(value, 10);
   return isNaN(parsed) ? defaultValue : parsed;
 };
@@ -18,10 +18,8 @@ const parseEnvNumber = (value, defaultValue) => {
  * Configurações de Rate Limiting baseadas no ambiente
  */
 export const rateLimitConfig = {
-  // ✅ Configurações baseadas em NODE_ENV
   isDevelopment: process.env.NODE_ENV === 'development',
 
-  // ✅ Configurações de desenvolvimento (mais permissivas)
   development: {
     ip: {
       points: parseEnvNumber(process.env.RATE_LIMIT_IP_POINTS, 1000),
@@ -40,7 +38,6 @@ export const rateLimitConfig = {
     }
   },
 
-  // ✅ Configurações de produção (mais restritivas)
   production: {
     ip: {
       points: parseEnvNumber(process.env.RATE_LIMIT_PROD_IP_POINTS, 100),
@@ -59,7 +56,6 @@ export const rateLimitConfig = {
     }
   },
 
-  // ✅ Rotas que devem ser sempre liberadas
   exemptPaths: [
     '/health',
     '/metrics',
@@ -67,7 +63,6 @@ export const rateLimitConfig = {
     '/favicon.ico'
   ],
 
-  // ✅ Configurações gerais
   redis: {
     keyPrefix: 'rl_',
     host: process.env.REDIS_HOST || 'localhost',
@@ -85,9 +80,7 @@ export const getActiveConfig = () => {
     : rateLimitConfig.production;
 
   return {
-    // ✅ Spread das configurações do ambiente específico
     ...environmentConfig,
-    // ✅ Propriedades adicionais
     environment: rateLimitConfig.isDevelopment ? 'development' : 'production',
     exemptPaths: rateLimitConfig.exemptPaths,
     redis: rateLimitConfig.redis

@@ -43,4 +43,3 @@ export const validateUpdate = [
     .isLength({ min: 6 })
     .withMessage('Senha deve ter pelo menos 6 caracteres.')
 ];
-

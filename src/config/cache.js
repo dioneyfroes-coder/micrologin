@@ -53,3 +53,18 @@ export const getCachedJWT = async(token) => {
     return null;
   }
 };
+
+export const clearCache = async(key = null) => {
+  if (!client || !client.isReady) {
+    return;
+  } // Proteção se Redis não estiver disponível
+  try {
+    if (key) {
+      await client.del(key);
+    } else {
+      await client.flushDb();
+    }
+  } catch (error) {
+    console.error('Erro ao limpar cache:', error);
+  }
+};

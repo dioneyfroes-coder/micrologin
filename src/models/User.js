@@ -23,4 +23,10 @@ const UserSchema = new mongoose.Schema({
   timestamps: true // Adiciona createdAt e updatedAt automaticamente
 });
 
-export default mongoose.model('User', UserSchema);
+const UserModel = mongoose.model('User', UserSchema);
+
+// Export default para passport.js
+export default UserModel;
+
+// Export named para adapters
+export const getUserModel = () => UserModel;

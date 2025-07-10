@@ -55,9 +55,10 @@ export const metricsMiddleware = (req, res, next) => {
         .labels(req.method, route, res.statusCode.toString())
         .inc();
 
-      console.log(`📊 Métrica registrada: ${req.method} ${route} ${res.statusCode}`);
+      if (process.env.NODE_ENV === 'development') {
+        console.log(`📊 Métrica registrada: ${req.method} ${route} ${res.statusCode}`);
+      }
     } catch (error) {
-      // ✅ ADICIONAR: Log de erro sem quebrar a aplicação
       console.warn('⚠️ Erro ao registrar métrica:', error.message);
     }
   });

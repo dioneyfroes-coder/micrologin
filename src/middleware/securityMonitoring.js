@@ -3,14 +3,12 @@
  * Detecta e bloqueia tentativas de ataques como XSS, SQL Injection, DDoS
  */
 
+import { securityAuditLogger } from './securityAudit.js';
+
 /**
  * Monitor de segurança para detecção de ameaças
  */
 class SecurityMonitor {
-  /**
-     * @constructor
-     * Inicializa padrões suspeitos e mapas de anomalias
-     */
   constructor() {
     this.suspiciousPatterns = [
       /(<|%3C)script(>|%3E)/i,
@@ -25,17 +23,20 @@ class SecurityMonitor {
   }
 
   /**
-     * Detecta ameaças em requisições HTTP
-     * @param {import('express').Request} req - Objeto de requisição
-     * @param {import('express').Response} res - Objeto de resposta
-     * @param {import('express').NextFunction} next - Função next
-     */
+   * Detecta ameaças em requisições HTTP
+   */
   detectThreats(req, res, next) {
     const threats = [];
     const requestData = JSON.stringify(req.body) + req.url + req.get('User-Agent');
 
     // Verificar se IP está bloqueado
     if (this.blockedIPs.has(req.ip)) {
+      securityAuditLogger.logSecurityEvent('blocked_ip_access', {
+        ip: req.ip,
+        userAgent: req.get('User-Agent'),
+        path: req.path
+      }, 'warning');
+      
       return res.status(403).json({
         error: 'Forbidden',
         message: 'IP temporarily blocked due to suspicious activity'
@@ -57,6 +58,15 @@ class SecurityMonitor {
     if (threats.length > 0) {
       console.warn(`🚨 Security threat detected from ${req.ip}:`, threats);
 
+      // Registrar no sistema de auditoria
+      securityAuditLogger.logSecurityAttack(
+        'pattern_match',
+        req.ip,
+        req.get('User-Agent'),
+        requestData,
+        true
+      );
+
       // Bloquear temporariamente IPs suspeitos
       this.blockSuspiciousIP(req.ip);
 
@@ -69,10 +79,12 @@ class SecurityMonitor {
     next();
   }
 
-  // ← ADICIONAR ESTE MÉTODO
   blockSuspiciousIP(ip) {
     this.blockedIPs.add(ip);
     console.warn(`🚨 IP ${ip} bloqueado temporariamente`);
+
+    // Registrar bloqueio no sistema de auditoria
+    securityAuditLogger.logIPBlock(ip, 'suspicious_activity', 3600000); // 1 hora
 
     // Desbloquear após 1 hora
     setTimeout(() => {
@@ -99,12 +111,24 @@ class SecurityMonitor {
     // Detectar padrões suspeitos
     if (recentRequests.length > 50) { // Muitas requests
       console.warn(`🚨 Possible DDoS from ${clientId}`);
+      securityAuditLogger.logSuspiciousActivity(
+        req.ip,
+        req.get('User-Agent'),
+        'potential_ddos',
+        { requestCount: recentRequests.length, timeWindow: '1min' }
+      );
       this.blockSuspiciousIP(req.ip);
     }
 
     // Detectar path traversal
     if (req.path.includes('../') || req.path.includes('..\\')) {
       console.warn(`🚨 Path traversal attempt from ${clientId}`);
+      securityAuditLogger.logSuspiciousActivity(
+        req.ip,
+        req.get('User-Agent'),
+        'path_traversal',
+        { path: req.path }
+      );
       this.blockSuspiciousIP(req.ip);
     }
   }

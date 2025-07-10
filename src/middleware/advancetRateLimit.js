@@ -1,5 +1,6 @@
 import { RateLimiterRedis, RateLimiterMemory } from 'rate-limiter-flexible';
 import { validateRateLimitConfig, logRateLimitConfig } from '../config/rateLimitConfig.js';
+import { securityAuditLogger } from './securityAudit.js';
 
 class AdvancedRateLimiter {
   constructor() {
@@ -8,7 +9,6 @@ class AdvancedRateLimiter {
     this.initialized = false;
     this.config = null;
 
-    // ✅ Validar configuração no startup
     const validation = validateRateLimitConfig();
     if (!validation.isValid) {
       console.error('❌ Erro na configuração de rate limiting:', validation.errors);
@@ -16,17 +16,16 @@ class AdvancedRateLimiter {
     }
 
     this.config = validation.config;
-    console.log(`🔧 Rate Limiter inicializando... Environment: ${this.config.environment}`);
 
-    // ✅ Log da configuração ativa
+    if (process.env.NODE_ENV === 'development') {
+      console.log(`🔧 Rate Limiter inicializando... Environment: ${this.config.environment}`);
+    }
+
     logRateLimitConfig();
-
-    // ✅ Inicializar limiters imediatamente no constructor
     this.setupLimiters();
   }
 
   setupLimiters() {
-    // ✅ Usar configuração centralizada
     this.limiters = {
       ip: new RateLimiterMemory({
         keyPrefix: `${this.config.redis.keyPrefix}ip`,
@@ -49,12 +48,14 @@ class AdvancedRateLimiter {
     };
 
     this.initialized = true;
-    console.log(`✅ Rate limiters configurados para: ${this.config.environment.toUpperCase()}`);
+
+    if (process.env.NODE_ENV === 'development') {
+      console.log(`✅ Rate limiters configurados para: ${this.config.environment.toUpperCase()}`);
+    }
   }
 
   async init() {
     if (this.initialized) {
-      console.log('🔧 Rate limiter já inicializado');
       return;
     }
 
@@ -64,7 +65,9 @@ class AdvancedRateLimiter {
       this.redisClient = await initRedis();
 
       if (this.redisClient) {
-        console.log('🔧 Atualizando rate limiters para usar Redis...');
+        if (process.env.NODE_ENV === 'development') {
+          console.log('🔧 Atualizando rate limiters para usar Redis...');
+        }
         this.setupRedisLimiters();
       }
     } catch (error) {
@@ -75,7 +78,6 @@ class AdvancedRateLimiter {
   }
 
   setupRedisLimiters() {
-    // ✅ Usar configuração centralizada para Redis
     this.limiters = {
       ip: new RateLimiterRedis({
         storeClient: this.redisClient,
@@ -100,11 +102,12 @@ class AdvancedRateLimiter {
       })
     };
 
-    console.log('✅ Rate limiters atualizados para Redis');
+    if (process.env.NODE_ENV === 'development') {
+      console.log('✅ Rate limiters atualizados para Redis');
+    }
   }
 
   checkLimits = async(req, res, next) => {
-    // ✅ Garantir que está inicializado
     if (!this.initialized) {
       console.warn('⚠️ Rate limiter não inicializado, permitindo requisição');
       return next();
@@ -114,32 +117,22 @@ class AdvancedRateLimiter {
     const userId = req.user?.id;
     const isLogin = req.path.includes('/login');
 
-    // ✅ Verificar paths isentos usando configuração centralizada
     const isExempt = this.config.exemptPaths.some(path => req.path === path || req.path.startsWith(path));
 
     if (isExempt) {
-      console.log(`🔧 Path isento de rate limit: ${req.path}`);
       return next();
     }
 
     try {
-      // ✅ Verificar limite por IP
-      console.log(`🔧 Verificando rate limit para IP: ${ip} em ${req.path}`);
       await this.limiters.ip.consume(ip);
 
-      // ✅ Verificar limite por usuário (se autenticado)
       if (userId) {
-        console.log(`🔧 Verificando rate limit para usuário: ${userId}`);
         await this.limiters.user.consume(userId);
       }
-
-      // ✅ Verificar limite de login
       if (isLogin) {
-        console.log(`🔧 Verificando rate limit de login para IP: ${ip}`);
         await this.limiters.login.consume(`${ip}_login`);
       }
 
-      console.log(`✅ Rate limit OK: ${req.method} ${req.path} (${ip})`);
       next();
 
     } catch (rejRes) {
@@ -148,6 +141,14 @@ class AdvancedRateLimiter {
       const secondsToWait = Math.round(msBeforeNext / 1000) || 1;
 
       console.warn(`⚠️ Rate limit atingido: ${ip} em ${req.path} - aguardar ${secondsToWait}s`);
+
+      // Registrar violação no sistema de auditoria
+      securityAuditLogger.logRateLimitViolation(
+        ip,
+        req.path,
+        req.get('User-Agent'),
+        rejRes.totalPoints || 'unknown'
+      );
 
       res.set({
         'Retry-After': secondsToWait,
@@ -180,28 +181,28 @@ class AdvancedRateLimiter {
     }
   };
 
-  // ✅ Método para resetar limiters (útil para debugging)
   async reset() {
-    console.log('🔧 Resetando todos os rate limiters...');
-
     if (this.redisClient) {
       try {
         const keys = await this.redisClient.keys(`${this.config.redis.keyPrefix}*`);
         if (keys.length > 0) {
           await this.redisClient.del(keys);
-          console.log(`✅ ${keys.length} chaves de rate limit removidas do Redis`);
+          if (process.env.NODE_ENV === 'development') {
+            console.log(`✅ ${keys.length} chaves de rate limit removidas do Redis`);
+          }
         }
       } catch (error) {
         console.warn('⚠️ Erro ao limpar Redis:', error.message);
       }
     }
 
-    // Recriar limiters em memória
     this.setupLimiters();
-    console.log('✅ Rate limiters resetados');
+
+    if (process.env.NODE_ENV === 'development') {
+      console.log('✅ Rate limiters resetados');
+    }
   }
 
-  // ✅ Método para obter status atual
   getStatus() {
     return {
       initialized: this.initialized,
@@ -212,22 +213,25 @@ class AdvancedRateLimiter {
     };
   }
 
-  // ✅ Método para atualizar configuração em runtime (desenvolvimento)
   updateConfig(newConfig) {
     if (this.config.environment !== 'development') {
       console.warn('⚠️ Atualização de configuração só é permitida em desenvolvimento');
       return false;
     }
 
-    console.log('🔧 Atualizando configuração de rate limiting...');
+    if (process.env.NODE_ENV === 'development') {
+      console.log('🔧 Atualizando configuração de rate limiting...');
+    }
 
-    // Mesclar nova configuração
     this.config = { ...this.config, ...newConfig };
 
     // Recriar limiters com nova configuração
     this.setupLimiters();
 
-    console.log('✅ Configuração de rate limiting atualizada');
+    if (process.env.NODE_ENV === 'development') {
+      console.log('✅ Configuração de rate limiting atualizada');
+    }
+
     logRateLimitConfig();
 
     return true;
