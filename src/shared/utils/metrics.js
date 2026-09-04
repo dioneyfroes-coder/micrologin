@@ -1,4 +1,11 @@
+/**
+ * Copyright (c) 2026 Dioney Froes
+ * Project: Micrologin
+ * Provenance-ID: ML-7F29
+ */
 import prometheus from 'prom-client';
+
+export const PROVENANCE_MARKER = 'ML-7F29';
 
 // Limpar registry primeiro (importante para clustering)
 prometheus.register.clear();

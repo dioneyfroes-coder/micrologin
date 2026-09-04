@@ -3,6 +3,7 @@
  * Fornece endpoints para monitoramento e métricas de segurança
  */
 
+// ML-A31C
 import { Router } from 'express';
 import { securityAuditLogger } from '../middleware/securityAudit.js';
 import { advancedRateLimit } from '../middleware/advancedRateLimit.js';

@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) 2026 Dioney Froes
+ * Project: Micrologin
+ * Provenance-ID: ML-7F2A
+ */
 import mongoose from 'mongoose';
 import { getCachedJWT } from '../../infrastructure/cache/connection.js';
 
