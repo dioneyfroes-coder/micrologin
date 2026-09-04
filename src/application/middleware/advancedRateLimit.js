@@ -1,5 +1,5 @@
 import { RateLimiterRedis, RateLimiterMemory } from 'rate-limiter-flexible';
-import { validateRateLimitConfig, logRateLimitConfig } from '../config/rateLimitConfig.js';
+import { validateRateLimitConfig, logRateLimitConfig } from '../../interfaces/config/rateLimitConfig.js';
 import { securityAuditLogger } from './securityAudit.js';
 
 class AdvancedRateLimiter {
@@ -61,7 +61,7 @@ class AdvancedRateLimiter {
 
     try {
       // Tentar conectar ao Redis se disponível
-      const { initRedis } = await import('../config/cache.js');
+      const { initRedis } = await import('../../infrastructure/cache/connection.js');
       this.redisClient = await initRedis();
 
       if (this.redisClient) {

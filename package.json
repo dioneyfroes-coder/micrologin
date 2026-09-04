@@ -1,7 +1,7 @@
 {
   "name": "autentication",
   "version": "1.0.0",
-  "description": "Microserviço de autenticação enterprise com arquitetura hexagonal e segurança avançada",
+  "description": "API de autenticação em Node.js para estudo de arquitetura, segurança e organização de código",
   "main": "src/app.js",
   "scripts": {
     "start": "cross-env NODE_ENV=production pm2 start ecosystem.config.cjs",

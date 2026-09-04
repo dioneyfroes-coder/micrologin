@@ -4,6 +4,7 @@ import cors from 'cors';
 import https from 'https';
 import fs from 'fs';
 import compression from 'compression';
+import { pathToFileURL } from 'url';
 
 // Configurações centralizadas (carrega .env automaticamente)
 import {
@@ -11,23 +12,22 @@ import {
   securityConfig,
   validateConfiguration,
   getConfigSummary
-} from './config/appConfig.js';
+} from './interfaces/config/appConfig.js';
 
 // Utilitários e middlewares
-import { metricsMiddleware } from './utils/metrics.js';
-import { initRedis } from './config/cache.js';
-import { requestLogger } from './middleware/requestLogger.js';
-import { connectDatabase } from './config/database.js';
-import { configurePassport } from './config/passport.js';
-import { setupSwagger } from './config/swagger.js';
-import { setupErrorHandlers } from './utils/errorHandler.js';
-import { createAuthRoutes } from './routes/authRoutes.js';
+import { metricsMiddleware } from './shared/utils/metrics.js';
+import { initRedis } from './infrastructure/cache/connection.js';
+import { requestLogger } from './application/middleware/requestLogger.js';
+import { connectDatabase } from './infrastructure/database/connection.js';
+import { setupSwagger } from './interfaces/config/swagger.js';
+import { setupErrorHandlers } from './shared/utils/errorHandler.js';
+import { createAuthRoutes } from './application/routes/authRoutes.js';
 import { bootstrapServices } from './core/bootstrap.js';
 
-import setupSecurity from './config/helmet.js';
-import { sanitizeInput } from './middleware/sanitization.js';
-import { securityMonitor } from './middleware/securityMonitoring.js';
-import { advancedRateLimit } from './middleware/advancedRateLimit.js';
+import setupSecurity from './interfaces/config/helmet.js';
+import { sanitizeInput } from './application/middleware/sanitization.js';
+import { securityMonitor } from './application/middleware/securityMonitoring.js';
+import { advancedRateLimit } from './application/middleware/advancedRateLimit.js';
 
 /**
  * Classe principal da aplicação
@@ -89,8 +89,6 @@ class AuthService {
     this.app.use(sanitizeInput);
     this.app.use((req, res, next) => securityMonitor.detectThreats(req, res, next));
     this.app.use(advancedRateLimit.checkLimits);
-
-    configurePassport();
   }
 
   /**
@@ -164,43 +162,49 @@ class AuthService {
   }
 }
 
-// Configuração de clustering inteligente
-if (cluster.isPrimary && serverConfig.cluster.enabled) {
-  console.log(`🔧 Master ${process.pid} iniciando cluster...`);
-  console.log(`👥 Configuração: ${serverConfig.cluster.workers} workers (máx: ${serverConfig.cluster.maxWorkers})`);
+const isDirectExecution = process.argv[1]
+  ? import.meta.url === pathToFileURL(process.argv[1]).href
+  : false;
 
-  // Fork workers conforme configuração
-  for (let i = 0; i < serverConfig.cluster.workers; i++) {
-    cluster.fork();
-  }
+if (isDirectExecution) {
+  // Configuração de clustering inteligente
+  if (cluster.isPrimary && serverConfig.cluster.enabled) {
+    console.log(`🔧 Master ${process.pid} iniciando cluster...`);
+    console.log(`👥 Configuração: ${serverConfig.cluster.workers} workers (máx: ${serverConfig.cluster.maxWorkers})`);
 
-  cluster.on('exit', (worker, code, signal) => {
-    console.log(`⚠️ Worker ${worker.process.pid} morreu (código: ${code}, sinal: ${signal})`);
-
-    // Aguarda antes de recriar o worker para evitar loop infinito
-    setTimeout(() => {
-      const newWorker = cluster.fork();
-      console.log(`🔄 Novo worker ${newWorker.process.pid} criado`);
-    }, serverConfig.cluster.respawnDelay);
-  });
-
-  // Graceful shutdown do cluster
-  process.on('SIGTERM', () => {
-    console.log('🛑 Recebido SIGTERM, fechando cluster...');
-    for (const id in cluster.workers) {
-      cluster.workers[id].kill();
+    // Fork workers conforme configuração
+    for (let i = 0; i < serverConfig.cluster.workers; i++) {
+      cluster.fork();
     }
-  });
 
-} else {
-  // Workers ou modo single-process
-  const authService = new AuthService();
-  authService.start(serverConfig.port);
+    cluster.on('exit', (worker, code, signal) => {
+      console.log(`⚠️ Worker ${worker.process.pid} morreu (código: ${code}, sinal: ${signal})`);
 
-  if (serverConfig.cluster.enabled) {
-    console.log(`👷 Worker ${process.pid} iniciado`);
+      // Aguarda antes de recriar o worker para evitar loop infinito
+      setTimeout(() => {
+        const newWorker = cluster.fork();
+        console.log(`🔄 Novo worker ${newWorker.process.pid} criado`);
+      }, serverConfig.cluster.respawnDelay);
+    });
+
+    // Graceful shutdown do cluster
+    process.on('SIGTERM', () => {
+      console.log('🛑 Recebido SIGTERM, fechando cluster...');
+      for (const id in cluster.workers) {
+        cluster.workers[id].kill();
+      }
+    });
+
   } else {
-    console.log(`📱 Modo single-process - PID: ${process.pid}`);
+    // Workers ou modo single-process
+    const authService = new AuthService();
+    authService.start(serverConfig.port);
+
+    if (serverConfig.cluster.enabled) {
+      console.log(`👷 Worker ${process.pid} iniciado`);
+    } else {
+      console.log(`📱 Modo single-process - PID: ${process.pid}`);
+    }
   }
 }
 

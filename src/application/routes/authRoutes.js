@@ -1,8 +1,8 @@
 import { Router } from 'express';
-import { resolve, bootstrapServices } from '../core/bootstrap.js';
+import { resolve, bootstrapServices } from '../../core/bootstrap.js';
 import { validateLogin, validateRegister, validateUpdate } from '../middleware/validation.js';
-import { prometheus } from '../utils/metrics.js';
-import { performHealthCheck } from '../utils/healthCheck.js';
+import { prometheus } from '../../shared/utils/metrics.js';
+import { performHealthCheck } from '../../shared/utils/healthCheck.js';
 import { advancedRateLimit } from '../middleware/advancedRateLimit.js';
 import securityRoutes from './securityRoutes.js';
 

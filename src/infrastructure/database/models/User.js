@@ -46,7 +46,7 @@ const UserSchema = new mongoose.Schema({
 
 const UserModel = mongoose.model('User', UserSchema);
 
-// Export default para passport.js
+// Export default para compatibilidade
 export default UserModel;
 
 // Export named para adapters

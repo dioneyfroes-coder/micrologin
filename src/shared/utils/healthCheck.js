@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { getCachedJWT } from '../config/cache.js';
+import { getCachedJWT } from '../../infrastructure/cache/connection.js';
 
 /**
  * Verifica saúde do MongoDB

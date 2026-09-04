@@ -7,9 +7,9 @@
 
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
-import { User } from '../core/domain.js';
-import { getUserModel } from '../models/User.js';
-import { securityConfig } from '../config/appConfig.js';
+import { User } from '../../domain/index.js';
+import { getUserModel } from '../database/models/User.js';
+import { securityConfig } from '../../interfaces/config/appConfig.js';
 
 /**
  * ADAPTER: MongoDB User Repository
@@ -199,83 +199,42 @@ export class ConsoleLoggerAdapter {
 }
 
 /**
- * ADAPTER: Structured Logger (exemplo de adapter alternativo)
- * Implementa o LoggerPort com estrutura JSON
- */
-export class StructuredLoggerAdapter {
-  info(message, meta = {}) {
-    console.log(JSON.stringify({
-      level: 'info',
-      message,
-      meta,
-      timestamp: new Date().toISOString()
-    }));
-  }
-
-  error(message, error = null) {
-    console.error(JSON.stringify({
-      level: 'error',
-      message,
-      error: error?.message || error,
-      stack: error?.stack,
-      timestamp: new Date().toISOString()
-    }));
-  }
-
-  warn(message, meta = {}) {
-    console.warn(JSON.stringify({
-      level: 'warn',
-      message,
-      meta,
-      timestamp: new Date().toISOString()
-    }));
-  }
-}
-
-/**
- * ADAPTER FACTORY - Facilita a criação de adapters
+ * FACTORY: Adapter Factory para Injeção de Dependência
  */
 export class AdapterFactory {
-  createUserRepository(type = 'mongo') {
-    switch (type) {
-    case 'mongo':
-      return new MongoUserAdapter();
-    default:
-      throw new Error(`Tipo de repositório não suportado: ${type}`);
-    }
+  static createUserRepository() {
+    return new MongoUserAdapter();
   }
 
-  createCryptoService(type = 'bcrypt', options = {}) {
-    switch (type) {
-    case 'bcrypt':
-      return new BcryptAdapter(
-        options.saltRounds || securityConfig.bcrypt.saltRounds
-      );
-    default:
-      throw new Error(`Tipo de crypto não suportado: ${type}`);
-    }
+  static createCrypto(saltRounds = 12) {
+    return new BcryptAdapter(saltRounds);
   }
 
-  createJWTService(type = 'jwt', options = {}) {
-    switch (type) {
-    case 'jwt':
-      return new JWTAdapter(
-        options.secret || securityConfig.jwt.secret,
-        options.expiresIn || securityConfig.jwt.expiresIn
-      );
-    default:
-      throw new Error(`Tipo de token generator não suportado: ${type}`);
+  static createCryptoService(type = 'bcrypt', options = {}) {
+    if (type !== 'bcrypt') {
+      throw new Error(`Tipo de cryptoService não suportado: ${type}`);
     }
+
+    return new BcryptAdapter(options.saltRounds || 12);
   }
 
-  createLogger(type = 'console') {
-    switch (type) {
-    case 'console':
-      return new ConsoleLoggerAdapter();
-    case 'structured':
-      return new StructuredLoggerAdapter();
-    default:
-      throw new Error(`Tipo de logger não suportado: ${type}`);
-    }
+  static createTokenGenerator(secret = process.env.JWT_SECRET, expiresIn = '6h') {
+    return new JWTAdapter(secret, expiresIn);
+  }
+
+  static createLogger() {
+    return new ConsoleLoggerAdapter();
+  }
+
+  /**
+   * Cria todos os adapters para uso no bootstrap
+   */
+  static createAll() {
+    return {
+      userRepository: this.createUserRepository(),
+      crypto: this.createCrypto(12),
+      tokenGenerator: this.createTokenGenerator(),
+      logger: this.createLogger()
+    };
   }
 }

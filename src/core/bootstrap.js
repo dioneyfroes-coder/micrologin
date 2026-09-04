@@ -1,12 +1,13 @@
 import { container } from './ServiceContainer.js';
-import { AuthService } from './domain.js';
-import { AdapterFactory } from '../adapters/index.js';
-import { AuthWebController } from '../web/AuthController.js';
-import { AuthWebMiddleware } from '../web/AuthMiddleware.js';
+import { AuthService } from '../domain/index.js';
+import { AdapterFactory } from '../infrastructure/adapters/index.js';
+import { AuthWebController } from '../application/controllers/AuthController.js';
+import { AuthWebMiddleware } from '../application/middleware/AuthMiddleware.js';
+import { JWTTokenService } from '../infrastructure/external-services/jwtTokenService.js';
 import {
   securityConfig,
   validateConfiguration
-} from '../config/appConfig.js';
+} from '../interfaces/config/appConfig.js';
 
 /**
  * Configuração das dependências da aplicação seguindo arquitetura hexagonal
@@ -17,17 +18,30 @@ export function bootstrapServices() {
   validateConfiguration();
 
   // Configurar adapters de infraestrutura
-  const adapterFactory = new AdapterFactory();
+  const adapterFactory = AdapterFactory;
 
   // Registrar adapters com configurações explícitas
   container.register('userRepository', () => adapterFactory.createUserRepository());
   container.register('cryptoService', () => adapterFactory.createCryptoService('bcrypt', {
     saltRounds: securityConfig.bcrypt.saltRounds
   }));
-  container.register('jwtService', () => adapterFactory.createJWTService('jwt', {
-    secret: securityConfig.jwt.secret,
-    expiresIn: securityConfig.jwt.expiresIn
-  }));
+  
+  // ✅ NOVO: Usar JWTTokenService com suporte a refresh token
+  container.register('jwtService', () => {
+    const tokenService = new JWTTokenService(
+      securityConfig.jwt.secret,
+      process.env.JWT_REFRESH_SECRET || securityConfig.jwt.secret
+    );
+    
+    // Se Redis estiver disponível, adicionar suporte a blacklist
+    if (process.env.REDIS_ENABLED !== 'false') {
+      // Será conectado depois pelo cache.js
+      console.log('🔧 JWT com suporte a Redis (blacklist) será configurado após inicialização do Redis');
+    }
+    
+    return tokenService;
+  });
+  
   container.register('logger', () => adapterFactory.createLogger());
 
   // Registrar serviço de autenticação do core (isolado)

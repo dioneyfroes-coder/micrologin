@@ -1,194 +1,104 @@
-🔐 Microserviço de Autenticação — Projeto de Portfólio Arquitetural
+# Authentication Microservice
 
-Este repositório contém um microserviço de autenticação em Node.js, desenvolvido como projeto de portfólio técnico, com foco em arquitetura, separação de responsabilidades, segurança básica e observabilidade.
+Projeto de portfolio em Node.js para demonstrar uma API de autenticação com estrutura organizada, JWT, validação de senha, rate limiting e integração com MongoDB/Redis.
 
-O projeto foi desenvolvido entre junho e julho de 2025, com apoio do GitHub Copilot, e tem como objetivo demonstrar decisões arquiteturais conscientes, incluindo seus custos e limitações.
+Este repositório é uma demonstração de arquitetura e organização de código. Ele não representa uma solução de autenticação pronta para produção sem revisão adicional e ajustes específicos do ambiente.
 
-Contexto:
-Este serviço não resolve uma demanda real de negócio específica. Ele foi construído intencionalmente como um exercício de overengineering controlado, para fins de estudo e demonstração técnica.
+## O que o projeto inclui
 
-🎯 Objetivo
+- registro e autenticação de usuários
+- JWT com access token e refresh token
+- validação de senha com regras simples
+- rate limiting por IP e login
+- sanitização básica de entradas
+- middleware de auditoria e monitoramento
+- health check e métricas básicas
+- documentação Swagger
+- testes unitários e de integração
+- configuração com Docker Compose
 
-Demonstrar, em um sistema funcional:
+## Stack
 
-Um serviço de autenticação isolado
+- Node.js
+- Express
+- MongoDB + Mongoose
+- Redis
+- JWT
+- bcrypt
+- Jest
+- Docker
 
-Uso prático de arquitetura hexagonal (ports & adapters)
+## Estrutura principal
 
-Separação clara entre domínio, infraestrutura e interface HTTP
-
-Implementação de preocupações não-funcionais:
-
-segurança básica
-
-observabilidade
-
-escalabilidade horizontal simples
-
-Código testável e organizável ao longo do tempo
-
-O foco não é inovação, e sim clareza estrutural e previsibilidade.
-
-⚖️ Considerações arquiteturais (importante)
-
-Este projeto não defende que autenticação deva ser sempre um microserviço separado.
-
-Na prática:
-
-Para muitos sistemas, um monólito modular é mais simples e eficiente.
-
-Em cenários corporativos, um IdP dedicado (Auth0, Keycloak, Cognito) costuma ser superior.
-
-Um microserviço de login só se justifica quando há:
-
-múltiplos consumidores
-
-SSO real
-
-times independentes
-
-necessidade clara de isolamento
-
-Este projeto existe para explorar o “como”, não para afirmar o “quando”.
-
-🧱 Funcionalidades implementadas
-
-Autenticação com JWT
-
-Estratégias com Passport.js
-
-Arquitetura hexagonal
-
-Clustering nativo do Node.js
-
-Rate limiting (IP e tentativas de login)
-
-Sanitização de entradas
-
-Auditoria de eventos de autenticação
-
-Métricas Prometheus
-
-Health checks
-
-Docker / Docker Compose
-
-Testes unitários, integração e carga
-
-Tudo listado acima está implementado e funcional, mas dentro de um escopo educacional.
-
-🛠️ Arquitetura
-
-O projeto segue arquitetura hexagonal para:
-
-Isolar regras de negócio de frameworks
-
-Reduzir acoplamento com infraestrutura
-
-Facilitar testes unitários sem dependências externas
-
-Permitir troca de adapters sem impacto no core
-
-Estrutura geral:
-
+```text
 src/
-├── app.js                # Bootstrap do serviço e cluster
-├── core/                 # Domínio, container e bootstrap
-├── adapters/             # Implementações de persistência e serviços
-├── web/                  # Controllers e middleware HTTP
-├── middleware/           # Segurança, rate limiting e validações
-├── config/               # Configuração e integrações externas
-├── models/               # Modelos de persistência
-├── routes/               # Rotas HTTP
-└── utils/                # Métricas, health check e erros
+├── app.js
+├── core/
+├── application/
+├── infrastructure/
+├── interfaces/
+├── shared/
+├── config/
+└── routes/
+```
 
+A organização tenta separar domínio, aplicação e infraestrutura sem exagerar em camadas conceituais. O objetivo é manter o código legível e testável para um projeto de portfolio.
 
-Nada aqui é experimental; é uma aplicação direta de padrões conhecidos.
+## Pré-requisitos
 
-🔒 Segurança (escopo e limites)
+- Node.js 22+
+- npm
+- Docker e Docker Compose
+- MongoDB e Redis locais ou via containers
 
-O serviço implementa:
+## Como rodar localmente
 
-Rate limiting
-
-Sanitização de input
-
-Headers de segurança (Helmet)
-
-Detecção básica de padrões suspeitos
-
-Auditoria de eventos sensíveis
-
-Isso não substitui:
-
-WAFs
-
-serviços gerenciados
-
-ou soluções especializadas
-
-O objetivo é demonstrar integração e organização, não competir com ferramentas dedicadas.
-
-📊 Observabilidade
-
-Endpoint /metrics (Prometheus)
-
-Logs estruturados
-
-Health check com validação de dependências
-
-Separação de workers em ambiente clusterizado
-
-Novamente: foco em visibilidade mínima aceitável, não em stack enterprise completa.
-
-⚙️ Setup
-git clone https://github.com/dioneyfroes-coder/micrologin.git
-cd micrologin
+```bash
 npm install
 cp .env.example .env
-docker-compose up -d
+npm run docker:up
 npm run dev
+```
 
+Ou, sem Docker:
 
-Swagger:
+```bash
+npm install
+cp .env.example .env
+npm test
+```
 
-https://localhost:3000/api-docs
+## Variáveis de ambiente
 
-🧪 Testes
+Copie o arquivo [.env.example](.env.example) para `.env` e ajuste os valores conforme seu ambiente local.
 
-Testes unitários (core isolado)
+Os campos mais importantes são:
 
-Testes de integração
+- `PORT`
+- `NODE_ENV`
+- `URI_MONGODB`
+- `REDIS_HOST`
+- `REDIS_PORT`
+- `JWT_SECRET`
+- `JWT_EXPIRES`
+- `JWT_REFRESH_EXPIRES`
+- `ALLOWED_ORIGINS`
 
-Testes de carga com Artillery
+## Testes
 
-MongoDB em memória no ambiente de teste
+```bash
+npm test
+npm run test:unit
+npm run test:integration
+```
 
-O foco é confiabilidade estrutural, não métricas artificiais de cobertura.
+## Observações importantes
 
-📌 Status do Projeto
+- este projeto é um estudo de arquitetura e autenticação
+- não substitui um provedor de identidade completo como Auth0, Keycloak ou Cognito
+- o foco está em clareza, organização e demonstração de decisões técnicas
+- a implementação inclui controles básicos, mas não deve ser tratada como solução de produção sem validação adicional de segurança e operação
 
-Funcional
-
-Estruturalmente consistente
-
-Documentado
-
-Overengineering intencional
-
-Voltado a portfólio e estudo arquitetural
-
-📎 Conclusão
-
-Este projeto não existe porque o mercado precisa de mais um sistema de autenticação.
-Ele existe para mostrar como eu estruturo código, tomo decisões arquiteturais e lido com trade-offs técnicos.
-
-Avalie este repositório como demonstração de pensamento técnico, não como produto pronto para adoção irrestrita.
-
-📄 Licença
+## Licença
 
 MIT
-
-Dioney Froes
-Junho – Julho 2025
-Projeto de portfólio arquitetural (Node.js)
