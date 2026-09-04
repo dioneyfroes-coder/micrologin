@@ -92,15 +92,15 @@ Permitir troca de adapters sem impacto no core
 Estrutura geral:
 
 src/
-├── app.js                # Bootstrap + cluster
-├── core/                 # Domínio e regras de negócio
-├── adapters/             # Infraestrutura (crypto, cache, logs)
-├── web/                  # Interface HTTP
-├── middleware/           # Segurança e validações
-├── config/               # Configuração e bootstrap
-├── models/               # Persistência
+├── app.js                # Bootstrap do serviço e cluster
+├── core/                 # Domínio, container e bootstrap
+├── adapters/             # Implementações de persistência e serviços
+├── web/                  # Controllers e middleware HTTP
+├── middleware/           # Segurança, rate limiting e validações
+├── config/               # Configuração e integrações externas
+├── models/               # Modelos de persistência
 ├── routes/               # Rotas HTTP
-└── utils/                # Métricas, health, erros
+└── utils/                # Métricas, health check e erros
 
 
 Nada aqui é experimental; é uma aplicação direta de padrões conhecidos.

@@ -5,8 +5,7 @@
 
 import { Router } from 'express';
 import { securityAuditLogger } from '../middleware/securityAudit.js';
-import { securityMonitor } from '../middleware/securityMonitoring.js';
-import { advancedRateLimit } from '../middleware/advancetRateLimit.js';
+import { advancedRateLimit } from '../middleware/advancedRateLimit.js';
 
 const router = Router();
 

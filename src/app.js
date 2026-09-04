@@ -27,7 +27,7 @@ import { bootstrapServices } from './core/bootstrap.js';
 import setupSecurity from './config/helmet.js';
 import { sanitizeInput } from './middleware/sanitization.js';
 import { securityMonitor } from './middleware/securityMonitoring.js';
-import { advancedRateLimit } from './middleware/advancetRateLimit.js';
+import { advancedRateLimit } from './middleware/advancedRateLimit.js';
 
 /**
  * Classe principal da aplicação

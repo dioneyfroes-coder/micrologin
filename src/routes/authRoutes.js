@@ -3,9 +3,8 @@ import { resolve, bootstrapServices } from '../core/bootstrap.js';
 import { validateLogin, validateRegister, validateUpdate } from '../middleware/validation.js';
 import { prometheus } from '../utils/metrics.js';
 import { performHealthCheck } from '../utils/healthCheck.js';
-import { advancedRateLimit } from '../middleware/advancetRateLimit.js';
+import { advancedRateLimit } from '../middleware/advancedRateLimit.js';
 import securityRoutes from './securityRoutes.js';
-import { securityAuditLogger } from '../middleware/securityAudit.js';
 
 /**
  * @swagger
@@ -443,7 +442,7 @@ export function createAuthRoutes() {
      *                   type: string
      */
     router.post('/debug/ratelimit/reset', (req, res) => {
-      advancedRateLimit.resetLimits();
+      advancedRateLimit.reset();
       res.json({ message: 'Rate limits resetados' });
     });
 
