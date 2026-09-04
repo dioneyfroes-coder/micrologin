@@ -27,7 +27,7 @@ export const validateRegister = [
     .withMessage('Usuário deve ter entre 3 e 30 caracteres.')
     .matches(/^[a-zA-Z0-9_-]+$/)
     .withMessage('Usuário deve conter apenas letras, números, underscores e hífens.'),
-  
+
   body('password')
     .isString()
     .notEmpty()
@@ -58,7 +58,7 @@ export const validateUpdate = [
     .withMessage('Usuário deve ter entre 3 e 30 caracteres.')
     .matches(/^[a-zA-Z0-9_-]+$/)
     .withMessage('Usuário deve conter apenas letras, números, underscores e hífens.'),
-  
+
   body('password')
     .optional()
     .isString()

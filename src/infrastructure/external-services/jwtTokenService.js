@@ -1,12 +1,12 @@
 /**
  * @fileoverview Serviço de Gerenciamento de Tokens JWT
- * 
+ *
  * Implementa:
  * - Access Token (curta vida: 15 minutos)
  * - Refresh Token (longa vida: 7 dias)
  * - Revogação de tokens (blacklist em Redis)
  * - Renovação de tokens
- * 
+ *
  * Segue as melhores práticas de segurança:
  * - RFC 6750: OAuth 2.0 Bearer Token Usage
  * - RFC 7519: JSON Web Token (JWT)
@@ -122,9 +122,13 @@ export class JWTTokenService {
       });
     } catch (error) {
       if (error.name === 'TokenExpiredError') {
-        throw new Error('Access token expirado - use refresh token para renovar');
+        const tokenError = new Error('Access token expirado - use refresh token para renovar');
+        tokenError.code = 'TOKEN_EXPIRED';
+        throw tokenError;
       }
-      throw new Error(`Token inválido: ${error.message}`);
+      const tokenError = new Error(`Token inválido: ${error.message}`);
+      tokenError.code = 'TOKEN_INVALID';
+      throw tokenError;
     }
   }
 
@@ -148,9 +152,13 @@ export class JWTTokenService {
       });
     } catch (error) {
       if (error.name === 'TokenExpiredError') {
-        throw new Error('Refresh token expirado - necessário fazer login novamente');
+        const tokenError = new Error('Refresh token expirado - necessário fazer login novamente');
+        tokenError.code = 'REFRESH_TOKEN_EXPIRED';
+        throw tokenError;
       }
-      throw new Error(`Refresh token inválido: ${error.message}`);
+      const tokenError = new Error(`Refresh token inválido: ${error.message}`);
+      tokenError.code = 'REFRESH_TOKEN_INVALID';
+      throw tokenError;
     }
   }
 
@@ -198,7 +206,7 @@ export class JWTTokenService {
     try {
       const key = `token_blacklist:${token}`;
       const ttlSeconds = Math.ceil(expiresIn / 1000);
-      
+
       await this.redisClient.setex(key, ttlSeconds, 'true');
       return true;
     } catch (error) {
@@ -263,61 +271,3 @@ export class JWTTokenService {
   }
 }
 
-/**
- * Adapter compatível com o sistema existente
- * Compatível com a interface antiga de JWTAdapter
- */
-export class JWTAdapter {
-  constructor(secret, expiresIn = '15m') {
-    if (!secret) {
-      throw new Error('JWT_SECRET é obrigatório - deve ser fornecido no construtor');
-    }
-
-    this.secret = secret;
-    this.expiresIn = expiresIn;
-    // Usar JWTTokenService internamente
-    this.tokenService = new JWTTokenService(secret, secret);
-  }
-
-  async generate(payload) {
-    // Compatibilidade com interface antiga
-    try {
-      return await this.tokenService.generateAccessToken(payload, this.expiresIn);
-    } catch (error) {
-      throw new Error(`Erro ao gerar token: ${error.message}`);
-    }
-  }
-
-  async verify(token) {
-    // Compatibilidade com interface antiga
-    try {
-      return await this.tokenService.verifyAccessToken(token);
-    } catch (error) {
-      throw new Error(`Token inválido: ${error.message}`);
-    }
-  }
-
-  // Novos métodos para refresh token
-  async generateTokenPair(payload, options = {}) {
-    return this.tokenService.generateTokenPair(payload, {
-      accessExpiresIn: this.expiresIn,
-      ...options
-    });
-  }
-
-  async refreshTokens(refreshToken, options = {}) {
-    return this.tokenService.refreshTokens(refreshToken, options);
-  }
-
-  async revokeToken(token, expiresIn = 3600000) {
-    return this.tokenService.revokeToken(token, expiresIn);
-  }
-
-  async revokeUserTokens(userId) {
-    return this.tokenService.revokeUserTokens(userId);
-  }
-
-  async isTokenBlacklisted(token) {
-    return this.tokenService.isTokenBlacklisted(token);
-  }
-}

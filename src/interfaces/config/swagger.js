@@ -58,12 +58,37 @@ export const setupSwagger = (app) => {
         }
       ],
       components: {
+        schemas: {
+          TokenPair: {
+            type: 'object',
+            required: ['accessToken', 'refreshToken', 'tokenType', 'expiresIn'],
+            properties: {
+              accessToken: {
+                type: 'string',
+                description: 'Token de curta duração usado no header Authorization'
+              },
+              refreshToken: {
+                type: 'string',
+                description: 'Token de longa duração usado para renovar o access token'
+              },
+              tokenType: {
+                type: 'string',
+                example: 'Bearer'
+              },
+              expiresIn: {
+                type: 'integer',
+                format: 'int64',
+                description: 'Tempo de validade do access token em milissegundos'
+              }
+            }
+          }
+        },
         securitySchemes: {
           BearerAuth: {
             type: 'http',
             scheme: 'bearer',
             bearerFormat: 'JWT',
-            description: 'JWT token obtido no endpoint de login'
+            description: 'Access token JWT obtido no endpoint de login'
           }
         }
       }

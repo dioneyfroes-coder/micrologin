@@ -1,6 +1,7 @@
 import { RateLimiterRedis, RateLimiterMemory } from 'rate-limiter-flexible';
 import { validateRateLimitConfig, logRateLimitConfig } from '../../interfaces/config/rateLimitConfig.js';
 import { securityAuditLogger } from './securityAudit.js';
+import { HttpError } from '../../shared/utils/errorHandler.js';
 
 class AdvancedRateLimiter {
   constructor() {
@@ -161,23 +162,19 @@ class AdvancedRateLimiter {
         ? `Rate limit atingido (${this.config.environment.toUpperCase()}: ${secondsToWait}s). IP: ${ip}, Path: ${req.path}`
         : `Rate limit exceeded. Try again in ${secondsToWait} seconds.`;
 
-      res.status(429).json({
-        error: 'Too Many Requests',
-        message,
+      return next(new HttpError(429, 'RATE_LIMIT_EXCEEDED', message, {
         retryAfter: secondsToWait,
         environment: this.config.environment,
-        details: {
-          ip: ip,
-          path: req.path,
-          remaining: remainingPoints,
-          resetTime: new Date(Date.now() + msBeforeNext).toISOString(),
-          limits: {
-            ip: this.config.ip,
-            user: this.config.user,
-            login: this.config.login
-          }
+        ip: ip,
+        path: req.path,
+        remaining: remainingPoints,
+        resetTime: new Date(Date.now() + msBeforeNext).toISOString(),
+        limits: {
+          ip: this.config.ip,
+          user: this.config.user,
+          login: this.config.login
         }
-      });
+      }));
     }
   };
 

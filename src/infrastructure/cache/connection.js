@@ -1,6 +1,6 @@
 /**
  * @fileoverview Configuração de Cache com Redis
- * 
+ *
  * Implementa conexão segura ao Redis com:
  * - Health check automático
  * - Fallback para memória se Redis não estiver disponível
@@ -13,7 +13,6 @@ import redis from 'redis';
 let client = null;
 let isHealthy = false;
 const MAX_RETRY_ATTEMPTS = 3;
-const RETRY_DELAY = 5000; // 5 segundos
 
 /**
  * Inicializa conexão com Redis
@@ -106,29 +105,29 @@ export const initRedis = async() => {
 export const performHealthCheck = async(redisClient) => {
   try {
     const startTime = Date.now();
-    
+
     // PING é a forma mais básica de verificar conectividade
     const pongResponse = await redisClient.ping();
-    
+
     const responseTime = Date.now() - startTime;
-    
+
     if (pongResponse === 'PONG') {
       console.log(`✅ Redis PING respondeu em ${responseTime}ms`);
-      
+
       // Verificar adicionalmente se conseguimos ler/escrever
       const testKey = '__health_check__';
       const testValue = Date.now().toString();
-      
+
       await redisClient.setEx(testKey, 10, testValue);
       const retrieved = await redisClient.get(testKey);
       await redisClient.del(testKey);
-      
+
       if (retrieved === testValue) {
         console.log('✅ Redis read/write test passou');
         return true;
       }
     }
-    
+
     return false;
   } catch (error) {
     console.error(`❌ Redis health check falhou: ${error.message}`);

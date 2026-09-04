@@ -1,18 +1,18 @@
 /**
  * @fileoverview Middleware de Monitoramento de Segurança (AUXILIAR)
- * 
+ *
  * ⚠️ IMPORTANTE: Este é um MONITOR AUXILIAR, não o mecanismo principal de segurança!
- * 
+ *
  * Responsabilidades:
  * - ✅ LOG de eventos suspeitos
  * - ✅ ALERTA de padrões maliciosos
  * - ✅ AUDITORIA de atividades
- * 
+ *
  * NÃO responsável por:
  * - ❌ Bloquear IPs (usar rate limiting)
  * - ❌ Negar requisições (usar WAF ou rate limiting)
  * - ❌ Tomar decisões de segurança críticas
- * 
+ *
  * O bloqueio de IPs é feito pelo Rate Limiter (advancedRateLimit.js)
  */
 
@@ -31,7 +31,7 @@ class SecurityMonitor {
       /(union|select|insert|update|delete|drop|create|alter)\s/i,
       /(;|%3B)(\s)*(drop|delete|update|insert)/i
     ];
-    
+
     // Rastrear eventos para analytics, não para ação
     this.threatLog = [];
     this.maxLogSize = 1000;
@@ -118,7 +118,7 @@ class SecurityMonitor {
     // ALERTA: Muitas requisições (mas não bloqueia)
     if (recentRequests.length > 100) {
       console.warn(`⚠️ [SECURITY MONITOR] High request rate from ${clientId}: ${recentRequests.length} in 1min`);
-      
+
       securityAuditLogger.logSecurityEvent('high_request_rate', {
         ip: req.ip,
         userAgent: req.get('User-Agent'),
@@ -174,9 +174,15 @@ class SecurityMonitor {
    */
   getThreatReport(filters = {}) {
     return this.threatLog.filter(event => {
-      if (filters.type && event.type !== filters.type) return false;
-      if (filters.ip && event.ip !== filters.ip) return false;
-      if (filters.since && event.timestamp < filters.since) return false;
+      if (filters.type && event.type !== filters.type) {
+        return false;
+      }
+      if (filters.ip && event.ip !== filters.ip) {
+        return false;
+      }
+      if (filters.since && event.timestamp < filters.since) {
+        return false;
+      }
       return true;
     });
   }

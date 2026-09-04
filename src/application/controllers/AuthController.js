@@ -7,6 +7,7 @@
 
 import { validationResult } from 'express-validator';
 import { securityAuditLogger } from '../middleware/securityAudit.js';
+import { HttpError } from '../../shared/utils/errorHandler.js';
 
 export class AuthWebController {
   constructor(authenticationService) {
@@ -17,15 +18,12 @@ export class AuthWebController {
   /**
    * POST /login - Endpoint de autenticação
    */
-  login = async(req, res) => {
+  login = async(req, res, next) => {
     try {
       // Validar entrada HTTP
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
-        return res.status(400).json({
-          success: false,
-          errors: errors.array()
-        });
+        return next(new HttpError(400, 'VALIDATION_ERROR', 'Dados inválidos', errors.array()));
       }
 
       const { user: username, password } = req.body;
@@ -47,36 +45,30 @@ export class AuthWebController {
           message: 'Login realizado com sucesso',
           data: {
             user: result.user,
-            token: result.token
+            accessToken: result.token.accessToken,
+            refreshToken: result.token.refreshToken,
+            tokenType: result.token.type,
+            expiresIn: result.token.expiresIn
           }
         });
       } else {
-        return res.status(401).json({
-          success: false,
-          message: result.error
-        });
+        return next(new HttpError(401, 'AUTHENTICATION_FAILED', result.error));
       }
 
-    } catch {
-      return res.status(500).json({
-        success: false,
-        message: 'Erro interno do servidor'
-      });
+    } catch (error) {
+      return next(error);
     }
   };
 
   /**
    * POST /register - Endpoint de registro
    */
-  register = async(req, res) => {
+  register = async(req, res, next) => {
     try {
       // Validar entrada HTTP
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
-        return res.status(400).json({
-          success: false,
-          errors: errors.array()
-        });
+        return next(new HttpError(400, 'VALIDATION_ERROR', 'Dados inválidos', errors.array()));
       }
 
       const { user: username, password } = req.body;
@@ -93,24 +85,18 @@ export class AuthWebController {
           }
         });
       } else {
-        return res.status(400).json({
-          success: false,
-          message: result.error
-        });
+        return next(new HttpError(400, 'REGISTRATION_FAILED', result.error));
       }
 
-    } catch {
-      return res.status(500).json({
-        success: false,
-        message: 'Erro interno do servidor'
-      });
+    } catch (error) {
+      return next(error);
     }
   };
 
   /**
    * GET /profile - Endpoint para obter perfil
    */
-  getProfile = async(req, res) => {
+  getProfile = async(req, res, next) => {
     try {
       const userId = req.user.id;
 
@@ -125,32 +111,23 @@ export class AuthWebController {
           }
         });
       } else {
-        return res.status(404).json({
-          success: false,
-          message: result.error
-        });
+        return next(new HttpError(404, 'USER_NOT_FOUND', result.error));
       }
 
-    } catch {
-      return res.status(500).json({
-        success: false,
-        message: 'Erro interno do servidor'
-      });
+    } catch (error) {
+      return next(error);
     }
   };
 
   /**
    * PUT /update - Endpoint para atualizar perfil
    */
-  updateProfile = async(req, res) => {
+  updateProfile = async(req, res, next) => {
     try {
       // Validar entrada HTTP
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
-        return res.status(400).json({
-          success: false,
-          errors: errors.array()
-        });
+        return next(new HttpError(400, 'VALIDATION_ERROR', 'Dados inválidos', errors.array()));
       }
 
       const userId = req.user.id;
@@ -172,24 +149,18 @@ export class AuthWebController {
           }
         });
       } else {
-        return res.status(400).json({
-          success: false,
-          message: result.error
-        });
+        return next(new HttpError(400, 'PROFILE_UPDATE_FAILED', result.error));
       }
 
-    } catch {
-      return res.status(500).json({
-        success: false,
-        message: 'Erro interno do servidor'
-      });
+    } catch (error) {
+      return next(error);
     }
   };
 
   /**
    * DELETE /delete - Endpoint para deletar perfil
    */
-  deleteProfile = async(req, res) => {
+  deleteProfile = async(req, res, next) => {
     try {
       const userId = req.user.id;
 
@@ -202,17 +173,11 @@ export class AuthWebController {
           message: 'Perfil deletado com sucesso'
         });
       } else {
-        return res.status(400).json({
-          success: false,
-          message: result.error
-        });
+        return next(new HttpError(400, 'PROFILE_DELETE_FAILED', result.error));
       }
 
-    } catch {
-      return res.status(500).json({
-        success: false,
-        message: 'Erro interno do servidor'
-      });
+    } catch (error) {
+      return next(error);
     }
   };
 }

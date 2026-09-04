@@ -5,6 +5,7 @@ import { prometheus } from '../../shared/utils/metrics.js';
 import { performHealthCheck } from '../../shared/utils/healthCheck.js';
 import { advancedRateLimit } from '../middleware/advancedRateLimit.js';
 import securityRoutes from './securityRoutes.js';
+import { HttpError } from '../../shared/utils/errorHandler.js';
 
 /**
  * @swagger
@@ -39,7 +40,7 @@ import securityRoutes from './securityRoutes.js';
  *           description: Nome de usuário
  *         password:
  *           type: string
- *           minLength: 6
+ *           minLength: 12
  *           description: Senha do usuário
  *     LoginResponse:
  *       type: object
@@ -53,9 +54,19 @@ import securityRoutes from './securityRoutes.js';
  *           properties:
  *             user:
  *               $ref: '#/components/schemas/User'
- *             token:
+ *             accessToken:
  *               type: string
- *               description: JWT token
+ *               description: Access token JWT para chamadas autenticadas
+ *             refreshToken:
+ *               type: string
+ *               description: Refresh token JWT para renovação
+ *             tokenType:
+ *               type: string
+ *               example: Bearer
+ *             expiresIn:
+ *               type: integer
+ *               format: int64
+ *               description: Validade do access token em milissegundos
  *     RegisterRequest:
  *       type: object
  *       required:
@@ -68,7 +79,7 @@ import securityRoutes from './securityRoutes.js';
  *           description: Nome de usuário
  *         password:
  *           type: string
- *           minLength: 6
+ *           minLength: 12
  *           description: Senha do usuário
  *     UpdateRequest:
  *       type: object
@@ -79,7 +90,7 @@ import securityRoutes from './securityRoutes.js';
  *           description: Novo nome de usuário (opcional)
  *         password:
  *           type: string
- *           minLength: 6
+ *           minLength: 12
  *           description: Nova senha (opcional)
  *     StandardResponse:
  *       type: object
@@ -341,17 +352,13 @@ export function createAuthRoutes() {
    *                 error:
    *                   type: string
    */
-  router.get('/health', async(req, res) => {
+  router.get('/health', async(req, res, next) => {
     try {
       const result = await performHealthCheck();
       const statusCode = result.status === 'healthy' ? 200 : 503;
       res.status(statusCode).json(result);
-    } catch (error) {
-      res.status(500).json({
-        status: 'error',
-        message: 'Erro ao executar health check',
-        error: error.message
-      });
+    } catch {
+      next(new HttpError(500, 'HEALTH_CHECK_FAILED', 'Erro ao executar health check'));
     }
   });
 
@@ -380,18 +387,13 @@ export function createAuthRoutes() {
    *             schema:
    *               $ref: '#/components/schemas/ErrorResponse'
    */
-  router.get('/metrics', async(req, res) => {
+  router.get('/metrics', async(req, res, next) => {
     try {
       res.set('Content-Type', prometheus.register.contentType);
       const metrics = await prometheus.register.metrics();
       res.end(metrics);
-    } catch (error) {
-      console.error('Erro ao gerar métricas:', error);
-      res.status(500).json({
-        status: 'error',
-        message: 'Erro ao gerar métricas',
-        error: error.message
-      });
+    } catch {
+      next(new HttpError(500, 'METRICS_FAILED', 'Erro ao gerar métricas'));
     }
   });
 

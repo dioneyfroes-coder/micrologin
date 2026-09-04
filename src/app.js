@@ -20,7 +20,7 @@ import { initRedis } from './infrastructure/cache/connection.js';
 import { requestLogger } from './application/middleware/requestLogger.js';
 import { connectDatabase } from './infrastructure/database/connection.js';
 import { setupSwagger } from './interfaces/config/swagger.js';
-import { setupErrorHandlers } from './shared/utils/errorHandler.js';
+import { errorHandler, setupErrorHandlers } from './shared/utils/errorHandler.js';
 import { createAuthRoutes } from './application/routes/authRoutes.js';
 import { bootstrapServices } from './core/bootstrap.js';
 
@@ -101,6 +101,7 @@ class AuthService {
     // Criar rotas com dependências injetadas
     const authRoutes = createAuthRoutes();
     this.app.use('/', authRoutes);
+    this.app.use(errorHandler);
   }
 
   /**

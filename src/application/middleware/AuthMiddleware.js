@@ -5,6 +5,8 @@
  * Usa o TokenPort para verificação.
  */
 
+import { HttpError } from '../../shared/utils/errorHandler.js';
+
 export class AuthWebMiddleware {
   constructor(tokenAdapter, userRepository, logger) {
     this.tokenAdapter = tokenAdapter;
@@ -21,10 +23,7 @@ export class AuthWebMiddleware {
       const authHeader = req.headers.authorization;
 
       if (!authHeader) {
-        return res.status(401).json({
-          success: false,
-          message: 'Token de acesso requerido'
-        });
+        return next(new HttpError(401, 'TOKEN_REQUIRED', 'Token de acesso requerido'));
       }
 
       const token = authHeader.startsWith('Bearer ')
@@ -32,15 +31,12 @@ export class AuthWebMiddleware {
         : authHeader;
 
       // Verificar token usando o adapter
-      const decoded = await this.tokenAdapter.verify(token);
+      const decoded = await this.tokenAdapter.verifyAccessToken(token);
 
       // Verificar se usuário ainda existe
       const user = await this.userRepository.findById(decoded.id);
       if (!user) {
-        return res.status(401).json({
-          success: false,
-          message: 'Usuário não encontrado'
-        });
+        return next(new HttpError(401, 'USER_NOT_FOUND', 'Usuário não encontrado'));
       }
 
       // Adicionar contexto do usuário à requisição
@@ -54,24 +50,15 @@ export class AuthWebMiddleware {
     } catch (error) {
       this.logger.error('Erro na autenticação', error);
 
-      if (error.message.includes('expired')) {
-        return res.status(401).json({
-          success: false,
-          message: 'Token expirado'
-        });
+      if (error.code === 'TOKEN_EXPIRED') {
+        return next(new HttpError(401, 'TOKEN_EXPIRED', 'Token expirado'));
       }
 
-      if (error.message.includes('inválido')) {
-        return res.status(401).json({
-          success: false,
-          message: 'Token inválido'
-        });
+      if (error.code === 'TOKEN_INVALID') {
+        return next(new HttpError(401, 'TOKEN_INVALID', 'Token inválido'));
       }
 
-      return res.status(500).json({
-        success: false,
-        message: 'Erro interno do servidor'
-      });
+      return next(error);
     }
   };
 
@@ -92,7 +79,7 @@ export class AuthWebMiddleware {
         : authHeader;
 
       try {
-        const decoded = await this.tokenAdapter.verify(token);
+        const decoded = await this.tokenAdapter.verifyAccessToken(token);
         const user = await this.userRepository.findById(decoded.id);
 
         req.user = user ? {

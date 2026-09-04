@@ -4,6 +4,8 @@
  */
 
 import Joi from 'joi';
+import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH } from '../../shared/utils/passwordValidator.js';
+import { HttpError } from '../../shared/utils/errorHandler.js';
 
 // Schemas de validação
 const schemas = {
@@ -19,13 +21,13 @@ const schemas = {
         'string.max': 'Username deve ter no máximo 30 caracteres'
       }),
     password: Joi.string()
-      .min(8)
-      .max(100)
+      .min(PASSWORD_MIN_LENGTH)
+      .max(PASSWORD_MAX_LENGTH)
       .pattern(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]/)
       .required()
       .messages({
-        'string.min': 'Password deve ter pelo menos 8 caracteres',
-        'string.max': 'Password deve ter no máximo 100 caracteres',
+        'string.min': `Password deve ter pelo menos ${PASSWORD_MIN_LENGTH} caracteres`,
+        'string.max': `Password deve ter no máximo ${PASSWORD_MAX_LENGTH} caracteres`,
         'string.pattern.base': 'Password deve conter ao menos: 1 minúscula, 1 maiúscula, 1 número e 1 caractere especial'
       })
   }),
@@ -45,8 +47,8 @@ const schemas = {
         'string.max': 'Email deve ter no máximo 255 caracteres'
       }),
     password: Joi.string()
-      .min(8)
-      .max(100)
+      .min(PASSWORD_MIN_LENGTH)
+      .max(PASSWORD_MAX_LENGTH)
       .pattern(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]/)
       .required(),
     confirmPassword: Joi.string()
@@ -68,16 +70,16 @@ const schemas = {
       .max(255)
       .optional(),
     currentPassword: Joi.string()
-      .min(8)
-      .max(100)
+      .min(PASSWORD_MIN_LENGTH)
+      .max(PASSWORD_MAX_LENGTH)
       .when('newPassword', {
         is: Joi.exist(),
         then: Joi.required(),
         otherwise: Joi.optional()
       }),
     newPassword: Joi.string()
-      .min(8)
-      .max(100)
+      .min(PASSWORD_MIN_LENGTH)
+      .max(PASSWORD_MAX_LENGTH)
       .pattern(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]/)
       .optional()
   })
@@ -120,7 +122,7 @@ class InputValidator {
         field: detail.path.join('.'),
         message: detail.message
       }));
-      
+
       return {
         isValid: false,
         errors,
@@ -149,9 +151,9 @@ class InputValidator {
     }
 
     if (!whitelist.test(value)) {
-      return { 
-        isValid: false, 
-        message: `Caracteres não permitidos detectados para tipo '${type}'` 
+      return {
+        isValid: false,
+        message: `Caracteres não permitidos detectados para tipo '${type}'`
       };
     }
 
@@ -203,9 +205,9 @@ class InputValidator {
       return {
         isValid: false,
         errors: schemaValidation.errors,
-        validationDetails: { 
+        validationDetails: {
           schema: schemaValidation,
-          size: sizeValidation 
+          size: sizeValidation
         }
       };
     }
@@ -263,27 +265,18 @@ class InputValidator {
     return (req, res, next) => {
       try {
         const validation = this.validateComplete(schemaName, req.body);
-        
+
         if (!validation.isValid) {
-          return res.status(400).json({
-            error: 'Validation Error',
-            message: 'Dados inválidos fornecidos',
-            errors: validation.errors,
-            details: process.env.NODE_ENV === 'development' ? validation.validationDetails : undefined
-          });
+          return next(new HttpError(400, 'VALIDATION_ERROR', 'Dados inválidos fornecidos', validation.errors));
         }
 
         // Substituir req.body pelos dados validados e sanitizados
         req.body = validation.data;
         req.validationDetails = validation.validationDetails;
-        
+
         next();
       } catch (error) {
-        console.error('Erro na validação:', error);
-        return res.status(500).json({
-          error: 'Internal Server Error',
-          message: 'Erro interno na validação'
-        });
+        return next(error);
       }
     };
   }

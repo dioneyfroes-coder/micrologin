@@ -1,5 +1,35 @@
 import mongoose from 'mongoose';
 
+export class HttpError extends Error {
+  constructor(statusCode, code, message, details = null) {
+    super(message);
+    this.name = 'HttpError';
+    this.statusCode = statusCode;
+    this.code = code;
+    this.details = details;
+  }
+}
+
+export const errorHandler = (error, _req, res, _next) => {
+  const isHttpError = error instanceof HttpError;
+  const statusCode = isHttpError ? error.statusCode : 500;
+  const response = {
+    success: false,
+    code: isHttpError ? error.code : 'INTERNAL_ERROR',
+    message: isHttpError ? error.message : 'Erro interno do servidor'
+  };
+
+  if (isHttpError && error.details) {
+    response.details = error.details;
+  }
+
+  if (!isHttpError) {
+    console.error('Erro HTTP não tratado:', error);
+  }
+
+  return res.status(statusCode).json(response);
+};
+
 /**
  * Configura handlers para erros não tratados
  */

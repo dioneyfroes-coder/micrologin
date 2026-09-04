@@ -6,10 +6,8 @@
  */
 
 import bcrypt from 'bcrypt';
-import jwt from 'jsonwebtoken';
 import { User } from '../../domain/index.js';
 import { getUserModel } from '../database/models/User.js';
-import { securityConfig } from '../../interfaces/config/appConfig.js';
 
 /**
  * ADAPTER: MongoDB User Repository
@@ -146,41 +144,6 @@ export class BcryptAdapter {
 }
 
 /**
- * ADAPTER: JWT Token Generator
- * Implementa o TokenPort
- */
-export class JWTAdapter {
-  constructor(secret, expiresIn = '6h') {
-    if (!secret) {
-      throw new Error('JWT_SECRET é obrigatório - deve ser fornecido no construtor');
-    }
-
-    this.secret = secret;
-    this.expiresIn = expiresIn;
-  }
-
-  async generate(payload) {
-    try {
-      return jwt.sign(payload, this.secret, {
-        expiresIn: this.expiresIn,
-        issuer: 'auth-service',
-        audience: 'api-users'
-      });
-    } catch (error) {
-      throw new Error(`Erro ao gerar token: ${error.message}`);
-    }
-  }
-
-  async verify(token) {
-    try {
-      return jwt.verify(token, this.secret);
-    } catch (error) {
-      throw new Error(`Token inválido: ${error.message}`);
-    }
-  }
-}
-
-/**
  * ADAPTER: Console Logger
  * Implementa o LoggerPort
  */
@@ -218,23 +181,7 @@ export class AdapterFactory {
     return new BcryptAdapter(options.saltRounds || 12);
   }
 
-  static createTokenGenerator(secret = process.env.JWT_SECRET, expiresIn = '6h') {
-    return new JWTAdapter(secret, expiresIn);
-  }
-
   static createLogger() {
     return new ConsoleLoggerAdapter();
-  }
-
-  /**
-   * Cria todos os adapters para uso no bootstrap
-   */
-  static createAll() {
-    return {
-      userRepository: this.createUserRepository(),
-      crypto: this.createCrypto(12),
-      tokenGenerator: this.createTokenGenerator(),
-      logger: this.createLogger()
-    };
   }
 }

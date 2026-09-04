@@ -25,23 +25,23 @@ export function bootstrapServices() {
   container.register('cryptoService', () => adapterFactory.createCryptoService('bcrypt', {
     saltRounds: securityConfig.bcrypt.saltRounds
   }));
-  
+
   // ✅ NOVO: Usar JWTTokenService com suporte a refresh token
   container.register('jwtService', () => {
     const tokenService = new JWTTokenService(
       securityConfig.jwt.secret,
       process.env.JWT_REFRESH_SECRET || securityConfig.jwt.secret
     );
-    
+
     // Se Redis estiver disponível, adicionar suporte a blacklist
     if (process.env.REDIS_ENABLED !== 'false') {
       // Será conectado depois pelo cache.js
       console.log('🔧 JWT com suporte a Redis (blacklist) será configurado após inicialização do Redis');
     }
-    
+
     return tokenService;
   });
-  
+
   container.register('logger', () => adapterFactory.createLogger());
 
   // Registrar serviço de autenticação do core (isolado)

@@ -1,6 +1,9 @@
+export const PASSWORD_MIN_LENGTH = 12;
+export const PASSWORD_MAX_LENGTH = 128;
+
 /**
  * @fileoverview Validador de Política de Senha Forte
- * 
+ *
  * Segue as melhores práticas de segurança:
  * - OWASP: https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html
  * - NIST: https://pages.nist.gov/800-63-3/
@@ -8,14 +11,14 @@
 
 /**
  * Validação de senha forte
- * 
+ *
  * Regras obrigatórias:
  * - Mínimo 12 caracteres (NIST recomenda)
  * - Pelo menos 1 letra maiúscula
  * - Pelo menos 1 letra minúscula
  * - Pelo menos 1 número
  * - Pelo menos 1 caractere especial (!@#$%^&*-_=+)
- * 
+ *
  * @param {string} password - Senha a validar
  * @returns {Object} { isValid: boolean, errors: string[] }
  */
@@ -30,13 +33,13 @@ export function validatePasswordStrength(password) {
   }
 
   // Comprimento mínimo
-  if (password.length < 12) {
-    errors.push('Senha deve ter pelo menos 12 caracteres');
+  if (password.length < PASSWORD_MIN_LENGTH) {
+    errors.push(`Senha deve ter pelo menos ${PASSWORD_MIN_LENGTH} caracteres`);
   }
 
   // Comprimento máximo (prevenção de DoS)
-  if (password.length > 128) {
-    errors.push('Senha não pode ter mais de 128 caracteres');
+  if (password.length > PASSWORD_MAX_LENGTH) {
+    errors.push(`Senha não pode ter mais de ${PASSWORD_MAX_LENGTH} caracteres`);
   }
 
   // Deve conter maiúscula
@@ -71,7 +74,7 @@ export function validatePasswordStrength(password) {
  */
 export function getPasswordRequirements() {
   return [
-    '✓ Mínimo 12 caracteres',
+    `✓ Mínimo ${PASSWORD_MIN_LENGTH} caracteres`,
     '✓ Pelo menos 1 letra maiúscula (A-Z)',
     '✓ Pelo menos 1 letra minúscula (a-z)',
     '✓ Pelo menos 1 número (0-9)',

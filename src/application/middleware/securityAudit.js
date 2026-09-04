@@ -3,8 +3,6 @@
  * Registra todos os eventos de segurança para análise e alertas
  */
 
-import { performance } from 'perf_hooks';
-
 class SecurityAuditLogger {
   constructor() {
     this.events = [];
@@ -123,19 +121,19 @@ class SecurityAuditLogger {
    */
   updateStats(type) {
     this.stats.totalRequests++;
-    
+
     switch (type) {
-      case 'login_attempt':
-        this.stats.failedLogins++;
-        break;
-      case 'ip_blocked':
-      case 'rate_limit_violation':
-      case 'security_attack':
-        this.stats.blockedRequests++;
-        break;
-      case 'suspicious_activity':
-        this.stats.suspiciousActivities++;
-        break;
+    case 'login_attempt':
+      this.stats.failedLogins++;
+      break;
+    case 'ip_blocked':
+    case 'rate_limit_violation':
+    case 'security_attack':
+      this.stats.blockedRequests++;
+      break;
+    case 'suspicious_activity':
+      this.stats.suspiciousActivities++;
+      break;
     }
   }
 
@@ -145,10 +143,10 @@ class SecurityAuditLogger {
   logToConsole(event) {
     const emoji = this.getEmojiForSeverity(event.severity);
     const timestamp = event.timestamp;
-    
+
     console.log(`${emoji} [SECURITY] ${timestamp} - ${event.type.toUpperCase()}`);
     console.log(`   IP: ${event.ip} | UserAgent: ${event.userAgent}`);
-    console.log(`   Details:`, event.details);
+    console.log('   Details:', event.details);
   }
 
   /**
@@ -177,8 +175,8 @@ class SecurityAuditLogger {
   triggerAlert(alertType, events) {
     console.warn(`🚨 ALERTA DE SEGURANÇA: ${alertType}`);
     console.warn(`   Eventos detectados: ${events.length}`);
-    console.warn(`   Último evento:`, events[events.length - 1]);
-    
+    console.warn('   Último evento:', events[events.length - 1]);
+
     // Aqui poderia integrar com sistemas de notificação
     // (email, Slack, SMS, etc.)
   }
@@ -199,7 +197,7 @@ class SecurityAuditLogger {
    */
   getSecurityStats() {
     const recentEvents = this.getRecentEvents();
-    
+
     return {
       ...this.stats,
       recentEvents: recentEvents.length,
@@ -214,12 +212,18 @@ class SecurityAuditLogger {
   calculateRiskLevel(recentEvents) {
     const errors = recentEvents.filter(e => e.severity === 'error').length;
     const warnings = recentEvents.filter(e => e.severity === 'warning').length;
-    
+
     const score = (errors * 3) + (warnings * 1);
-    
-    if (score >= 20) return 'HIGH';
-    if (score >= 10) return 'MEDIUM';
-    if (score >= 5) return 'LOW';
+
+    if (score >= 20) {
+      return 'HIGH';
+    }
+    if (score >= 10) {
+      return 'MEDIUM';
+    }
+    if (score >= 5) {
+      return 'LOW';
+    }
     return 'MINIMAL';
   }
 
@@ -228,10 +232,10 @@ class SecurityAuditLogger {
    */
   getEmojiForSeverity(severity) {
     switch (severity) {
-      case 'error': return '🚨';
-      case 'warning': return '⚠️';
-      case 'info': return 'ℹ️';
-      default: return '📝';
+    case 'error': return '🚨';
+    case 'warning': return '⚠️';
+    case 'info': return 'ℹ️';
+    default: return '📝';
     }
   }
 
@@ -241,7 +245,7 @@ class SecurityAuditLogger {
   generateSecurityReport() {
     const stats = this.getSecurityStats();
     const recentEvents = this.getRecentEvents();
-    
+
     return {
       timestamp: new Date().toISOString(),
       stats,
@@ -258,12 +262,12 @@ class SecurityAuditLogger {
   getTopAttackTypes() {
     const attacks = this.events.filter(e => e.type === 'security_attack');
     const types = {};
-    
+
     attacks.forEach(attack => {
       const type = attack.details.type;
       types[type] = (types[type] || 0) + 1;
     });
-    
+
     return Object.entries(types)
       .sort(([,a], [,b]) => b - a)
       .slice(0, 5)
@@ -276,12 +280,12 @@ class SecurityAuditLogger {
   getTopAttackIPs() {
     const attacks = this.events.filter(e => e.severity === 'warning' || e.severity === 'error');
     const ips = {};
-    
+
     attacks.forEach(attack => {
       const ip = attack.ip;
       ips[ip] = (ips[ip] || 0) + 1;
     });
-    
+
     return Object.entries(ips)
       .sort(([,a], [,b]) => b - a)
       .slice(0, 5)
@@ -294,20 +298,20 @@ class SecurityAuditLogger {
   getSecurityRecommendations() {
     const stats = this.getSecurityStats();
     const recommendations = [];
-    
+
     if (stats.riskLevel === 'HIGH') {
       recommendations.push('Considere implementar CAPTCHA temporário');
       recommendations.push('Revise logs de segurança manualmente');
     }
-    
+
     if (stats.blockedRequests > 100) {
       recommendations.push('Analise padrões de ataque para melhorar filtros');
     }
-    
+
     if (stats.failedLogins > 50) {
       recommendations.push('Considere implementar autenticação de dois fatores');
     }
-    
+
     return recommendations;
   }
 }

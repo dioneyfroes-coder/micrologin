@@ -6,6 +6,20 @@
  * Comunica-se com o mundo exterior através de PORTS (interfaces).
  */
 
+import { PASSWORD_MIN_LENGTH } from '../shared/utils/passwordValidator.js';
+
+export class DomainError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = 'DomainError';
+    this.code = code;
+  }
+}
+
+const domainFailureMessage = (error, fallback) => (
+  error instanceof DomainError ? error.message : fallback
+);
+
 /**
  * Entidade User - Núcleo do negócio
  */
@@ -43,7 +57,7 @@ export class User {
   updateData(newUsername, newHashedPassword) {
     if (newUsername && newUsername !== this.username) {
       if (!this.isValidUsername(newUsername)) {
-        throw new Error('Username inválido');
+        throw new DomainError('INVALID_USERNAME', 'Username inválido');
       }
       this.username = newUsername;
     }
@@ -87,10 +101,10 @@ export class LoginCredentials {
 
   validate() {
     if (!this.username || this.username.length < 3) {
-      throw new Error('Username deve ter pelo menos 3 caracteres');
+      throw new DomainError('INVALID_USERNAME', 'Username deve ter pelo menos 3 caracteres');
     }
-    if (!this.plainPassword || this.plainPassword.length < 6) {
-      throw new Error('Senha deve ter pelo menos 6 caracteres');
+    if (!this.plainPassword || this.plainPassword.length < PASSWORD_MIN_LENGTH) {
+      throw new DomainError('INVALID_PASSWORD', `Senha deve ter pelo menos ${PASSWORD_MIN_LENGTH} caracteres`);
     }
   }
 }
@@ -226,7 +240,7 @@ export class AuthService {
 
     } catch (error) {
       this.logger.error('Erro no registro', error);
-      return { success: false, error: error.message };
+      return { success: false, error: domainFailureMessage(error, 'Não foi possível registrar o usuário') };
     }
   }
 
@@ -255,18 +269,18 @@ export class AuthService {
       }
 
       // Gerar token
-      const token = await this.tokenGenerator.generate({
+      const tokens = await this.tokenGenerator.generateTokenPair({
         id: user.id,
         username: user.username
       });
 
       this.logger.info('Usuário autenticado', { username: user.username });
 
-      return AuthResult.success(user.toSafeObject(), token);
+      return AuthResult.success(user.toSafeObject(), tokens);
 
     } catch (error) {
       this.logger.error('Erro na autenticação', error);
-      return AuthResult.failure(error.message);
+      return AuthResult.failure(domainFailureMessage(error, 'Não foi possível autenticar o usuário'));
     }
   }
 
@@ -287,7 +301,7 @@ export class AuthService {
 
     } catch (error) {
       this.logger.error('Erro ao obter perfil', error);
-      return { success: false, error: error.message };
+      return { success: false, error: domainFailureMessage(error, 'Não foi possível obter o perfil') };
     }
   }
 
@@ -312,8 +326,8 @@ export class AuthService {
       // Hash da nova senha se fornecida
       let newHashedPassword = null;
       if (newPassword) {
-        if (newPassword.length < 6) {
-          return { success: false, error: 'Senha deve ter pelo menos 6 caracteres' };
+        if (newPassword.length < PASSWORD_MIN_LENGTH) {
+          return { success: false, error: `Senha deve ter pelo menos ${PASSWORD_MIN_LENGTH} caracteres` };
         }
         newHashedPassword = await this.crypto.hash(newPassword);
       }
@@ -333,7 +347,7 @@ export class AuthService {
 
     } catch (error) {
       this.logger.error('Erro ao atualizar perfil', error);
-      return { success: false, error: error.message };
+      return { success: false, error: domainFailureMessage(error, 'Não foi possível atualizar o perfil') };
     }
   }
 
@@ -355,7 +369,7 @@ export class AuthService {
 
     } catch (error) {
       this.logger.error('Erro ao deletar usuário', error);
-      return { success: false, error: error.message };
+      return { success: false, error: domainFailureMessage(error, 'Não foi possível deletar o usuário') };
     }
   }
 }
