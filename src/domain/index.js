@@ -7,6 +7,7 @@
  */
 
 import { PASSWORD_MIN_LENGTH } from '../shared/utils/passwordValidator.js';
+import { hasAllowedUsernameChars, isUsernameValid, USERNAME_MIN_LENGTH } from '../shared/utils/usernamePolicy.js';
 
 export class DomainError extends Error {
   constructor(code, message) {
@@ -19,26 +20,6 @@ export class DomainError extends Error {
 const domainFailureMessage = (error, fallback) => (
   error instanceof DomainError ? error.message : fallback
 );
-
-/**
- * Política de username por CLASSIFICAÇÃO DE CARACTERES.
- *
- * A verificação percorre caractere a caractere (letras ASCII, dígitos e
- * underscore) em vez de usar expressão regular. Regex fica reservada apenas
- * para detecção/monitoramento em outras camadas; a proteção principal de
- * entrada é esta checagem determinística.
- */
-const hasAllowedUsernameChars = (username) => {
-  for (const char of username) {
-    const code = char.charCodeAt(0);
-    const isLetter = (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
-    const isDigit = code >= 48 && code <= 57;
-    if (!isLetter && !isDigit && char !== '_') {
-      return false;
-    }
-  }
-  return true;
-};
 
 /**
  * Entidade User - Núcleo do negócio
@@ -65,10 +46,7 @@ export class User {
    * Regra de negócio para username válido
    */
   isUsernameValid() {
-    return !!(this.username &&
-             this.username.length >= 3 &&
-             this.username.length <= 50 &&
-             hasAllowedUsernameChars(this.username));
+    return isUsernameValid(this.username);
   }
 
   /**
@@ -90,10 +68,7 @@ export class User {
   }
 
   isValidUsername(username) {
-    return !!(username &&
-             username.length >= 3 &&
-             username.length <= 50 &&
-             hasAllowedUsernameChars(username));
+    return isUsernameValid(username);
   }
 
   /**
@@ -120,11 +95,11 @@ export class LoginCredentials {
   }
 
   validate() {
-    if (!this.username || this.username.length < 3) {
+    if (!this.username || this.username.length < USERNAME_MIN_LENGTH) {
       throw new DomainError('INVALID_USERNAME', 'Username deve ter pelo menos 3 caracteres');
     }
     if (!hasAllowedUsernameChars(this.username)) {
-      throw new DomainError('INVALID_USERNAME', 'Username deve conter apenas letras, números e underscores');
+      throw new DomainError('INVALID_USERNAME', 'Username deve conter apenas letras, números, underscores e hífens');
     }
     if (!this.plainPassword || this.plainPassword.length < PASSWORD_MIN_LENGTH) {
       throw new DomainError('INVALID_PASSWORD', `Senha deve ter pelo menos ${PASSWORD_MIN_LENGTH} caracteres`);
@@ -393,6 +368,53 @@ export class AuthService {
     } catch (error) {
       this.logger.error('Erro ao deletar usuário', error);
       return { success: false, error: domainFailureMessage(error, 'Não foi possível deletar o usuário') };
+    }
+  }
+
+  /**
+   * Caso de uso: Renovar par de tokens usando refresh token (com rotação)
+   */
+  async refreshUserTokens(refreshToken) {
+    try {
+      const tokens = await this.tokenGenerator.refreshTokens(refreshToken);
+
+      this.logger.info('Tokens renovados', { userId: tokens.refreshToken ? '***' : '***' });
+
+      return { success: true, token: tokens };
+
+    } catch (error) {
+      this.logger.error('Erro ao renovar tokens', error);
+      return {
+        success: false,
+        error: domainFailureMessage(error, 'Não foi possível renovar os tokens'),
+        code: error.code || 'REFRESH_TOKEN_INVALID'
+      };
+    }
+  }
+
+  /**
+   * Caso de uso: Revogar um token específico (blacklist)
+   */
+  async revokeToken(token, expiresIn = 3600000) {
+    try {
+      const revoked = await this.tokenGenerator.revokeToken(token, expiresIn);
+      return { success: revoked };
+    } catch (error) {
+      this.logger.error('Erro ao revogar token', error);
+      return { success: false, error: domainFailureMessage(error, 'Não foi possível revogar o token') };
+    }
+  }
+
+  /**
+   * Caso de uso: Revogar todos os tokens de um usuário
+   */
+  async revokeUserTokens(userId) {
+    try {
+      const revoked = await this.tokenGenerator.revokeUserTokens(userId);
+      return { success: revoked };
+    } catch (error) {
+      this.logger.error('Erro ao revogar tokens do usuário', error);
+      return { success: false, error: domainFailureMessage(error, 'Não foi possível revogar os tokens do usuário') };
     }
   }
 }

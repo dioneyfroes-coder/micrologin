@@ -40,6 +40,13 @@ class SecurityMonitor {
     // Rastrear eventos para analytics, não para ação
     this.threatLog = [];
     this.maxLogSize = 1000;
+
+    // Rastreamento de anomalias com limite de crescimento
+    this.anomalies = new Map();
+    this.maxTrackedClients = 10000;
+    this.timeWindow = 60000;
+    this.lastCleanup = 0;
+    this.cleanupInterval = 60000;
   }
 
   /**
@@ -102,12 +109,9 @@ class SecurityMonitor {
   detectAnomalies = (req, res, next) => {
     const clientId = req.ip + (req.get('User-Agent') || '');
     const now = Date.now();
-    const timeWindow = 60000; // 1 minuto
 
-    // Inicializar rastreamento se necessário
-    if (!this.anomalies) {
-      this.anomalies = new Map();
-    }
+    // Limpeza periódica para impedir crescimento sem limite da mapa
+    this.cleanupAnomalies(now);
 
     if (!this.anomalies.has(clientId)) {
       this.anomalies.set(clientId, []);
@@ -116,8 +120,8 @@ class SecurityMonitor {
     const requests = this.anomalies.get(clientId);
     requests.push({ timestamp: now, path: req.path, method: req.method });
 
-    // Limpar requisições antigas
-    const recentRequests = requests.filter(r => now - r.timestamp < timeWindow);
+    // Limpar requisições antigas para manter o array por cliente limitado
+    const recentRequests = requests.filter(r => now - r.timestamp < this.timeWindow);
     this.anomalies.set(clientId, recentRequests);
 
     // ALERTA: Muitas requisições (mas não bloqueia)
@@ -155,6 +159,46 @@ class SecurityMonitor {
     }
     next();
   };
+
+  /**
+   * Limpa clientes sem atividade recente e impõe o limite máximo de
+   * clientes rastreados. Executado no máximo uma vez por janela para não
+   * onerar o caminho de requisição.
+   * @param {number} now - Timestamp atual
+   */
+  cleanupAnomalies(now) {
+    if (now - this.lastCleanup < this.cleanupInterval) {
+      return;
+    }
+    this.lastCleanup = now;
+
+    for (const clientId of this.anomalies.keys()) {
+      const requests = this.anomalies.get(clientId);
+      const lastRequest = requests[requests.length - 1];
+      if (!lastRequest || now - lastRequest.timestamp > this.timeWindow) {
+        this.anomalies.delete(clientId);
+      }
+    }
+
+    // Evictar clientes mais antigos se o limite for excedido
+    if (this.anomalies.size > this.maxTrackedClients) {
+      while (this.anomalies.size > this.maxTrackedClients) {
+        let oldestKey = null;
+        let oldestTimestamp = Infinity;
+        for (const [id, reqs] of this.anomalies) {
+          const last = reqs[reqs.length - 1].timestamp;
+          if (last < oldestTimestamp) {
+            oldestTimestamp = last;
+            oldestKey = id;
+          }
+        }
+        if (oldestKey === null) {
+          break;
+        }
+        this.anomalies.delete(oldestKey);
+      }
+    }
+  }
 
   /**
    * Registra evento de ameaça para análise

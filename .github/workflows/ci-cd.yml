@@ -45,15 +45,12 @@ jobs:
 
       - name: 🎨 ESLint check
         run: npx eslint src/ tests/ --ext .js --format stylish
-        continue-on-error: true
 
       - name: 🔒 Security audit
         run: npm audit --audit-level=high
-        continue-on-error: true
 
       - name: 📊 Dependency check
         run: npx audit-ci --config .audit-ci.json
-        continue-on-error: true
 
   # ========================
   # TESTES AUTOMATIZADOS

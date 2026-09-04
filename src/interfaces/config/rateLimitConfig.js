@@ -3,6 +3,8 @@
  * Lê configurações do .env e fornece defaults sensatos
  */
 
+import { getRedisConfig } from './redisConfig.js';
+
 /**
  * Converte string para número com fallback
  * @param {string} value - Valor do .env
@@ -65,8 +67,7 @@ export const rateLimitConfig = {
 
   redis: {
     keyPrefix: 'rl_',
-    host: process.env.REDIS_HOST || 'localhost',
-    port: parseEnvNumber(process.env.REDIS_PORT, 6379)
+    ...getRedisConfig()
   }
 };
 

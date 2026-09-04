@@ -8,6 +8,8 @@ class AdvancedRateLimiter {
     this.redisClient = null;
     this.limiters = {};
     this.initialized = false;
+    this.initPromise = null;
+    this.lastInitAttempt = null;
     this.config = null;
 
     const validation = validateRateLimitConfig();
@@ -48,55 +50,33 @@ class AdvancedRateLimiter {
       })
     };
 
-    this.initialized = true;
-
     if (process.env.NODE_ENV === 'development') {
-      console.log(`✅ Rate limiters configurados para: ${this.config.environment.toUpperCase()}`);
+      console.log(`✅ Rate limiters (memória) configurados para: ${this.config.environment.toUpperCase()}`);
     }
-  }
-
-  async init() {
-    if (this.initialized) {
-      return;
-    }
-
-    try {
-      // Tentar conectar ao Redis se disponível
-      const { initRedis } = await import('../../infrastructure/cache/connection.js');
-      this.redisClient = await initRedis();
-
-      if (this.redisClient) {
-        if (process.env.NODE_ENV === 'development') {
-          console.log('🔧 Atualizando rate limiters para usar Redis...');
-        }
-        this.setupRedisLimiters();
-      }
-    } catch (error) {
-      console.warn('⚠️ Redis não disponível para rate limiting, usando memória:', error.message);
-    }
-
-    this.initialized = true;
   }
 
   setupRedisLimiters() {
+    const redisLimiterOptions = {
+      storeClient: this.redisClient,
+      useRedisPackage: true,
+      keyPrefix: this.config.redis.keyPrefix
+    };
+
     this.limiters = {
       ip: new RateLimiterRedis({
-        storeClient: this.redisClient,
-        keyPrefix: `${this.config.redis.keyPrefix}ip`,
+        ...redisLimiterOptions,
         points: this.config.ip.points,
         duration: this.config.ip.duration,
         blockDuration: this.config.ip.blockDuration
       }),
       user: new RateLimiterRedis({
-        storeClient: this.redisClient,
-        keyPrefix: `${this.config.redis.keyPrefix}user`,
+        ...redisLimiterOptions,
         points: this.config.user.points,
         duration: this.config.user.duration,
         blockDuration: this.config.user.blockDuration
       }),
       login: new RateLimiterRedis({
-        storeClient: this.redisClient,
-        keyPrefix: `${this.config.redis.keyPrefix}login`,
+        ...redisLimiterOptions,
         points: this.config.login.points,
         duration: this.config.login.duration,
         blockDuration: this.config.login.blockDuration
@@ -108,11 +88,54 @@ class AdvancedRateLimiter {
     }
   }
 
-  checkLimits = async(req, res, next) => {
-    if (!this.initialized) {
-      console.warn('⚠️ Rate limiter não inicializado, permitindo requisição');
-      return next();
+  async init() {
+    if (this.redisClient) {
+      this.initialized = true;
+      return;
     }
+
+    if (this.initPromise) {
+      return this.initPromise;
+    }
+
+    this.initPromise = (async() => {
+      try {
+        // Tentar conectar ao Redis se disponível
+        const { initRedis } = await import('../../infrastructure/cache/connection.js');
+        const redisClient = await initRedis();
+
+        if (redisClient) {
+          this.redisClient = redisClient;
+          this.setupRedisLimiters();
+        }
+      } catch (error) {
+        console.warn('⚠️ Redis não disponível para rate limiting, usando memória:', error.message);
+      } finally {
+        this.initialized = true;
+        this.initPromise = null;
+        this.lastInitAttempt = Date.now();
+      }
+    })();
+
+    return this.initPromise;
+  }
+
+  ensureInit() {
+    if (this.initialized || this.redisClient || this.initPromise) {
+      return;
+    }
+
+    // Não tentar reconectar com muita frequência (a cada 30s no máximo)
+    if (this.lastInitAttempt && Date.now() - this.lastInitAttempt < 30000) {
+      return;
+    }
+
+    this.init().catch(() => {});
+  }
+
+  checkLimits = async(req, res, next) => {
+    // Promove para Redis assim que disponível sem bloquear a requisição
+    this.ensureInit();
 
     const ip = req.ip || 'unknown';
     const userId = req.user?.id;
@@ -191,9 +214,11 @@ class AdvancedRateLimiter {
       } catch (error) {
         console.warn('⚠️ Erro ao limpar Redis:', error.message);
       }
-    }
 
-    this.setupLimiters();
+      this.setupRedisLimiters();
+    } else {
+      this.setupLimiters();
+    }
 
     if (process.env.NODE_ENV === 'development') {
       console.log('✅ Rate limiters resetados');
@@ -222,8 +247,12 @@ class AdvancedRateLimiter {
 
     this.config = { ...this.config, ...newConfig };
 
-    // Recriar limiters com nova configuração
-    this.setupLimiters();
+    // Recriar limiters com nova configuração, preservando o backend atual
+    if (this.redisClient) {
+      this.setupRedisLimiters();
+    } else {
+      this.setupLimiters();
+    }
 
     if (process.env.NODE_ENV === 'development') {
       console.log('✅ Configuração de rate limiting atualizada');

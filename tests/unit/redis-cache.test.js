@@ -87,6 +87,23 @@ describe('Redis cache connection', () => {
     errSpy.mockRestore();
   });
 
+  it('uses REDIS_URL when present, overriding host/port fields', async() => {
+    const cache = await loadCache();
+    const errSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    process.env.REDIS_URL = 'redis://:secret@redis.example.com:6380/3';
+    process.env.REDIS_HOST = 'localhost';
+    process.env.REDIS_PORT = '6379';
+
+    await cache.initRedis();
+
+    const redisConfig = createClientMock.mock.calls[0][0];
+    expect(redisConfig.url).toBe('redis://:secret@redis.example.com:6380/3');
+    expect(redisConfig.host).toBeUndefined();
+    expect(redisConfig.socket.connectTimeout).toBe(10000);
+
+    errSpy.mockRestore();
+  });
+
   it('returns null and keeps cache disabled when the health check fails', async() => {
     const cache = await loadCache();
     clientRef.ping = jest.fn(async() => 'NOPE');

@@ -7,6 +7,7 @@
 
 import Joi from 'joi';
 import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH, validatePasswordStrength } from '../../shared/utils/passwordValidator.js';
+import { hasAllowedUsernameChars, USERNAME_MIN_LENGTH, USERNAME_MAX_LENGTH } from '../../shared/utils/usernamePolicy.js';
 import { HttpError } from '../../shared/utils/errorHandler.js';
 
 // ===================================================================
@@ -26,9 +27,6 @@ const everyChar = (value, predicate) => {
   }
   return true;
 };
-
-const usernamePolicy = (value) =>
-  value.length > 0 && everyChar(value, (code) => isASCIILetter(code) || isASCIIDigit(code));
 
 const emailPolicy = (value) => {
   const atIndex = value.lastIndexOf('@');
@@ -99,12 +97,14 @@ const joiPasswordPolicy = (password, helpers) => {
 const schemas = {
   login: Joi.object({
     username: Joi.string()
-      .alphanum()
-      .min(3)
-      .max(30)
+      .min(USERNAME_MIN_LENGTH)
+      .max(USERNAME_MAX_LENGTH)
+      .custom((username, helpers) => (
+        hasAllowedUsernameChars(username) ? username : helpers.error('string.usernameChars')
+      ))
       .required()
       .messages({
-        'string.alphanum': 'Username deve conter apenas letras e números',
+        'string.usernameChars': 'Username deve conter apenas letras, números, underscores e hífens',
         'string.min': 'Username deve ter pelo menos 3 caracteres',
         'string.max': 'Username deve ter no máximo 30 caracteres'
       }),
@@ -123,9 +123,11 @@ const schemas = {
 
   register: Joi.object({
     username: Joi.string()
-      .alphanum()
-      .min(3)
-      .max(30)
+      .min(USERNAME_MIN_LENGTH)
+      .max(USERNAME_MAX_LENGTH)
+      .custom((username, helpers) => (
+        hasAllowedUsernameChars(username) ? username : helpers.error('string.usernameChars')
+      ))
       .required(),
     email: Joi.string()
       .email()
@@ -150,9 +152,11 @@ const schemas = {
 
   updateProfile: Joi.object({
     username: Joi.string()
-      .alphanum()
-      .min(3)
-      .max(30)
+      .min(USERNAME_MIN_LENGTH)
+      .max(USERNAME_MAX_LENGTH)
+      .custom((username, helpers) => (
+        hasAllowedUsernameChars(username) ? username : helpers.error('string.usernameChars')
+      ))
       .optional(),
     email: Joi.string()
       .email()
@@ -176,7 +180,7 @@ const schemas = {
 
 // Políticas de caracteres permitidos por contexto (via classificação, sem regex)
 const characterPolicies = {
-  username: usernamePolicy,
+  username: hasAllowedUsernameChars,
   email: emailPolicy,
   password: passwordPolicy,
   general: generalPolicy

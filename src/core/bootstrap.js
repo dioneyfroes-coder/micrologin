@@ -27,19 +27,12 @@ export function bootstrapServices() {
   }));
 
   // ✅ NOVO: Usar JWTTokenService com suporte a refresh token
+  // O Redis é injetado após a inicialização da conexão (app.js)
   container.register('jwtService', () => {
-    const tokenService = new JWTTokenService(
+    return new JWTTokenService(
       securityConfig.jwt.secret,
       process.env.JWT_REFRESH_SECRET || securityConfig.jwt.secret
     );
-
-    // Se Redis estiver disponível, adicionar suporte a blacklist
-    if (process.env.REDIS_ENABLED !== 'false') {
-      // Será conectado depois pelo cache.js
-      console.log('🔧 JWT com suporte a Redis (blacklist) será configurado após inicialização do Redis');
-    }
-
-    return tokenService;
   });
 
   container.register('logger', () => adapterFactory.createLogger());

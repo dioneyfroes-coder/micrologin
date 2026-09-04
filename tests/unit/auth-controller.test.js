@@ -161,4 +161,96 @@ describe('AuthWebController - HTTP contract', () => {
 
     expect(next).toHaveBeenCalledWith(unexpected);
   });
+
+  it('returns a new token pair on a valid refresh token', async() => {
+    const service = {
+      refreshUserTokens: jest.fn().mockResolvedValue({
+        success: true,
+        token: {
+          accessToken: 'new-at',
+          refreshToken: 'new-rt',
+          type: 'Bearer',
+          expiresIn: 900000
+        }
+      })
+    };
+    req.body = { refreshToken: 'valid-rt' };
+
+    await buildController(service).refresh(req, res, next);
+
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      success: true,
+      data: expect.objectContaining({
+        accessToken: 'new-at',
+        refreshToken: 'new-rt'
+      })
+    }));
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('returns 401 when the refresh token is revoked or invalid', async() => {
+    const service = {
+      refreshUserTokens: jest.fn().mockResolvedValue({
+        success: false,
+        error: 'Refresh token inválido',
+        code: 'REFRESH_TOKEN_INVALID'
+      })
+    };
+    req.body = { refreshToken: 'expired-rt' };
+
+    await buildController(service).refresh(req, res, next);
+
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({
+      statusCode: 401,
+      code: 'REFRESH_TOKEN_INVALID'
+    }));
+  });
+
+  it('returns 400 when the refresh token is missing', async() => {
+    const service = {};
+    req.body = {};
+
+    await buildController(service).refresh(req, res, next);
+
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({
+      statusCode: 400,
+      code: 'REFRESH_TOKEN_REQUIRED'
+    }));
+  });
+
+  it('revokes access and refresh tokens on logout', async() => {
+    req.user = { id: 'u-1' };
+    req.headers = { authorization: 'Bearer some-access-token' };
+    req.body = { refreshToken: 'some-refresh-token' };
+    const service = {
+      revokeToken: jest.fn().mockResolvedValue({ success: true }),
+      revokeUserTokens: jest.fn().mockResolvedValue({ success: true })
+    };
+
+    await buildController(service).logout(req, res, next);
+
+    expect(service.revokeToken).toHaveBeenCalledTimes(2);
+    expect(service.revokeUserTokens).toHaveBeenCalledWith('u-1');
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      success: true,
+      message: 'Logout realizado com sucesso'
+    }));
+  });
+
+  it('fails logout when no token is revocable', async() => {
+    req.user = null;
+    req.headers = {};
+    req.body = {};
+    const service = {
+      revokeToken: jest.fn().mockResolvedValue({ success: false }),
+      revokeUserTokens: jest.fn().mockResolvedValue({ success: false })
+    };
+
+    await buildController(service).logout(req, res, next);
+
+    expect(next).toHaveBeenCalledWith(expect.objectContaining({
+      statusCode: 400,
+      code: 'REVOCATION_FAILED'
+    }));
+  });
 });

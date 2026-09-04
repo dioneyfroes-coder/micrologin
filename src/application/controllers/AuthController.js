@@ -94,6 +94,93 @@ export class AuthWebController {
   };
 
   /**
+   * POST /refresh - Endpoint para renovar tokens usando refresh token
+   */
+  refresh = async(req, res, next) => {
+    try {
+      // Validar entrada HTTP
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return next(new HttpError(400, 'VALIDATION_ERROR', 'Dados inválidos', errors.array()));
+      }
+
+      const { refreshToken } = req.body;
+      if (!refreshToken || typeof refreshToken !== 'string') {
+        return next(new HttpError(400, 'REFRESH_TOKEN_REQUIRED', 'refreshToken é obrigatório'));
+      }
+
+      // Delegar para o CORE (realiza rotação e revoga o refresh antigo)
+      const result = await this.authService.refreshUserTokens(refreshToken);
+
+      if (result.success) {
+        return res.json({
+          success: true,
+          message: 'Tokens renovados com sucesso',
+          data: {
+            accessToken: result.token.accessToken,
+            refreshToken: result.token.refreshToken,
+            tokenType: result.token.type,
+            expiresIn: result.token.expiresIn
+          }
+        });
+      }
+
+      // 401 para refresh inválido/expirado, 400 para demais falhas
+      const statusCode = result.code === 'REFRESH_TOKEN_EXPIRED' ||
+                         result.code === 'REFRESH_TOKEN_INVALID' ? 401 : 400;
+      return next(new HttpError(statusCode, result.code || 'REFRESH_TOKEN_INVALID', result.error));
+
+    } catch (error) {
+      return next(error);
+    }
+  };
+
+  /**
+   * POST /logout - Endpoint para revogar tokens e encerrar a sessão
+   */
+  logout = async(req, res, next) => {
+    try {
+      const authorization = req.headers.authorization;
+      const accessToken = authorization && authorization.startsWith('Bearer ')
+        ? authorization.slice(7)
+        : null;
+      const refreshToken = req.body?.refreshToken;
+
+      let revoked = false;
+
+      // Revogar access token na blacklist
+      if (accessToken) {
+        const result = await this.authService.revokeToken(accessToken);
+        revoked = revoked || result.success;
+      }
+
+      // Revogar refresh token na blacklist
+      if (refreshToken) {
+        const result = await this.authService.revokeToken(refreshToken);
+        revoked = revoked || result.success;
+      }
+
+      // Revogar todos os tokens do usuário (cobertura extra)
+      if (req.user?.id) {
+        const result = await this.authService.revokeUserTokens(req.user.id);
+        revoked = revoked || result.success;
+      }
+
+      if (!revoked) {
+        return next(new HttpError(400, 'REVOCATION_FAILED', 'Nenhum token foi revogado'));
+      }
+
+      return res.json({
+        success: true,
+        message: 'Logout realizado com sucesso'
+      });
+
+    } catch (error) {
+      return next(error);
+    }
+  };
+
+  /**
    * GET /profile - Endpoint para obter perfil
    */
   getProfile = async(req, res, next) => {

@@ -10,6 +10,7 @@ import './env.js';
 
 import os from 'os';
 import { parseEnvNumber } from './rateLimitConfig.js';
+import { getRedisConfig } from './redisConfig.js';
 
 /**
  * Configurações de servidor e aplicação
@@ -56,12 +57,7 @@ export const databaseConfig = {
   },
 
   redis: {
-    enabled: process.env.REDIS_ENABLED !== 'false',
-    host: process.env.REDIS_HOST || 'localhost',
-    port: parseEnvNumber(process.env.REDIS_PORT, 6379),
-    password: process.env.REDIS_PASSWORD,
-    db: parseEnvNumber(process.env.REDIS_DB, 0),
-    ttl: parseEnvNumber(process.env.REDIS_TTL, 3600)
+    ...getRedisConfig()
   }
 };
 

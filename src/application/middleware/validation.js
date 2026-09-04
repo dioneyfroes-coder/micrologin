@@ -1,24 +1,6 @@
 import { body } from 'express-validator';
 import { validatePasswordStrength, isCommonPassword } from '../../shared/utils/passwordValidator.js';
-
-/**
- * Política de username por CLASSIFICAÇÃO DE CARACTERES.
- *
- * A checagem principal não usa expressão regular: percorre os caracteres e
- * aceita apenas letras ASCII, dígitos, underscore e hífen. Regex fica
- * reservada apenas para detecção/monitoramento em outras camadas.
- */
-export const hasAllowedUsernameChars = (username) => {
-  for (const char of username) {
-    const code = char.charCodeAt(0);
-    const isLetter = (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
-    const isDigit = code >= 48 && code <= 57;
-    if (!isLetter && !isDigit && char !== '_' && char !== '-') {
-      return false;
-    }
-  }
-  return true;
-};
+import { hasAllowedUsernameChars, USERNAME_MIN_LENGTH, USERNAME_MAX_LENGTH, USERNAME_CHARS_MESSAGE } from '../../shared/utils/usernamePolicy.js';
 
 /**
  * Validações para login
@@ -27,7 +9,7 @@ export const validateLogin = [
   body('user')
     .isString()
     .trim()
-    .isLength({ min: 3 })
+    .isLength({ min: USERNAME_MIN_LENGTH })
     .withMessage('Usuário deve ter pelo menos 3 caracteres.'),
   body('password')
     .isString()
@@ -42,11 +24,11 @@ export const validateRegister = [
   body('user')
     .isString()
     .trim()
-    .isLength({ min: 3, max: 30 })
+    .isLength({ min: USERNAME_MIN_LENGTH, max: USERNAME_MAX_LENGTH })
     .withMessage('Usuário deve ter entre 3 e 30 caracteres.')
     .custom((user) => {
       if (!hasAllowedUsernameChars(user)) {
-        throw new Error('Usuário deve conter apenas letras, números, underscores e hífens.');
+        throw new Error(`Usuário deve conter ${USERNAME_CHARS_MESSAGE}.`);
       }
       return true;
     }),
@@ -77,11 +59,11 @@ export const validateUpdate = [
   body('user')
     .optional()
     .trim()
-    .isLength({ min: 3, max: 30 })
+    .isLength({ min: USERNAME_MIN_LENGTH, max: USERNAME_MAX_LENGTH })
     .withMessage('Usuário deve ter entre 3 e 30 caracteres.')
     .custom((user) => {
       if (!hasAllowedUsernameChars(user)) {
-        throw new Error('Usuário deve conter apenas letras, números, underscores e hífens.');
+        throw new Error(`Usuário deve conter ${USERNAME_CHARS_MESSAGE}.`);
       }
       return true;
     }),
@@ -104,4 +86,14 @@ export const validateUpdate = [
       }
       return true;
     })
+];
+
+/**
+ * Validações para renovação de tokens (POST /refresh)
+ */
+export const validateRefresh = [
+  body('refreshToken')
+    .isString()
+    .notEmpty()
+    .withMessage('refreshToken é obrigatório.')
 ];

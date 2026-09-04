@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { resolve, bootstrapServices } from '../../core/bootstrap.js';
-import { validateLogin, validateRegister, validateUpdate } from '../middleware/validation.js';
+import { validateLogin, validateRegister, validateUpdate, validateRefresh } from '../middleware/validation.js';
 import { prometheus } from '../../shared/utils/metrics.js';
 import { performHealthCheck } from '../../shared/utils/healthCheck.js';
 import { advancedRateLimit } from '../middleware/advancedRateLimit.js';
@@ -37,7 +37,9 @@ import { HttpError } from '../../shared/utils/errorHandler.js';
  *         user:
  *           type: string
  *           minLength: 3
- *           description: Nome de usuário
+ *           maxLength: 30
+ *           pattern: "^[A-Za-z0-9_-]+$"
+ *           description: Nome de usuário (letras, números, underscore e hífen)
  *         password:
  *           type: string
  *           minLength: 12
@@ -76,7 +78,9 @@ import { HttpError } from '../../shared/utils/errorHandler.js';
  *         user:
  *           type: string
  *           minLength: 3
- *           description: Nome de usuário
+ *           maxLength: 30
+ *           pattern: "^[A-Za-z0-9_-]+$"
+ *           description: Nome de usuário (letras, números, underscore e hífen)
  *         password:
  *           type: string
  *           minLength: 12
@@ -87,6 +91,8 @@ import { HttpError } from '../../shared/utils/errorHandler.js';
  *         user:
  *           type: string
  *           minLength: 3
+ *           maxLength: 30
+ *           pattern: "^[A-Za-z0-9_-]+$"
  *           description: Novo nome de usuário (opcional)
  *         password:
  *           type: string
@@ -195,6 +201,81 @@ export function createAuthRoutes() {
    *               $ref: '#/components/schemas/ErrorResponse'
    */
   router.post('/register', validateRegister, authController.register);
+
+  /**
+   * @swagger
+   * /refresh:
+   *   post:
+   *     summary: Renovar tokens de acesso
+   *     description: Usa um refresh token válido para emitir um novo par (access + refresh) e revoga o refresh antigo
+   *     tags: [Autenticação]
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             type: object
+   *             required:
+   *               - refreshToken
+   *             properties:
+   *               refreshToken:
+   *                 type: string
+   *                 description: Refresh token válido (emitido no login ou no refresh anterior)
+   *     responses:
+   *       200:
+   *         description: Tokens renovados com sucesso
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/LoginResponse'
+   *       400:
+   *         description: Dados inválidos
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/ErrorResponse'
+   *       401:
+   *         description: Refresh token inválido, revogado ou expirado
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/ErrorResponse'
+   */
+  router.post('/refresh', validateRefresh, authController.refresh);
+
+  /**
+   * @swagger
+   * /logout:
+   *   post:
+   *     summary: Encerrar sessão e revogar tokens
+   *     description: Revoga o access token (Authorization) e o refresh token informado no corpo
+   *     tags: [Autenticação]
+   *     security:
+   *       - BearerAuth: []
+   *     requestBody:
+   *       content:
+   *         application/json:
+   *           schema:
+   *             type: object
+   *             properties:
+   *               refreshToken:
+   *                 type: string
+   *                 description: Refresh token a revogar (opcional)
+   *     responses:
+   *       200:
+   *         description: Logout realizado com sucesso
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/StandardResponse'
+   *       400:
+   *         description: Nenhum token pôde ser revogado
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/ErrorResponse'
+   */
+  router.post('/logout', authMiddleware.optionalAuth, authController.logout);
 
   /**
    * @swagger
@@ -362,40 +443,66 @@ export function createAuthRoutes() {
     }
   });
 
-  /**
-   * @swagger
-   * /metrics:
-   *   get:
-   *     summary: Métricas Prometheus
-   *     description: Retorna métricas da aplicação no formato Prometheus
-   *     tags: [Sistema]
-   *     responses:
-   *       200:
-   *         description: Métricas obtidas com sucesso
-   *         content:
-   *           text/plain:
-   *             schema:
-   *               type: string
-   *               example: |
-   *                 # HELP http_requests_total Total number of HTTP requests
-   *                 # TYPE http_requests_total counter
-   *                 http_requests_total{method="GET",route="/health",status_code="200"} 5
-   *       500:
-   *         description: Erro ao gerar métricas
-   *         content:
-   *           application/json:
-   *             schema:
-   *               $ref: '#/components/schemas/ErrorResponse'
-   */
-  router.get('/metrics', async(req, res, next) => {
-    try {
-      res.set('Content-Type', prometheus.register.contentType);
-      const metrics = await prometheus.register.metrics();
-      res.end(metrics);
-    } catch {
-      next(new HttpError(500, 'METRICS_FAILED', 'Erro ao gerar métricas'));
+  const METRICS_ENABLED = process.env.METRICS_ENABLED !== 'false';
+  const METRICS_TOKEN = process.env.METRICS_TOKEN || '';
+  const metricsEndpoint = process.env.METRICS_ENDPOINT || '/metrics';
+
+  if (METRICS_ENABLED) {
+    if (process.env.NODE_ENV === 'production' && !METRICS_TOKEN) {
+      console.warn(`⚠️ ${metricsEndpoint} exposto SEM token de autenticação em produção. Configure METRICS_TOKEN.`);
     }
-  });
+
+    const requireMetricsToken = (req, res, next) => {
+      if (!METRICS_TOKEN) {
+        return next();
+      }
+      if (req.get('x-metrics-token') !== METRICS_TOKEN) {
+        return next(new HttpError(401, 'METRICS_FORBIDDEN', 'Acesso não autorizado às métricas'));
+      }
+      return next();
+    };
+
+    /**
+     * @swagger
+     * /metrics:
+     *   get:
+     *     summary: Métricas Prometheus
+     *     description: Retorna métricas da aplicação no formato Prometheus (protegido por METRICS_TOKEN quando configurado)
+     *     tags: [Sistema]
+     *     responses:
+     *       200:
+     *         description: Métricas obtidas com sucesso
+     *         content:
+     *           text/plain:
+     *             schema:
+     *               type: string
+     *               example: |
+     *                 # HELP http_requests_total Total number of HTTP requests
+     *                 # TYPE http_requests_total counter
+     *                 http_requests_total{method="GET",route="/health",status_code="200"} 5
+     *       401:
+     *         description: Token de métricas ausente ou inválido
+     *         content:
+     *           application/json:
+     *             schema:
+     *               $ref: '#/components/schemas/ErrorResponse'
+     *       500:
+     *         description: Erro ao gerar métricas
+     *         content:
+     *           application/json:
+     *             schema:
+     *               $ref: '#/components/schemas/ErrorResponse'
+     */
+    router.get(metricsEndpoint, requireMetricsToken, async(req, res, next) => {
+      try {
+        res.set('Content-Type', prometheus.register.contentType);
+        const metrics = await prometheus.register.metrics();
+        res.end(metrics);
+      } catch {
+        next(new HttpError(500, 'METRICS_FAILED', 'Erro ao gerar métricas'));
+      }
+    });
+  }
 
   // Rotas de debug (apenas em desenvolvimento)
   if (process.env.NODE_ENV === 'development') {

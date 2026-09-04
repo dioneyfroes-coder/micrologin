@@ -181,3 +181,69 @@ describe('Domain - error isolation', () => {
     expect(result.error).not.toContain('redis');
   });
 });
+
+describe('Domain - token refresh and revocation', () => {
+  it('refreshes tokens and returns the new pair', async() => {
+    const logger = makeLogger();
+    const tokenGenerator = {
+      refreshTokens: jest.fn().mockResolvedValue({
+        accessToken: 'new-at',
+        refreshToken: 'new-rt',
+        type: 'Bearer',
+        expiresIn: 900000
+      })
+    };
+
+    const service = new AuthService({}, {}, tokenGenerator, logger);
+    const result = await service.refreshUserTokens('old-rt');
+
+    expect(result.success).toBe(true);
+    expect(result.token).toEqual({
+      accessToken: 'new-at',
+      refreshToken: 'new-rt',
+      type: 'Bearer',
+      expiresIn: 900000
+    });
+  });
+
+  it('reports refresh failure with the original token code', async() => {
+    const logger = makeLogger();
+    const error = new Error('Refresh token expirado');
+    error.code = 'REFRESH_TOKEN_EXPIRED';
+    const tokenGenerator = {
+      refreshTokens: jest.fn().mockRejectedValue(error)
+    };
+
+    const service = new AuthService({}, {}, tokenGenerator, logger);
+    const result = await service.refreshUserTokens('expired-rt');
+
+    expect(result.success).toBe(false);
+    expect(result.code).toBe('REFRESH_TOKEN_EXPIRED');
+  });
+
+  it('revokes a specific token', async() => {
+    const logger = makeLogger();
+    const tokenGenerator = {
+      revokeToken: jest.fn().mockResolvedValue(true)
+    };
+
+    const service = new AuthService({}, {}, tokenGenerator, logger);
+    const result = await service.revokeToken('some-token', 60000);
+
+    expect(result.success).toBe(true);
+    expect(tokenGenerator.revokeToken).toHaveBeenCalledWith('some-token', 60000);
+  });
+
+  it('revokes all tokens of a user', async() => {
+    const logger = makeLogger();
+    const tokenGenerator = {
+      revokeUserTokens: jest.fn().mockResolvedValue(true)
+    };
+
+    const service = new AuthService({}, {}, tokenGenerator, logger);
+    const result = await service.revokeUserTokens('u-1');
+
+    expect(result.success).toBe(true);
+    expect(tokenGenerator.revokeUserTokens).toHaveBeenCalledWith('u-1');
+  });
+});

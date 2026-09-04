@@ -30,6 +30,14 @@ export class JWTTokenService {
   }
 
   /**
+   * Conecta o serviço ao Redis após a inicialização da infratestrutura
+   * @param {Object} redisClient - Cliente Redis pronto para uso
+   */
+  setRedisClient(redisClient) {
+    this.redisClient = redisClient;
+  }
+
+  /**
    * Gera um par de tokens (access + refresh)
    * @param {Object} payload - Dados do usuário (id, username, etc)
    * @param {Object} options - Opções adicionais
@@ -117,10 +125,19 @@ export class JWTTokenService {
         }
       }
 
-      return jwt.verify(token, this.secret, {
+      const payload = jwt.verify(token, this.secret, {
         issuer: 'micrologin-auth',
         audience: 'micrologin-api'
       });
+
+      // Verificar revogação em nível de usuário (ex: logout/logout-all)
+      if (await this.isUserRevoked(payload.id, payload.iat)) {
+        const tokenError = new Error('Token foi revogado');
+        tokenError.code = 'TOKEN_INVALID';
+        throw tokenError;
+      }
+
+      return payload;
     } catch (error) {
       if (error.name === 'TokenExpiredError') {
         const tokenError = new Error('Access token expirado - use refresh token para renovar');
@@ -147,10 +164,19 @@ export class JWTTokenService {
         }
       }
 
-      return jwt.verify(token, this.refreshSecret, {
+      const payload = jwt.verify(token, this.refreshSecret, {
         issuer: 'micrologin-auth',
         audience: 'micrologin-api'
       });
+
+      // Verificar revogação em nível de usuário (ex: logout/logout-all)
+      if (await this.isUserRevoked(payload.id, payload.iat)) {
+        const tokenError = new Error('Refresh token foi revogado');
+        tokenError.code = 'REFRESH_TOKEN_INVALID';
+        throw tokenError;
+      }
+
+      return payload;
     } catch (error) {
       if (error.name === 'TokenExpiredError') {
         const tokenError = new Error('Refresh token expirado - necessário fazer login novamente');
@@ -160,6 +186,29 @@ export class JWTTokenService {
       const tokenError = new Error(`Refresh token inválido: ${error.message}`);
       tokenError.code = 'REFRESH_TOKEN_INVALID';
       throw tokenError;
+    }
+  }
+
+  /**
+   * Verifica se o usuário teve todos os tokens revogados após a emissão do token
+   * @param {string} userId - ID do usuário
+   * @param {number} issuedAtSec - Timestamp de emissão do token (iat, em segundos)
+   * @returns {Promise<boolean>} True se o token foi emitido antes da revogação
+   */
+  async isUserRevoked(userId, issuedAtSec) {
+    if (!this.redisClient || !userId || !issuedAtSec) {
+      return false;
+    }
+
+    try {
+      const revokedAt = await this.redisClient.get(`user_tokens_revoked:${userId}`);
+      if (!revokedAt) {
+        return false;
+      }
+      return issuedAtSec * 1000 < parseInt(revokedAt, 10);
+    } catch (error) {
+      console.error('Erro ao verificar revogação do usuário:', error);
+      return false;
     }
   }
 
@@ -180,7 +229,7 @@ export class JWTTokenService {
         options
       );
 
-      // Revogar o refresh token antigo (opcional, para maior segurança)
+      // Revogar o refresh token antigo (maior segurança: rotação de tokens)
       if (this.redisClient) {
         const expiresIn = decoded.exp * 1000 - Date.now();
         await this.revokeToken(refreshToken, expiresIn);
@@ -188,6 +237,10 @@ export class JWTTokenService {
 
       return newTokens;
     } catch (error) {
+      // Preservar códigos de erro de token (expirado/inválido)
+      if (error.code) {
+        throw error;
+      }
       throw new Error(`Erro ao renovar tokens: ${error.message}`);
     }
   }
@@ -208,7 +261,7 @@ export class JWTTokenService {
       const key = `token_blacklist:${token}`;
       const ttlSeconds = Math.ceil(expiresIn / 1000);
 
-      await this.redisClient.setex(key, ttlSeconds, 'true');
+      await this.redisClient.setEx(key, ttlSeconds, 'true');
       return true;
     } catch (error) {
       console.error('Erro ao revogar token:', error);
@@ -219,9 +272,10 @@ export class JWTTokenService {
   /**
    * Revoga todos os tokens de um usuário
    * @param {string} userId - ID do usuário
+   * @param {number} expiresIn - Tempo de validade da revogação (ms)
    * @returns {Promise<boolean>} Sucesso da operação
    */
-  async revokeUserTokens(userId) {
+  async revokeUserTokens(userId, expiresIn = 604800000) {
     if (!this.redisClient) {
       console.warn('Redis não disponível para revogação de tokens');
       return false;
@@ -229,7 +283,8 @@ export class JWTTokenService {
 
     try {
       const key = `user_tokens_revoked:${userId}`;
-      await this.redisClient.set(key, Date.now().toString());
+      const ttlSeconds = Math.ceil(expiresIn / 1000);
+      await this.redisClient.setEx(key, ttlSeconds, Date.now().toString());
       return true;
     } catch (error) {
       console.error('Erro ao revogar tokens do usuário:', error);

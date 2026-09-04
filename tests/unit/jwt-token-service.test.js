@@ -36,7 +36,7 @@ describe('JWTTokenService - token generation and lifecycle', () => {
   it('rejects access tokens that were revoked via blacklist', async() => {
     const blacklisted = new Map();
     const redisClientMock = {
-      setex: jest.fn(async(key, ttl, value) => {
+      setEx: jest.fn(async(key, ttl, value) => {
         blacklisted.set(key, value);
       }),
       get: jest.fn(async(key) => blacklisted.get(key) || null),
@@ -56,7 +56,7 @@ describe('JWTTokenService - token generation and lifecycle', () => {
   it('refreshes tokens and issues a new pair while revoking the old refresh token', async() => {
     const blacklisted = new Map();
     const redisClientMock = {
-      setex: jest.fn(async(key, ttl, value) => {
+      setEx: jest.fn(async(key, ttl, value) => {
         blacklisted.set(key, value);
       }),
       get: jest.fn(async(key) => blacklisted.get(key) || null),
@@ -85,7 +85,7 @@ describe('JWTTokenService - token generation and lifecycle', () => {
   it('rejects a refresh token that was revoked', async() => {
     const blacklisted = new Map();
     const redisClientMock = {
-      setex: jest.fn(async(key, ttl, value) => {
+      setEx: jest.fn(async(key, ttl, value) => {
         blacklisted.set(key, value);
       }),
       get: jest.fn(async(key) => blacklisted.get(key) || null),
@@ -160,9 +160,9 @@ describe('JWTTokenService - token generation and lifecycle', () => {
 
   it('revokes all tokens of a user', async() => {
     const redisClientMock = {
-      setex: jest.fn(),
+      setEx: jest.fn(async() => 'ok'),
       get: jest.fn(async() => null),
-      set: jest.fn(async() => 'ok'),
+      set: jest.fn(),
       del: jest.fn()
     };
 
@@ -170,6 +170,83 @@ describe('JWTTokenService - token generation and lifecycle', () => {
     const revoked = await service.revokeUserTokens('user-9');
 
     expect(revoked).toBe(true);
-    expect(redisClientMock.set).toHaveBeenCalledWith('user_tokens_revoked:user-9', expect.any(String));
+    expect(redisClientMock.setEx).toHaveBeenCalledWith(
+      'user_tokens_revoked:user-9',
+      604800,
+      expect.any(String)
+    );
+  });
+
+  it('accepts a Redis client injected after construction', async() => {
+    const service = new JWTTokenService(secret);
+    expect(service.redisClient).toBeNull();
+
+    const blacklisted = new Map();
+    const redisClientMock = {
+      setEx: jest.fn(async(key, ttl, value) => {
+        blacklisted.set(key, value);
+      }),
+      get: jest.fn(async(key) => blacklisted.get(key) || null),
+      set: jest.fn(),
+      del: jest.fn()
+    };
+
+    service.setRedisClient(redisClientMock);
+
+    expect(service.redisClient).toBe(redisClientMock);
+
+    const result = await service.generateTokenPair(
+      { id: 'user-10', username: 'ivan' },
+      { refreshExpiresIn: '1h' }
+    );
+    const revoked = await service.revokeToken(result.refreshToken, 60000);
+    expect(revoked).toBe(true);
+
+    await expect(service.verifyRefreshToken(result.refreshToken)).rejects.toThrow('Refresh token inválido');
+  });
+
+  it('rejects tokens issued before a user-wide revocation', async() => {
+    const redisClientMock = {
+      setEx: jest.fn(async() => 'ok'),
+      get: jest.fn(async() => null),
+      set: jest.fn(),
+      del: jest.fn()
+    };
+    const service = new JWTTokenService(secret, secret, redisClientMock);
+
+    const result = await service.generateTokenPair(
+      { id: 'user-11', username: 'joe' },
+      { refreshExpiresIn: '1h' }
+    );
+
+    const revokedAt = Date.now();
+    redisClientMock.get = jest.fn(async(key) =>
+      key.startsWith('user_tokens_revoked:') ? String(revokedAt) : null
+    );
+
+    await service.revokeUserTokens('user-11', 60000);
+
+    await expect(service.verifyAccessToken(result.accessToken)).rejects.toThrow('Token inválido');
+    await expect(service.verifyRefreshToken(result.refreshToken)).rejects.toThrow('Refresh token inválido');
+  });
+
+  it('accepts tokens issued after a user-wide revocation', async() => {
+    const revokedAt = Date.now() - 5000;
+    const redisClientMock = {
+      setEx: jest.fn(async() => 'ok'),
+      get: jest.fn(async(key) =>
+        key.startsWith('user_tokens_revoked:') ? String(revokedAt) : null
+      ),
+      set: jest.fn(),
+      del: jest.fn()
+    };
+    const service = new JWTTokenService(secret, secret, redisClientMock);
+
+    const result = await service.generateTokenPair({ id: 'user-12', username: 'kim' });
+
+    const access = await service.verifyAccessToken(result.accessToken);
+    const refresh = await service.verifyRefreshToken(result.refreshToken);
+    expect(access.id).toBe('user-12');
+    expect(refresh.id).toBe('user-12');
   });
 });

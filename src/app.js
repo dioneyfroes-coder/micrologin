@@ -22,7 +22,7 @@ import { connectDatabase } from './infrastructure/database/connection.js';
 import { setupSwagger } from './interfaces/config/swagger.js';
 import { errorHandler, setupErrorHandlers } from './shared/utils/errorHandler.js';
 import { createAuthRoutes } from './application/routes/authRoutes.js';
-import { bootstrapServices } from './core/bootstrap.js';
+import { bootstrapServices, resolve } from './core/bootstrap.js';
 
 import setupSecurity from './interfaces/config/helmet.js';
 import { sanitizeInput } from './application/middleware/sanitization.js';
@@ -120,7 +120,16 @@ class AuthService {
       await connectDatabase();
 
       // Inicializa Redis se habilitado
-      await initRedis();
+      const redisClient = await initRedis();
+
+      // Promove rate limiters para Redis assim que a conexão estiver disponível
+      await advancedRateLimit.init();
+
+      // Conecta a blacklist de JWT ao Redis
+      if (redisClient) {
+        const jwtService = resolve('jwtService');
+        jwtService?.setRedisClient(redisClient);
+      }
 
       // Configuração SSL
       if (serverConfig.ssl.enabled) {

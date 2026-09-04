@@ -9,6 +9,7 @@
  */
 
 import redis from 'redis';
+import { getRedisClientOptions } from '../../interfaces/config/redisConfig.js';
 
 let client = null;
 let isHealthy = false;
@@ -26,11 +27,7 @@ export const initRedis = async() => {
 
   try {
     const redisConfig = {
-      host: process.env.REDIS_HOST || 'localhost',
-      port: parseInt(process.env.REDIS_PORT || '6379', 10),
-      db: parseInt(process.env.REDIS_DB || '0', 10),
-      // Segurança: Password se configurada
-      ...(process.env.REDIS_PASSWORD && { password: process.env.REDIS_PASSWORD }),
+      ...getRedisClientOptions(),
       // Reconnect strategy
       socket: {
         reconnectStrategy: (retries) => {
