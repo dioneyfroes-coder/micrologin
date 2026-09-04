@@ -14,6 +14,11 @@
  * - ❌ Tomar decisões de segurança críticas
  *
  * O bloqueio de IPs é feito pelo Rate Limiter (advancedRateLimit.js)
+ *
+ * 📌 POLÍTICA DE REGEX: as expressões regulares abaixo são usadas
+ * EXCLUSIVAMENTE para DETECÇÃO/ALERTA de padrões suspeitos (monitoramento
+ * auxiliar). Nenhuma decisão de proteção/bloqueio depende delas; a proteção
+ * principal de entrada é feita por validação e sanitização determinísticas.
  */
 
 import { securityAuditLogger } from './securityAudit.js';

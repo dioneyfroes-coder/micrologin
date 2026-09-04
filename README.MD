@@ -7,42 +7,46 @@ Este repositório é uma demonstração de arquitetura e organização de códig
 ## O que o projeto inclui
 
 - registro e autenticação de usuários
-- JWT com access token e refresh token
-- validação de senha com regras simples
-- rate limiting por IP e login
+- JWT com access token, refresh token e revogação
+- validação de senha com política forte (12+ caracteres, complexidade, lista de senhas comuns)
+- rate limiting por IP e login (Redis + fallback)
 - sanitização básica de entradas
 - middleware de auditoria e monitoramento
-- health check e métricas básicas
-- documentação Swagger
-- testes unitários e de integração
-- configuração com Docker Compose
+- health check e métricas Prometheus
+- documento Swagger e resposta HTTP padronizada via `HttpError`
+- testes unitários e de integração (148 testes em 21 suítes, cobertura global ~62%)
+- CI/CD com GitHub Actions (lint, audit, testes, cobertura, build, scan, deploy)
+- configuração com Docker Compose (dev sem segredos hardcoded e produção via `.env.prod`)
 
 ## Stack
 
-- Node.js
+- Node.js 22+
 - Express
 - MongoDB + Mongoose
 - Redis
 - JWT
 - bcrypt
 - Jest
-- Docker
+- Docker / Docker Compose
+- GitHub Actions
 
 ## Estrutura principal
 
 ```text
 src/
-├── app.js
-├── core/
-├── application/
-├── infrastructure/
-├── interfaces/
-├── shared/
-├── config/
-└── routes/
+├── app.js                    # Bootstrap da aplicação
+├── core/                     # ServiceContainer (DI), bootstrap
+├── application/              # controllers, middleware e rotas
+│   ├── controllers/
+│   ├── middleware/
+│   └── routes/
+├── domain/                   # entidades, validações e serviço de domínio
+├── infrastructure/           # adapters (mongo/redis), JWT, cache
+├── interfaces/               # config (helmet, rate limit, swagger), app
+└── shared/                   # utils (health check, métricas, password)
 ```
 
-A organização tenta separar domínio, aplicação e infraestrutura sem exagerar em camadas conceituais. O objetivo é manter o código legível e testável para um projeto de portfolio.
+A organização segue arquitetura hexagonal: o domínio fica isolado, a aplicação orquestra casos de uso e a infraestrutura implementa as portas de cache, banco e JWT. O objetivo é manter o código legível e testável.
 
 ## Pré-requisitos
 
@@ -56,7 +60,7 @@ A organização tenta separar domínio, aplicação e infraestrutura sem exagera
 ```bash
 npm install
 cp .env.example .env
-npm run docker:up
+npm run docker:up    # sobe aplicação, MongoDB, Redis e Grafana (usa .env.docker)
 npm run dev
 ```
 
@@ -68,9 +72,9 @@ cp .env.example .env
 npm test
 ```
 
-## Variáveis de ambiente
+### Variáveis de ambiente
 
-Copie o arquivo [.env.example](.env.example) para `.env` e ajuste os valores conforme seu ambiente local.
+Copie [.env.example](.env.example) para `.env` e ajuste os valores conforme seu ambiente local.
 
 Os campos mais importantes são:
 
@@ -84,13 +88,29 @@ Os campos mais importantes são:
 - `JWT_REFRESH_EXPIRES`
 - `ALLOWED_ORIGINS`
 
+Nenhuma credencial real fica versionada: apenas arquivos de exemplo (`.env.example` e `.env.prod.example`) são commitados, e o `.gitignore` exclui `.env`, `.env.docker` e `.env.prod`.
+
 ## Testes
 
 ```bash
-npm test
-npm run test:unit
-npm run test:integration
+npm test                    # roda todas as suítes (unit + integração)
+npm run test:unit           # suítes unitárias
+npm run test:integration    # suíte de integração
+npm run test:coverage       # gera relatório de cobertura (text + html + lcov)
+npm run lint                # ESLint em src/ e tests/
 ```
+
+O pipeline de CI usa `test:unit:fast`, `test:integration:app` e `test:coverage:fast` (com `--runInBand`, para rodar corretamente em CI).
+
+## CI/CD
+
+O workflow [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml) executa:
+
+1. **code-quality**: ESLint, `npm audit` e `audit-ci`
+2. **tests**: unitários rápidos, integração e upload de cobertura
+3. **build**: build e push da imagem multi-plataforma (amd64/arm64) para GHCR
+4. **security**: scan de vulnerabilidades com Trivy
+5. **deploy**: staging (branch `develop`) e produção (branch `main`) com blue-green
 
 ## Observações importantes
 

@@ -1,13 +1,101 @@
 /**
  * @fileoverview Validação rigorosa de input com schemas
- * Implementa validação de schema e whitelist de caracteres
+ * Implementa validação de schema e políticas de caracteres por
+ * CLASSIFICAÇÃO (proteção principal). Regex não é usada como regra
+ * padrão de rejeição — apenas como auxiliar em contextos externos.
  */
 
 import Joi from 'joi';
-import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH } from '../../shared/utils/passwordValidator.js';
+import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH, validatePasswordStrength } from '../../shared/utils/passwordValidator.js';
 import { HttpError } from '../../shared/utils/errorHandler.js';
 
-// Schemas de validação
+// ===================================================================
+// Políticas de caracteres via CLASSIFICAÇÃO (proteção principal).
+// Expressões regulares ficam reservadas apenas para detecção/
+// monitoramento — a validação de entrada não depende delas.
+// ===================================================================
+
+const isASCIILetter = (code) => (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+const isASCIIDigit = (code) => code >= 48 && code <= 57;
+
+const everyChar = (value, predicate) => {
+  for (const char of value) {
+    if (!predicate(char.charCodeAt(0), char)) {
+      return false;
+    }
+  }
+  return true;
+};
+
+const usernamePolicy = (value) =>
+  value.length > 0 && everyChar(value, (code) => isASCIILetter(code) || isASCIIDigit(code));
+
+const emailPolicy = (value) => {
+  const atIndex = value.lastIndexOf('@');
+  if (atIndex <= 0 || atIndex === value.length - 1) {
+    return false;
+  }
+
+  const localPart = value.slice(0, atIndex);
+  const domainPart = value.slice(atIndex + 1);
+
+  const localOk = everyChar(
+    localPart,
+    (code, char) => isASCIILetter(code) || isASCIIDigit(code) || '._%+-'.includes(char)
+  );
+  if (!localOk) {
+    return false;
+  }
+
+  const lastDot = domainPart.lastIndexOf('.');
+  if (lastDot <= 0 || lastDot === domainPart.length - 1) {
+    return false;
+  }
+
+  const tld = domainPart.slice(lastDot + 1);
+  if (!everyChar(tld, (code) => isASCIILetter(code)) || tld.length < 2) {
+    return false;
+  }
+
+  return everyChar(
+    domainPart,
+    (code, char) => isASCIILetter(code) || isASCIIDigit(code) || '.-'.includes(char)
+  );
+};
+
+const PASSWORD_ALLOWED_CHARS = new Set([
+  'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
+  'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
+  'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
+  'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
+  '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+  '@', '$', '!', '%', '*', '?', '&'
+]);
+
+const passwordPolicy = (value) =>
+  value.length > 0 && everyChar(value, (code, char) => PASSWORD_ALLOWED_CHARS.has(char));
+
+const GENERAL_PUNCTUATION = new Set([
+  ' ', '.', ',', '!', '?', '@', '#', '$', '%', '^', '&', '*', '(', ')',
+  '_', '+', '-', '=', '[', ']', '{', '}', '|', ';', ':', '\'', '"', '<',
+  '>', '/', '~', '`', '\\'
+]);
+
+const generalPolicy = (value) =>
+  value.length > 0 && everyChar(value, (code, char) => isASCIILetter(code) || isASCIIDigit(code) || GENERAL_PUNCTUATION.has(char));
+
+// Validador customizado de senha usado nos schemas Joi (sem lookaround regex)
+const joiPasswordPolicy = (password, helpers) => {
+  const strength = validatePasswordStrength(password);
+  if (!strength.isValid) {
+    return helpers.error('string.passwordStrength', { reasons: strength.errors.join('; ') });
+  }
+  if (!passwordPolicy(password)) {
+    return helpers.error('string.passwordChars');
+  }
+  return password;
+};
+  // Schemas de validação
 const schemas = {
   login: Joi.object({
     username: Joi.string()
@@ -23,12 +111,13 @@ const schemas = {
     password: Joi.string()
       .min(PASSWORD_MIN_LENGTH)
       .max(PASSWORD_MAX_LENGTH)
-      .pattern(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]/)
+      .custom(joiPasswordPolicy)
       .required()
       .messages({
         'string.min': `Password deve ter pelo menos ${PASSWORD_MIN_LENGTH} caracteres`,
         'string.max': `Password deve ter no máximo ${PASSWORD_MAX_LENGTH} caracteres`,
-        'string.pattern.base': 'Password deve conter ao menos: 1 minúscula, 1 maiúscula, 1 número e 1 caractere especial'
+        'string.passwordStrength': 'Password não atende à política de senha forte ({#reasons})',
+        'string.passwordChars': 'Password contém caracteres não permitidos'
       })
   }),
 
@@ -49,7 +138,7 @@ const schemas = {
     password: Joi.string()
       .min(PASSWORD_MIN_LENGTH)
       .max(PASSWORD_MAX_LENGTH)
-      .pattern(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]/)
+      .custom(joiPasswordPolicy)
       .required(),
     confirmPassword: Joi.string()
       .valid(Joi.ref('password'))
@@ -80,17 +169,17 @@ const schemas = {
     newPassword: Joi.string()
       .min(PASSWORD_MIN_LENGTH)
       .max(PASSWORD_MAX_LENGTH)
-      .pattern(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]/)
+      .custom(joiPasswordPolicy)
       .optional()
   })
 };
 
-// Whitelist de caracteres permitidos por contexto
-const characterWhitelists = {
-  username: /^[a-zA-Z0-9]+$/,
-  email: /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/,
-  password: /^[A-Za-z\d@$!%*?&]+$/,
-  general: /^[a-zA-Z0-9\s.,!?@#$%^&*()_+-=[\]{}|;':"<>?/~`]+$/
+// Políticas de caracteres permitidos por contexto (via classificação, sem regex)
+const characterPolicies = {
+  username: usernamePolicy,
+  email: emailPolicy,
+  password: passwordPolicy,
+  general: generalPolicy
 };
 
 class InputValidator {
@@ -138,19 +227,19 @@ class InputValidator {
   }
 
   /**
-   * Valida caracteres usando whitelist
+   * Valida caracteres usando a política de classificação do contexto
    */
   validateCharacters(value, type = 'general') {
-    const whitelist = characterWhitelists[type];
-    if (!whitelist) {
-      throw new Error(`Whitelist '${type}' não encontrada`);
+    const policy = characterPolicies[type];
+    if (!policy) {
+      throw new Error(`Política de caracteres '${type}' não encontrada`);
     }
 
     if (typeof value !== 'string') {
       return { isValid: false, message: 'Valor deve ser string' };
     }
 
-    if (!whitelist.test(value)) {
+    if (!policy(value)) {
       return {
         isValid: false,
         message: `Caracteres não permitidos detectados para tipo '${type}'`
@@ -289,10 +378,14 @@ class InputValidator {
   }
 
   /**
-   * Adiciona nova whitelist de caracteres
+   * Registra nova política de caracteres (proteção principal).
+   * Aceita apenas função `(value) => boolean`; policy.type === 'function'.
    */
-  addCharacterWhitelist(name, regex) {
-    characterWhitelists[name] = regex;
+  addCharacterWhitelist(name, policy) {
+    if (typeof policy !== 'function') {
+      throw new TypeError('Política de caracteres deve ser uma função de classificação');
+    }
+    characterPolicies[name] = policy;
   }
 
   /**

@@ -12,6 +12,8 @@ services:
   auth-service-1:
     image: ${REGISTRY}/auth-service:${VERSION:-latest}
     container_name: auth-service-prod-1
+    env_file:
+      - .env.prod
     environment:
       - NODE_ENV=production
       - PORT=3000
@@ -51,6 +53,8 @@ services:
   auth-service-2:
     image: ${REGISTRY}/auth-service:${VERSION:-latest}
     container_name: auth-service-prod-2
+    env_file:
+      - .env.prod
     environment:
       - NODE_ENV=production
       - PORT=3000
@@ -90,6 +94,8 @@ services:
   auth-service-3:
     image: ${REGISTRY}/auth-service:${VERSION:-latest}
     container_name: auth-service-prod-3
+    env_file:
+      - .env.prod
     environment:
       - NODE_ENV=production
       - PORT=3000

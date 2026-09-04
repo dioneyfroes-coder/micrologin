@@ -2,6 +2,26 @@
 import DOMPurify from 'isomorphic-dompurify';
 import validator from 'validator';
 
+/**
+ * Remoção de caracteres de controle (Unicode) por CLASSIFICAÇÃO de
+ * charCode, sem expressão regular. Cobre C0 controls (U+0000–U+001F) e
+ * C1 controls (U+007F–U+009F).
+ */
+const stripControlCharacters = (value) => {
+  let result = '';
+  for (const char of value) {
+    const code = char.charCodeAt(0);
+    if (code >= 0x0000 && code <= 0x001F) {
+      continue;
+    }
+    if (code >= 0x007F && code <= 0x009F) {
+      continue;
+    }
+    result += char;
+  }
+  return result;
+};
+
 export const sanitizeInput = (req, res, next) => {
   // Sanitizar strings recursivamente
   const sanitizeObject = (obj) => {
@@ -10,9 +30,8 @@ export const sanitizeInput = (req, res, next) => {
       obj = DOMPurify.sanitize(obj);
       // Escapar caracteres SQL
       obj = validator.escape(obj);
-      // Remover caracteres de controle (Unicode)
-      // eslint-disable-next-line no-control-regex
-      obj = obj.replace(/[\u0000-\u001F\u007F-\u009F]/g, '');
+      // Remover caracteres de controle (Unicode) sem regex
+      obj = stripControlCharacters(obj);
     } else if (typeof obj === 'object' && obj !== null) {
       for (const key in obj) {
         obj[key] = sanitizeObject(obj[key]);

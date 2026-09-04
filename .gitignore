@@ -2,7 +2,8 @@ node_modules
 server.crt
 server.key
 .env
-.env.example
+.env.docker
+
 dist    
 build
 coverage/
@@ -13,5 +14,4 @@ npm-debug.log
 ignore.js
 coverage/
 logs/
-tests/
-scripts/
+

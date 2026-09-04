@@ -3,7 +3,7 @@
  * Registra todos os eventos de segurança para análise e alertas
  */
 
-class SecurityAuditLogger {
+export class SecurityAuditLogger {
   constructor() {
     this.events = [];
     this.alertThresholds = {

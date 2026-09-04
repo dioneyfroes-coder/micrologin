@@ -21,6 +21,26 @@ const domainFailureMessage = (error, fallback) => (
 );
 
 /**
+ * Política de username por CLASSIFICAÇÃO DE CARACTERES.
+ *
+ * A verificação percorre caractere a caractere (letras ASCII, dígitos e
+ * underscore) em vez de usar expressão regular. Regex fica reservada apenas
+ * para detecção/monitoramento em outras camadas; a proteção principal de
+ * entrada é esta checagem determinística.
+ */
+const hasAllowedUsernameChars = (username) => {
+  for (const char of username) {
+    const code = char.charCodeAt(0);
+    const isLetter = (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+    const isDigit = code >= 48 && code <= 57;
+    if (!isLetter && !isDigit && char !== '_') {
+      return false;
+    }
+  }
+  return true;
+};
+
+/**
  * Entidade User - Núcleo do negócio
  */
 export class User {
@@ -48,7 +68,7 @@ export class User {
     return !!(this.username &&
              this.username.length >= 3 &&
              this.username.length <= 50 &&
-             /^[a-zA-Z0-9_]+$/.test(this.username));
+             hasAllowedUsernameChars(this.username));
   }
 
   /**
@@ -73,7 +93,7 @@ export class User {
     return !!(username &&
              username.length >= 3 &&
              username.length <= 50 &&
-             /^[a-zA-Z0-9_]+$/.test(username));
+             hasAllowedUsernameChars(username));
   }
 
   /**
@@ -102,6 +122,9 @@ export class LoginCredentials {
   validate() {
     if (!this.username || this.username.length < 3) {
       throw new DomainError('INVALID_USERNAME', 'Username deve ter pelo menos 3 caracteres');
+    }
+    if (!hasAllowedUsernameChars(this.username)) {
+      throw new DomainError('INVALID_USERNAME', 'Username deve conter apenas letras, números e underscores');
     }
     if (!this.plainPassword || this.plainPassword.length < PASSWORD_MIN_LENGTH) {
       throw new DomainError('INVALID_PASSWORD', `Senha deve ter pelo menos ${PASSWORD_MIN_LENGTH} caracteres`);

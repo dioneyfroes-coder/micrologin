@@ -45,24 +45,26 @@ export class JWTTokenService {
       } = options;
 
       // ✅ Access Token (curta vida)
-      const accessToken = jwt.sign(payload, this.secret, {
-        expiresIn: accessExpiresIn,
-        issuer,
-        audience,
-        subject: payload.id,
-        type: 'access'
-      });
+      const accessToken = jwt.sign(
+        { ...payload, token_type: 'access' },
+        this.secret,
+        {
+          expiresIn: accessExpiresIn,
+          issuer,
+          audience,
+          subject: payload.id
+        }
+      );
 
       // ✅ Refresh Token (longa vida)
       const refreshToken = jwt.sign(
-        { id: payload.id, username: payload.username },
+        { id: payload.id, username: payload.username, token_type: 'refresh' },
         this.refreshSecret,
         {
           expiresIn: refreshExpiresIn,
           issuer,
           audience,
-          subject: payload.id,
-          type: 'refresh'
+          subject: payload.id
         }
       );
 
@@ -89,12 +91,11 @@ export class JWTTokenService {
    */
   async generateAccessToken(payload, expiresIn = '15m') {
     try {
-      return jwt.sign(payload, this.secret, {
+      return jwt.sign({ ...payload, token_type: 'access' }, this.secret, {
         expiresIn,
         issuer: 'micrologin-auth',
         audience: 'micrologin-api',
-        subject: payload.id,
-        type: 'access'
+        subject: payload.id
       });
     } catch (error) {
       throw new Error(`Erro ao gerar access token: ${error.message}`);
@@ -182,7 +183,7 @@ export class JWTTokenService {
       // Revogar o refresh token antigo (opcional, para maior segurança)
       if (this.redisClient) {
         const expiresIn = decoded.exp * 1000 - Date.now();
-        await this.blacklistToken(refreshToken, expiresIn);
+        await this.revokeToken(refreshToken, expiresIn);
       }
 
       return newTokens;

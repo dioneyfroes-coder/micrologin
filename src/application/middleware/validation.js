@@ -2,6 +2,25 @@ import { body } from 'express-validator';
 import { validatePasswordStrength, isCommonPassword } from '../../shared/utils/passwordValidator.js';
 
 /**
+ * Política de username por CLASSIFICAÇÃO DE CARACTERES.
+ *
+ * A checagem principal não usa expressão regular: percorre os caracteres e
+ * aceita apenas letras ASCII, dígitos, underscore e hífen. Regex fica
+ * reservada apenas para detecção/monitoramento em outras camadas.
+ */
+export const hasAllowedUsernameChars = (username) => {
+  for (const char of username) {
+    const code = char.charCodeAt(0);
+    const isLetter = (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+    const isDigit = code >= 48 && code <= 57;
+    if (!isLetter && !isDigit && char !== '_' && char !== '-') {
+      return false;
+    }
+  }
+  return true;
+};
+
+/**
  * Validações para login
  */
 export const validateLogin = [
@@ -25,8 +44,12 @@ export const validateRegister = [
     .trim()
     .isLength({ min: 3, max: 30 })
     .withMessage('Usuário deve ter entre 3 e 30 caracteres.')
-    .matches(/^[a-zA-Z0-9_-]+$/)
-    .withMessage('Usuário deve conter apenas letras, números, underscores e hífens.'),
+    .custom((user) => {
+      if (!hasAllowedUsernameChars(user)) {
+        throw new Error('Usuário deve conter apenas letras, números, underscores e hífens.');
+      }
+      return true;
+    }),
 
   body('password')
     .isString()
@@ -56,8 +79,12 @@ export const validateUpdate = [
     .trim()
     .isLength({ min: 3, max: 30 })
     .withMessage('Usuário deve ter entre 3 e 30 caracteres.')
-    .matches(/^[a-zA-Z0-9_-]+$/)
-    .withMessage('Usuário deve conter apenas letras, números, underscores e hífens.'),
+    .custom((user) => {
+      if (!hasAllowedUsernameChars(user)) {
+        throw new Error('Usuário deve conter apenas letras, números, underscores e hífens.');
+      }
+      return true;
+    }),
 
   body('password')
     .optional()

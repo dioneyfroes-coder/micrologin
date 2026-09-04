@@ -10,6 +10,42 @@ export const PASSWORD_MAX_LENGTH = 128;
  */
 
 /**
+ * Classificação ASCII para a política de senha.
+ *
+ * A política é aplicada por CLASSIFICAÇÃO DE CARACTERES (intervalos de
+ * charCode e conjunto explícito de símbolos), e não por expressões regulares.
+ * Regex é usada apenas como mecanismo auxiliar de detecção/monitoramento em
+ * outras camadas; a proteção principal fica nesta checagem determinística.
+ */
+const SPECIAL_CHARS = new Set(['!', '@', '#', '$', '%', '^', '&', '*', '-', '_', '=', '+']);
+
+const isASCIIUpper = (code) => code >= 65 && code <= 90;   // A-Z
+const isASCIILower = (code) => code >= 97 && code <= 122;  // a-z
+const isASCIIDigit = (code) => code >= 48 && code <= 57;   // 0-9
+
+const classifyComposition = (password) => {
+  let hasUpper = false;
+  let hasLower = false;
+  let hasDigit = false;
+  let hasSpecial = false;
+
+  for (const char of password) {
+    const code = char.charCodeAt(0);
+    if (isASCIIUpper(code)) {
+      hasUpper = true;
+    } else if (isASCIILower(code)) {
+      hasLower = true;
+    } else if (isASCIIDigit(code)) {
+      hasDigit = true;
+    } else if (SPECIAL_CHARS.has(char)) {
+      hasSpecial = true;
+    }
+  }
+
+  return { hasUpper, hasLower, hasDigit, hasSpecial };
+};
+
+/**
  * Validação de senha forte
  *
  * Regras obrigatórias:
@@ -42,23 +78,22 @@ export function validatePasswordStrength(password) {
     errors.push(`Senha não pode ter mais de ${PASSWORD_MAX_LENGTH} caracteres`);
   }
 
-  // Deve conter maiúscula
-  if (!/[A-Z]/.test(password)) {
+  // Composição por classificação de caracteres (proteção principal)
+  const composition = classifyComposition(password);
+
+  if (!composition.hasUpper) {
     errors.push('Senha deve conter pelo menos uma letra maiúscula');
   }
 
-  // Deve conter minúscula
-  if (!/[a-z]/.test(password)) {
+  if (!composition.hasLower) {
     errors.push('Senha deve conter pelo menos uma letra minúscula');
   }
 
-  // Deve conter número
-  if (!/[0-9]/.test(password)) {
+  if (!composition.hasDigit) {
     errors.push('Senha deve conter pelo menos um número');
   }
 
-  // Deve conter caractere especial
-  if (!/[!@#$%^&*\-_=+]/.test(password)) {
+  if (!composition.hasSpecial) {
     errors.push('Senha deve conter pelo menos um caractere especial (!@#$%^&*-_=+)');
   }
 
