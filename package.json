@@ -36,7 +36,7 @@
     "clustering"
   ],
   "author": "Dioney Froes",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "dependencies": {
     "bcrypt": "^6.0.0",
     "compression": "^1.8.0",

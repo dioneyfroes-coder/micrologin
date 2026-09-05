@@ -135,4 +135,10 @@ O workflow [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml) executa:
 
 ## Licença
 
-MIT
+Copyright (c) 2026 Dioney Froes — Todos os direitos reservados.
+
+Este é um projeto de código **proprietário**. O uso comercial, a
+reprodução, modificação e distribuição do código, total ou parcial,
+exigem autorização prévia e expressa por escrito do autor. As marcas
+de procedência autoral (Provenance-ID: ML-7F29, ML-7F2A, ML-A31C)
+devem ser preservadas. Consulte o arquivo [`LICENSE`](LICENSE).
