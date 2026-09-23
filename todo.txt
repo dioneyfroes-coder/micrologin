@@ -1,0 +1,44 @@
+# TODO - Pendências identificadas na análise
+
+> Itens de inconsistência encontrados na revisão do projeto.
+> Substitui o antigo `avaliação do projeto.md` (excluído).
+
+## Feito nesta sessão
+- [x] Removido `.eslintrc.json` vazio (config morta; usado `eslint.config.js`)
+- [x] Removido `tests/rateLimitTests.js` (não batia com o `testMatch` do Jest, nunca rodava)
+- [x] Removido `avaliação do projeto.md` (plano antigo, substituído por este arquivo)
+- [x] Removido `.github/workflows/performance.yml` (referenciava script `dev:direct` e `tests/load/k6-load-test.js` inexistentes; métricas falsas)
+- [x] Removido `test:load` e dependency `artillery` (apontavam para `tests/load/load-test.yml` inexistente)
+- [x] Avaliado `AdapterFactory.createCrypto` (aparentava duplicar `createCryptoService`,
+      mas é usado/coberto por `infrastructure-adapters.test.js` - mantido)
+- [x] Adicionado `.env.prod` ao `.gitignore` (README alegava que já estava; exposição de credenciais)
+- [x] README: link para `DASHBOARD_SEGURANCA_GUIA.md` (guia órfão) e `examples/`
+
+## P0 - Segurança/config
+- [ ] Fazer `securityConfig.jwt.issuer`/`audience` serem usados pelo `JWTTokenService`.
+      appConfig.js:72-73 define `auth-service`/`api-users`, mas jwtTokenService.js:49,77
+      hardcoda `micrologin-auth`/`micrologin-api`. Funciona, mas a config é enganosa.
+- [ ] Avaliar `express.json({ limit: '10mb' })` (app.js:86) - limite alto para um serviço de auth.
+- [ ] Revisar defaults de dev: `SSL_ENABLED` default `true` (appConfig.js:28) exige
+      `server.key`/`server.crt` para rodar; clustering fork um worker por CPU.
+
+## P1 - Infra/compose (referências quebradas)
+- [ ] `docker-compose.yml` referencia arquivos/dirs inexistentes:
+      `scripts/mongo-init.js`, `monitoring/prometheus.yml`,
+      `monitoring/grafana/dashboards`, `monitoring/grafana/datasources`,
+      `nginx/nginx.conf`, `nginx/ssl`, `logs/` -> criar esses arquivos OU simplificar o compose.
+- [ ] `docker-compose.prod.yml` referencia `nginx/nginx-prod.conf` e `nginx/ssl` (inexistentes).
+- [ ] `.env.prod` está no `.gitignore` agora, mas certifique-se de que `.env.prod.example`
+      reflete as variáveis reais usadas pelo compose prod.
+
+## P2 - CI/CD
+- [ ] `deploy-staging`/`deploy-production` em ci-cd.yml são placeholders (apenas `echo`,
+      comentam blue-green/kubectl mas não implementam deploy real).
+- [ ] `release.yml`: step "Tag Docker images" é placeholder.
+
+## P3 - Código/config morta
+- [ ] `serverConfig.timeout.gracefulShutdown` (appConfig.js:42) e `GRACEFUL_SHUTDOWN_TIMEOUT`
+      no .env.example nunca são consumidos (o gracefulShutdown real é local em errorHandler.js).
+- [ ] `monitoringConfig.logging` (LOG_LEVEL/LOG_FORMAT/LOG_FILE, appConfig.js:104-108) nunca
+      é consumido (requestLogger.js é um console.log simples) - ou implementar ou remover.
+- [ ] `.vscode/settings.json` contém apenas uma flag do Postman - avaliar se mantém.
