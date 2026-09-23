@@ -10,8 +10,7 @@ import { pathToFileURL } from 'url';
 import {
   serverConfig,
   securityConfig,
-  validateConfiguration,
-  getConfigSummary
+  validateConfiguration
 } from './interfaces/config/appConfig.js';
 
 // Utilitários e middlewares
@@ -50,12 +49,6 @@ class AuthService {
   validateEnvironment() {
     try {
       validateConfiguration();
-      console.log('✅ Configurações validadas com sucesso');
-
-      // Log da configuração (sem dados sensíveis)
-      const configSummary = getConfigSummary();
-      console.log('🔧 Configuração da aplicação:', JSON.stringify(configSummary, null, 2));
-
     } catch (error) {
       console.error('❌ Erro na configuração:', (error as Error).message);
       console.error('💡 Verifique seu arquivo .env');
@@ -67,8 +60,6 @@ class AuthService {
    * Configura segurança usando configurações centralizadas
    */
   setupSecurity() {
-    console.log('🔒 Configurando segurança avançada...');
-
     setupSecurity(this.app);
 
     this.app.use(cors({
@@ -78,8 +69,6 @@ class AuthService {
       methods: ['GET', 'POST', 'PUT', 'DELETE'],
       allowedHeaders: ['Content-Type', 'Authorization']
     }));
-
-    console.log('✅ Segurança configurada com sucesso!');
   }
 
   setupMiddleware() {
@@ -147,23 +136,16 @@ class AuthService {
 
         server.listen(port, () => {
           console.log(`🚀 Servidor HTTPS rodando em https://${serverConfig.host}:${port}`);
-          console.log(`📚 Documentação: https://${serverConfig.host}:${port}/api-docs`);
-          console.log(`📊 Métricas: https://${serverConfig.host}:${port}/metrics`);
-          console.log(`🏥 Health Check: https://${serverConfig.host}:${port}/health`);
-          console.log(`🖥️ Worker PID: ${process.pid} | Cluster: ${serverConfig.cluster.enabled}`);
-          console.log('🔒 Segurança avançada: ativada');
-          console.log('✅ Serviços inicializados com sucesso!');
+          console.log(`📚 API Docs: https://${serverConfig.host}:${port}/api-docs | 📊 Métricas: https://${serverConfig.host}:${port}/metrics | 🏥 Health: https://${serverConfig.host}:${port}/health`);
         });
       } else {
         // Servidor HTTP para desenvolvimento
         this.app.listen(port, () => {
           console.log(`🚀 Servidor HTTP rodando em http://${serverConfig.host}:${port}`);
-          console.log(`📚 Documentação: http://${serverConfig.host}:${port}/api-docs`);
-          console.log(`📊 Métricas: http://${serverConfig.host}:${port}/metrics`);
-          console.log(`🏥 Health Check: http://${serverConfig.host}:${port}/health`);
-          console.log(`🖥️ Worker PID: ${process.pid} | Cluster: ${serverConfig.cluster.enabled}`);
-          console.log('⚠️ Modo HTTP (desenvolvimento)');
-          console.log('✅ Serviços inicializados com sucesso!');
+          console.log(`📚 API Docs: http://${serverConfig.host}:${port}/api-docs | 📊 Métricas: http://${serverConfig.host}:${port}/metrics | 🏥 Health: http://${serverConfig.host}:${port}/health`);
+          if (serverConfig.nodeEnv !== 'production') {
+            console.log('⚠️ Modo HTTP (sem SSL)');
+          }
         });
       }
 
@@ -181,8 +163,7 @@ const isDirectExecution = process.argv[1]
 if (isDirectExecution) {
   // Configuração de clustering inteligente
   if (cluster.isPrimary && serverConfig.cluster.enabled) {
-    console.log(`🔧 Master ${process.pid} iniciando cluster...`);
-    console.log(`👥 Configuração: ${serverConfig.cluster.workers} workers (máx: ${serverConfig.cluster.maxWorkers})`);
+    console.log(`🔧 Master ${process.pid} iniciando cluster: ${serverConfig.cluster.workers} workers (máx: ${serverConfig.cluster.maxWorkers})`);
 
     // Fork workers conforme configuração
     for (let i = 0; i < serverConfig.cluster.workers; i++) {
@@ -190,12 +171,11 @@ if (isDirectExecution) {
     }
 
     cluster.on('exit', (worker, code, signal) => {
-      console.log(`⚠️ Worker ${worker.process.pid} morreu (código: ${code}, sinal: ${signal})`);
+      console.error(`⚠️ Worker ${worker.process.pid} morreu (código: ${code}, sinal: ${signal})`);
 
       // Aguarda antes de recriar o worker para evitar loop infinito
       setTimeout(() => {
-        const newWorker = cluster.fork();
-        console.log(`🔄 Novo worker ${newWorker.process.pid} criado`);
+        cluster.fork();
       }, serverConfig.cluster.respawnDelay);
     });
 
@@ -211,12 +191,6 @@ if (isDirectExecution) {
     // Workers ou modo single-process
     const authService = new AuthService();
     authService.start(serverConfig.port);
-
-    if (serverConfig.cluster.enabled) {
-      console.log(`👷 Worker ${process.pid} iniciado`);
-    } else {
-      console.log(`📱 Modo single-process - PID: ${process.pid}`);
-    }
   }
 }
 

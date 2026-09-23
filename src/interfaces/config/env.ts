@@ -26,8 +26,3 @@ if (loadError && loadError.code && loadError.code !== 'ENOENT') {
 if (loadError) {
   console.warn('⚠️ Arquivo .env não encontrado; usando variáveis do ambiente do sistema');
 }
-
-// Apenas em modo de desenvolvimento, mostrar status
-if (process.env.NODE_ENV === 'development') {
-  console.log('🔧 Variáveis de ambiente carregadas');
-}

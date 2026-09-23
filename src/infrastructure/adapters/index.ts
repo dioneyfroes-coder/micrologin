@@ -9,6 +9,7 @@ import bcrypt from 'bcrypt';
 import type { CryptoService, Logger, UserRepository } from '../../domain/index.js';
 import { User } from '../../domain/index.js';
 import { getUserModel } from '../database/models/User.js';
+import { logger } from '../../shared/utils/logger.js';
 
 /**
  * ADAPTER: MongoDB User Repository
@@ -158,15 +159,15 @@ export class BcryptAdapter implements CryptoService {
  */
 export class ConsoleLoggerAdapter implements Logger {
   info(message: string, meta: Record<string, unknown> = {}): void {
-    console.log(`ℹ️ [INFO] ${message}`, meta);
+    logger.info(message, meta);
   }
 
   error(message: string, error: unknown = null): void {
-    console.error(`❌ [ERROR] ${message}`, (error as Error | null)?.message || error);
+    logger.error(message, error);
   }
 
   warn(message: string, meta: Record<string, unknown> = {}): void {
-    console.warn(`⚠️ [WARN] ${message}`, meta);
+    logger.warn(message, meta);
   }
 }
 

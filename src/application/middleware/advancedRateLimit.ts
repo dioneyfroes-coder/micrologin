@@ -1,6 +1,6 @@
 import { RateLimiterRedis, RateLimiterMemory, RateLimiterAbstract } from 'rate-limiter-flexible';
 import type { NextFunction, Request, Response } from 'express';
-import { validateRateLimitConfig, logRateLimitConfig } from '../../interfaces/config/rateLimitConfig.js';
+import { validateRateLimitConfig } from '../../interfaces/config/rateLimitConfig.js';
 import { securityAuditLogger } from './securityAudit.js';
 import { HttpError } from '../../shared/utils/errorHandler.js';
 import type { RedisClient } from '../../infrastructure/cache/connection.js';
@@ -22,11 +22,6 @@ class AdvancedRateLimiter {
 
     this.config = validation.config;
 
-    if (process.env.NODE_ENV === 'development') {
-      console.log(`🔧 Rate Limiter inicializando... Environment: ${this.config.environment}`);
-    }
-
-    logRateLimitConfig();
     this.setupLimiters();
   }
 
@@ -51,10 +46,6 @@ class AdvancedRateLimiter {
         blockDuration: this.config.login.blockDuration
       })
     };
-
-    if (process.env.NODE_ENV === 'development') {
-      console.log(`✅ Rate limiters (memória) configurados para: ${this.config.environment.toUpperCase()}`);
-    }
   }
 
   setupRedisLimiters(): void {
@@ -84,10 +75,6 @@ class AdvancedRateLimiter {
         blockDuration: this.config.login.blockDuration
       })
     };
-
-    if (process.env.NODE_ENV === 'development') {
-      console.log('✅ Rate limiters atualizados para Redis');
-    }
   }
 
   async init(): Promise<void> {
@@ -168,8 +155,6 @@ class AdvancedRateLimiter {
       const msBeforeNext = rejection.msBeforeNext || 1000;
       const secondsToWait = Math.round(msBeforeNext / 1000) || 1;
 
-      console.warn(`⚠️ Rate limit atingido: ${ip} em ${req.path} - aguardar ${secondsToWait}s`);
-
       // Registrar violação no sistema de auditoria
       securityAuditLogger.logRateLimitViolation(
         ip,
@@ -211,9 +196,6 @@ class AdvancedRateLimiter {
         const keys = await this.redisClient.keys(`${this.config.redis.keyPrefix}*`);
         if (keys.length > 0) {
           await this.redisClient.del(keys);
-          if (process.env.NODE_ENV === 'development') {
-            console.log(`✅ ${keys.length} chaves de rate limit removidas do Redis`);
-          }
         }
       } catch (error) {
         console.warn('⚠️ Erro ao limpar Redis:', (error as Error).message);
@@ -222,10 +204,6 @@ class AdvancedRateLimiter {
       this.setupRedisLimiters();
     } else {
       this.setupLimiters();
-    }
-
-    if (process.env.NODE_ENV === 'development') {
-      console.log('✅ Rate limiters resetados');
     }
   }
 
@@ -245,10 +223,6 @@ class AdvancedRateLimiter {
       return false;
     }
 
-    if (process.env.NODE_ENV === 'development') {
-      console.log('🔧 Atualizando configuração de rate limiting...');
-    }
-
     this.config = { ...this.config, ...newConfig };
 
     // Recriar limiters com nova configuração, preservando o backend atual
@@ -257,12 +231,6 @@ class AdvancedRateLimiter {
     } else {
       this.setupLimiters();
     }
-
-    if (process.env.NODE_ENV === 'development') {
-      console.log('✅ Configuração de rate limiting atualizada');
-    }
-
-    logRateLimitConfig();
 
     return true;
   }

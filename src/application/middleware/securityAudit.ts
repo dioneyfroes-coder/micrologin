@@ -3,6 +3,8 @@
  * Registra todos os eventos de segurança para análise e alertas
  */
 
+import { logger } from '../../shared/utils/logger.js';
+
 type Severity = 'info' | 'warning' | 'error';
 
 interface AuditEventDetails {
@@ -168,14 +170,19 @@ export class SecurityAuditLogger {
 
   /**
    * Log formatado no console
+   * Apenas eventos de alerta (warning/error) são emitidos no console
    */
   logToConsole(event: SecurityEvent): void {
-    const emoji = this.getEmojiForSeverity(event.severity);
-    const timestamp = event.timestamp;
+    if (event.severity === 'info') {
+      return;
+    }
 
-    console.log(`${emoji} [SECURITY] ${timestamp} - ${event.type.toUpperCase()}`);
-    console.log(`   IP: ${event.ip} | UserAgent: ${event.userAgent}`);
-    console.log('   Details:', event.details);
+    const details: Record<string, unknown> = { ...event.details };
+    if ('username' in details) {
+      details.username = '***';
+    }
+
+    logger.warn(`[SECURITY] ${event.type.toUpperCase()} - IP: ${event.ip}`, details);
   }
 
   /**
@@ -202,9 +209,10 @@ export class SecurityAuditLogger {
    * Dispara alerta de segurança
    */
   triggerAlert(alertType: string, events: SecurityEvent[]): void {
-    console.warn(`🚨 ALERTA DE SEGURANÇA: ${alertType}`);
-    console.warn(`   Eventos detectados: ${events.length}`);
-    console.warn('   Último evento:', events[events.length - 1]);
+    logger.warn(`🚨 ALERTA DE SEGURANÇA: ${alertType}`, {
+      events: events.length,
+      lastEvent: events[events.length - 1]
+    });
 
     // Aqui poderia integrar com sistemas de notificação
     // (email, Slack, SMS, etc.)

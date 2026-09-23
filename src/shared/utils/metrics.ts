@@ -60,10 +60,6 @@ export const metricsMiddleware = (req: Request, res: Response, next: NextFunctio
       httpRequestTotal
         .labels(req.method, route, res.statusCode.toString())
         .inc();
-
-      if (process.env.NODE_ENV === 'development') {
-        console.log(`📊 Métrica registrada: ${req.method} ${route} ${res.statusCode}`);
-      }
     } catch (error) {
       console.warn('⚠️ Erro ao registrar métrica:', (error as Error).message);
     }

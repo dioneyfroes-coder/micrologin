@@ -143,17 +143,3 @@ export const validateRateLimitConfig = (): { isValid: boolean; errors: string[];
     config
   };
 };
-
-/**
- * Log das configurações ativas
- */
-export const logRateLimitConfig = (): void => {
-  const activeConfig = getActiveConfig();
-  const environment = activeConfig.environment;
-
-  console.log(`🔧 Rate Limit Config (${environment.toUpperCase()}):`);
-  console.log(`   📊 IP: ${activeConfig.ip.points} req/${activeConfig.ip.duration}s (block: ${activeConfig.ip.blockDuration}s)`);
-  console.log(`   👤 User: ${activeConfig.user.points} req/${activeConfig.user.duration}s (block: ${activeConfig.user.blockDuration}s)`);
-  console.log(`   🔐 Login: ${activeConfig.login.points} req/${activeConfig.login.duration}s (block: ${activeConfig.login.blockDuration}s)`);
-  console.log(`   🚫 Exempt paths: ${activeConfig.exemptPaths.join(', ')}`);
-};

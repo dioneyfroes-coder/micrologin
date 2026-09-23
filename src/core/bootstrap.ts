@@ -63,8 +63,6 @@ export function bootstrapServices() {
     const logger = container.resolve<Logger>('logger');
     return new AuthWebMiddleware(jwtService, userRepository, logger);
   });
-
-  console.log('🔧 Serviços da arquitetura hexagonal registrados no container:', container.list());
 }
 
 /**

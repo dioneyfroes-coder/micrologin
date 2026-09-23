@@ -23,7 +23,6 @@ const MAX_RETRY_ATTEMPTS = 3;
  */
 export const initRedis = async(): Promise<RedisClient | null> => {
   if (client && client.isReady) {
-    console.log('✅ Redis já conectado');
     return client;
   }
 
@@ -55,19 +54,6 @@ export const initRedis = async(): Promise<RedisClient | null> => {
       console.error('❌ Redis Error:', err.message);
     });
 
-    newClient.on('connect', () => {
-      console.log('🔄 Redis conectando...');
-    });
-
-    newClient.on('ready', () => {
-      console.log('✅ Redis pronto para usar');
-      isHealthy = true;
-    });
-
-    newClient.on('reconnecting', () => {
-      console.log('🔄 Redis reconectando...');
-    });
-
     newClient.on('end', () => {
       isHealthy = false;
       console.warn('⚠️ Redis desconectado');
@@ -80,9 +66,7 @@ export const initRedis = async(): Promise<RedisClient | null> => {
     const pingResult = await performHealthCheck(newClient);
     isHealthy = pingResult;
 
-    if (isHealthy) {
-      console.log('✅ Health check Redis passou - conectado e operacional');
-    } else {
+    if (!isHealthy) {
       console.warn('⚠️ Redis conectado mas health check falhou');
       client = null;
       return null;
@@ -105,16 +89,10 @@ export const initRedis = async(): Promise<RedisClient | null> => {
  */
 export const performHealthCheck = async(redisClient: RedisClient): Promise<boolean> => {
   try {
-    const startTime = Date.now();
-
     // PING é a forma mais básica de verificar conectividade
     const pongResponse = await redisClient.ping();
 
-    const responseTime = Date.now() - startTime;
-
     if (pongResponse === 'PONG') {
-      console.log(`✅ Redis PING respondeu em ${responseTime}ms`);
-
       // Verificar adicionalmente se conseguimos ler/escrever
       const testKey = '__health_check__';
       const testValue = Date.now().toString();
@@ -124,7 +102,6 @@ export const performHealthCheck = async(redisClient: RedisClient): Promise<boole
       await redisClient.del(testKey);
 
       if (retrieved === testValue) {
-        console.log('✅ Redis read/write test passou');
         return true;
       }
     }
@@ -217,10 +194,8 @@ export const clearCache = async(key: string | null = null): Promise<void> => {
   try {
     if (key) {
       await client.del(key);
-      console.log(`🗑️ Cache limpo: ${key}`);
     } else {
       await client.flushDb();
-      console.log('🗑️ Cache completamente limpo');
     }
   } catch (error) {
     console.error('❌ Erro ao limpar cache:', (error as Error).message);
@@ -234,7 +209,6 @@ export const disconnectRedis = async(): Promise<void> => {
   if (client && client.isReady) {
     try {
       await client.quit();
-      console.log('✅ Redis desconectado');
       client = null;
       isHealthy = false;
     } catch (error) {

@@ -112,8 +112,7 @@ export class AuthWebMiddleware {
 
       next();
 
-    } catch (error) {
-      this.logger.error('Erro na autenticação opcional', error);
+    } catch {
       req.user = null;
       next();
     }

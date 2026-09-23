@@ -57,13 +57,10 @@ export const setupErrorHandlers = (server: NodeServer, timeoutMs = 10000) => {
 
     try {
       server.close(async() => {
-        console.log('🔴 Servidor HTTP fechado.');
-
         try {
           // Fecha conexão do MongoDB com proteção
           if (mongoose.connection.readyState !== 0) {
             await mongoose.connection.close();
-            console.log('🔴 Conexão MongoDB fechada.');
           }
         } catch (dbError) {
           console.error('⚠️ Erro ao fechar MongoDB:', (dbError as Error).message);
@@ -92,7 +89,6 @@ export const setupErrorHandlers = (server: NodeServer, timeoutMs = 10000) => {
 
     // Se for erro de métricas, não quebrar a aplicação
     if (err.message.includes('forEach') || err.message.includes('metrics')) {
-      console.log('⚠️ Erro de métricas ignorado - aplicação continua rodando');
       return; // NÃO chamar gracefulShutdown
     }
 

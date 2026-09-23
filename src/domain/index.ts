@@ -429,8 +429,6 @@ export class AuthService {
 
       const tokens = await this.tokenGenerator.refreshTokens(refreshToken);
 
-      this.logger.info('Tokens renovados', { userId: tokens.refreshToken ? '***' : '***' });
-
       return { success: true, token: tokens };
 
     } catch (error) {
