@@ -94,10 +94,10 @@ deploy_staging() {
     log_info "Deploying to staging environment..."
     
     # Parar serviços existentes
-    docker-compose -f docker-compose.yml down || true
+    docker compose -f docker-compose.yml down || true
     
     # Iniciar novos serviços
-    docker-compose -f docker-compose.yml up -d
+    docker compose -f docker-compose.yml up -d
     
     # Aguardar health check
     wait_for_health_check "http://localhost:3000/health"
@@ -142,7 +142,7 @@ blue_green_deploy() {
     
     # Deploy da nova versão (green)
     export VERSION=${VERSION}
-    docker-compose -f docker-compose.prod.yml up -d
+    docker compose -f docker-compose.prod.yml up -d
     
     # Aguardar health check da nova versão
     sleep 30
@@ -194,8 +194,8 @@ rollback() {
     log_error "Deployment failed, initiating rollback..."
     
     # Implementar lógica de rollback
-    # docker-compose down
-    # docker-compose up -d (versão anterior)
+    # docker compose down
+    # docker compose up -d (versão anterior)
     
     log_success "Rollback completed"
 }

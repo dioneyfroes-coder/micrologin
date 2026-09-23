@@ -1,32 +1,22 @@
 import js from '@eslint/js';
+import tseslint from 'typescript-eslint';
 
-export default [
+export default tseslint.config(
   js.configs.recommended,
+  ...tseslint.configs.recommended,
   {
     languageOptions: {
-      ecmaVersion: 'latest',
-      sourceType: 'module',
-      globals: {
-        console: 'readonly',
-        process: 'readonly',
-        Buffer: 'readonly',
-        __dirname: 'readonly',
-        __filename: 'readonly',
-        global: 'readonly',
-        module: 'readonly',
-        require: 'readonly',
-        exports: 'readonly',
-        setTimeout: 'readonly',
-        clearTimeout: 'readonly',
-        setInterval: 'readonly',
-        clearInterval: 'readonly'
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname
       }
     },
     rules: {
       'indent': ['error', 2],
       'quotes': ['error', 'single'],
       'semi': ['error', 'always'],
-      'no-unused-vars': ['error', { 'argsIgnorePattern': '^_' }],
+      'no-unused-vars': 'off',
+      '@typescript-eslint/no-unused-vars': ['error', { 'argsIgnorePattern': '^_' }],
       'no-console': process.env.NODE_ENV === 'production' ? 'error' : 'off',
       'no-debugger': 'error',
       'no-var': 'error',
@@ -46,46 +36,6 @@ export default [
     }
   },
   {
-    files: ['tests/**/*.js'],
-    languageOptions: {
-      globals: {
-        jest: 'readonly',
-        describe: 'readonly',
-        test: 'readonly',
-        it: 'readonly',
-        expect: 'readonly',
-        beforeAll: 'readonly',
-        afterAll: 'readonly',
-        beforeEach: 'readonly',
-        afterEach: 'readonly',
-        mongoose: 'readonly',
-        setupErrorHandlers: 'readonly',
-        getCachedJWT: 'readonly',
-        performHealthCheck: 'readonly',
-        jwt: 'readonly'
-      }
-    },
-    rules: {
-      'no-console': 'off'
-    }
-  },
-  {
-    files: ['tests/load/**/*.js'],
-    languageOptions: {
-      globals: {
-        __ENV: 'readonly',
-        check: 'readonly',
-        group: 'readonly',
-        sleep: 'readonly',
-        __VU: 'readonly',
-        __ITER: 'readonly'
-      }
-    },
-    rules: {
-      'no-console': 'off'
-    }
-  },
-  {
     ignores: [
       'node_modules/',
       'coverage/',
@@ -95,4 +45,4 @@ export default [
       'logs/'
     ]
   }
-];
+);

@@ -1,7 +1,7 @@
 module.exports = {
   apps: [{
     name: 'autenticacao',
-    script: './src/app.js',
+    script: './dist/app.js',
     instances: 4, // 4 workers para teste
     exec_mode: 'cluster', // modo cluster para múltiplos workers
     env: {
@@ -17,7 +17,7 @@ module.exports = {
     // Configurações para balanceamento de carga real
     listen_timeout: 3000,
     kill_timeout: 5000,
-    watch: ['src'],
+    watch: ['dist'],
     ignore_watch: ['node_modules', 'logs', '.git'],
     log_file: './logs/combined.log',
     out_file: './logs/out.log',

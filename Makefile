@@ -103,19 +103,19 @@ deploy-prod: ## Deploy para produção
 # ======================================
 
 docker-up: ## Subir serviços Docker
-	docker-compose up -d
+	docker compose up -d
 
 docker-down: ## Parar serviços Docker
-	docker-compose down
+	docker compose down
 
 docker-rebuild: ## Rebuild completo dos containers
-	npm run docker:rebuild
+	docker compose up -d --build
 
 docker-logs: ## Ver logs dos containers
-	docker-compose logs -f
+	docker compose logs -f
 
 docker-clean: ## Limpar containers e volumes
-	docker-compose down -v
+	docker compose down -v
 	docker system prune -f
 
 # ======================================
@@ -180,13 +180,13 @@ status: ## Status dos serviços
 # ======================================
 
 shell: ## Acessar shell do container da aplicação
-	docker-compose exec app sh
+	docker compose exec auth-service sh
 
 redis-cli: ## Acessar Redis CLI
-	docker-compose exec redis redis-cli
+	docker compose exec redis redis-cli
 
 mongo-shell: ## Acessar MongoDB shell
-	docker-compose exec mongodb mongosh
+	docker compose exec mongodb mongosh
 
 load-test: ## Executar teste de carga
 	npm run test:load

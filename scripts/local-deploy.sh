@@ -38,20 +38,20 @@ fi
 
 # Parar containers existentes
 log "Parando containers existentes..."
-docker-compose down 2>/dev/null || true
+docker compose down 2>/dev/null || true
 
 # Limpar volumes antigos (opcional)
 read -p "Deseja limpar volumes antigos? (y/N): " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     log "Limpando volumes..."
-    docker-compose down -v
+    docker compose down -v
     docker volume prune -f
 fi
 
 # Build da imagem
 log "Construindo imagem Docker..."
-docker-compose build --no-cache
+docker compose build --no-cache
 
 if [ $? -ne 0 ]; then
     error "Falha ao construir a imagem Docker"
@@ -59,7 +59,7 @@ fi
 
 # Subir serviços
 log "Iniciando serviços..."
-docker-compose up -d
+docker compose up -d
 
 if [ $? -ne 0 ]; then
     error "Falha ao iniciar os serviços"
@@ -73,14 +73,14 @@ sleep 10
 log "Verificando saúde dos serviços..."
 
 # Redis
-if docker-compose exec redis redis-cli ping | grep -q PONG; then
+if docker compose exec redis redis-cli ping | grep -q PONG; then
     success "Redis está funcionando"
 else
     warning "Redis pode não estar funcionando corretamente"
 fi
 
 # MongoDB
-if docker-compose exec mongodb mongosh --eval "db.runCommand('ping')" | grep -q '"ok"'; then
+if docker compose exec mongodb mongosh --eval "db.runCommand('ping')" | grep -q '"ok"'; then
     success "MongoDB está funcionando"
 else
     warning "MongoDB pode não estar funcionando corretamente"
@@ -110,7 +110,7 @@ fi
 
 # Mostrar logs dos últimos minutos
 log "Últimos logs da aplicação:"
-docker-compose logs --tail=20 app
+docker compose logs --tail=20 auth-service
 
 # Informações finais
 echo ""
@@ -123,7 +123,7 @@ echo "  - Swagger UI: https://localhost:3000/api-docs"
 echo "  - Métricas: https://localhost:3000/metrics"
 echo ""
 echo "📊 Para monitorar logs:"
-echo "  docker-compose logs -f app"
+echo "  docker compose logs -f auth-service"
 echo ""
 echo "🛑 Para parar:"
-echo "  docker-compose down"
+echo "  docker compose down"

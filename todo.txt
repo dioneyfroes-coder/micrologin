@@ -1,9 +1,12 @@
-# TODO - Pendências identificadas na análise
+# TODO - Roadmap: Correções, Migração TypeScript e Docker
 
-> Itens de inconsistência encontrados na revisão do projeto.
-> Substitui o antigo `avaliação do projeto.md` (excluído).
+> Plano de trabalho do projeto.
+> Interrompido pelo processo de migração — certifique-se de que os itens P0 estão
+> resolvidos antes de iniciar a migração para TypeScript.
 
 ## Feito nesta sessão
+
+### Fase preparatória
 - [x] Removido `.eslintrc.json` vazio (config morta; usado `eslint.config.js`)
 - [x] Removido `tests/rateLimitTests.js` (não batia com o `testMatch` do Jest, nunca rodava)
 - [x] Removido `avaliação do projeto.md` (plano antigo, substituído por este arquivo)
@@ -14,31 +17,99 @@
 - [x] Adicionado `.env.prod` ao `.gitignore` (README alegava que já estava; exposição de credenciais)
 - [x] README: link para `DASHBOARD_SEGURANCA_GUIA.md` (guia órfão) e `examples/`
 
-## P0 - Segurança/config
-- [ ] Fazer `securityConfig.jwt.issuer`/`audience` serem usados pelo `JWTTokenService`.
-      appConfig.js:72-73 define `auth-service`/`api-users`, mas jwtTokenService.js:49,77
-      hardcoda `micrologin-auth`/`micrologin-api`. Funciona, mas a config é enganosa.
-- [ ] Avaliar `express.json({ limit: '10mb' })` (app.js:86) - limite alto para um serviço de auth.
-- [ ] Revisar defaults de dev: `SSL_ENABLED` default `true` (appConfig.js:28) exige
-      `server.key`/`server.crt` para rodar; clustering fork um worker por CPU.
+### Docker — preparação do ambiente
+- [x] `docker-compose.yml` simplificado: removidos serviços quebrados
+      (prometheus, grafana, nginx apontavam para `monitoring/` e `nginx/` inexistentes).
+      Dev agora = auth-service + mongodb + redis apenas.
+- [x] Removida referência a `scripts/mongo-init.js` inexistente do compose dev.
+- [x] Makefile alinhado: alvos docker usam `docker compose` (substitui `docker-compose` legado)
+      e serviço `app` renomeado para `auth-service`.
 
-## P1 - Infra/compose (referências quebradas)
-- [ ] `docker-compose.yml` referencia arquivos/dirs inexistentes:
-      `scripts/mongo-init.js`, `monitoring/prometheus.yml`,
-      `monitoring/grafana/dashboards`, `monitoring/grafana/datasources`,
-      `nginx/nginx.conf`, `nginx/ssl`, `logs/` -> criar esses arquivos OU simplificar o compose.
-- [ ] `docker-compose.prod.yml` referencia `nginx/nginx-prod.conf` e `nginx/ssl` (inexistentes).
-- [ ] `.env.prod` está no `.gitignore` agora, mas certifique-se de que `.env.prod.example`
-      reflete as variáveis reais usadas pelo compose prod.
+## P0 - SEGURANÇA/CONFIG (bloqueia a migração)
 
-## P2 - CI/CD
-- [ ] `deploy-staging`/`deploy-production` em ci-cd.yml são placeholders (apenas `echo`,
-      comentam blue-green/kubectl mas não implementam deploy real).
-- [ ] `release.yml`: step "Tag Docker images" é placeholder.
+> Nada aqui deve ficar pendente antes de iniciar a migração TS.
 
-## P3 - Código/config morta
-- [ ] `serverConfig.timeout.gracefulShutdown` (appConfig.js:42) e `GRACEFUL_SHUTDOWN_TIMEOUT`
-      no .env.example nunca são consumidos (o gracefulShutdown real é local em errorHandler.js).
-- [ ] `monitoringConfig.logging` (LOG_LEVEL/LOG_FORMAT/LOG_FILE, appConfig.js:104-108) nunca
-      é consumido (requestLogger.js é um console.log simples) - ou implementar ou remover.
-- [ ] `.vscode/settings.json` contém apenas uma flag do Postman - avaliar se mantém.
+- [x] Fazer `securityConfig.jwt.issuer`/`audience` serem usados pelo `JWTTokenService`.
+      jwtTokenService.js hardcodava `micrologin-auth`/`micrologin-api`; agora recebe
+      issuer/audience via constructor (default `auth-service`/`api-users`, passados
+      pelo bootstrap.js a partir de `securityConfig.jwt`). `.env.prod.example` já
+      define `JWT_ISSUER`/`JWT_AUDIENCE` corretos.
+- [x] Avaliar `express.json({ limit: '10mb' })` (app.js:86) - reduzido para `100kb`,
+      adequado a um serviço de auth (login/register têm payloads minúsculos).
+- [x] Revisar defaults de dev: `SSL_ENABLED` agora default `false` em dev/test
+      (habilitado apenas em produção ou com `SSL_ENABLED=true` explícito).
+      Clustering default `false` em dev/test (`CLUSTER_ENABLED=true` ou produção
+      para habilitar). `.env.example` e `.env.prod.example` atualizados.
+
+## P0.5 - LIMPEZA DE CÓDIGO MORTO (opcional mas recomendado antes da migração)
+
+> Reduz o blast radius da migração TS removendo o que não será migrado.
+
+- [x] `serverConfig.timeout.gracefulShutdown` (appConfig.js:42) e `GRACEFUL_SHUTDOWN_TIMEOUT`
+      agora são consumidos: `setupErrorHandlers(server, timeoutMs)` em errorHandler.js
+      usa o timeout configurado para forçar fechamento (antes hardcoded 10s),
+      e app.js passa `serverConfig.timeout.gracefulShutdown`.
+- [x] `monitoringConfig.logging` (LOG_LEVEL/LOG_FORMAT) agora é consumido por um logger
+      real em requestLogger.js (níveis debug/info/warn/error + formato console|structured).
+      Campo `LOG_FILE`/`file` removido (nunca implementado).
+- [x] `.vscode/settings.json` removido (continha apenas flag do Postman,
+      irrelevante para o projeto/colaboradores).
+
+## P1 - MIGRAÇÃO TOTAL PARA TYPESCRIPT
+
+> Após concluir P0, migrar TODO o projeto para TypeScript (strict).
+> Estratégia: incremental por layer, mantendo o app rodando (checkpoint por layer).
+> Os testes atuais foram removidos (ver P2) — usamos `npm run lint`/build para regressão
+> durante a migração.
+
+### Setup de toolchain
+- [x] Criar `tsconfig.json` (strict, `module: NodeNext`, `target: ES2022`, `outDir: dist/`)
+- [x] Adicionar devDependencies: `typescript` (~5.9.3), `tsx` (dev runtime), `@types/node`,
+      `@types/express`, `@types/jsonwebtoken`, `@types/bcrypt`, `@types/cors`,
+      `@types/compression`, `@types/validator`, `@types/swagger-ui-express`, `typescript-eslint`.
+- [x] `.ts` no ESLint (migrar `eslint.config.js` para compat TS; `no-unused-vars` TS).
+
+### Migração por camada (checkpoint a cada camada com `npm run build`)
+- [x] **shared/** (`utils/*.js` → `.ts`): tipos para DomainError, HttpError, configs.
+- [x] **domain/** (`index.js` → `index.ts`): entidade `User`, `AuthService`,
+      enums/tipos de resultado, interfaces (ports).
+- [x] **infrastructure/**: `database/`, `cache/`, `external-services/`,
+      `adapters/`. Tipos dos adapters (implementam ports do domínio).
+- [x] **interfaces/**: configs (`env.js`, `appConfig.js`, redis, rate limit, etc.) — tipar o `SecurityConfig` e derivados.
+- [x] **application/**: middleware, controllers, routes. Tipos Express (`Request`/`Response`).
+- [x] **core/**: `ServiceContainer` tipado (mapa de serviço com tipos), `bootstrap`.
+- [x] **app.js** → `app.ts` + entrypoint (extension augmentation `Express.Request.user`).
+- [x] Renomear imports `*.js` → `*.ts`/resolver extensions: mantido padrão `.js` no
+      source (NodeNext resolve `.ts` automaticamente); `tsc` gera `dist/` com `.js`.
+
+### Entrega da migração
+- [x] `npm run build` (tsc → dist/) gerando JS limpo (build OK, lint OK, 0 erros tsc).
+- [x] `npm start` / PM2 apontando para dist/ (atualizar `ecosystem.config.cjs`).
+- [x] Scripts do package.json atualizados (`dev` com `tsx watch`, `build` com tsc).
+- [ ] Dockerfile: stage `build` roda `tsc`; imagens de prod consomem `dist/`
+      (fase Docker abaixo).
+
+## P2 - TESTS EM TYPESCRIPT
+
+> Os testes JS antigos foram removidos. Escrever os novos testes em TS,
+> cobrindo o mesmo comportamento que os antigos garantiam.
+
+- [ ] Substituir/implementar testes de unidade por camada:
+      shared (password policy, username policy), domain (User, AuthService),
+      infra (adapters, jwt, redis/cache), application (middleware/controllers).
+- [ ] Testes de integração do fluxo de auth (login/register/refresh/logout).
+- [ ] Config do Jest em TS (`ts-jest` ou `babel-jest` com preset TS).
+- [ ] Manter `tests/env.setup.js` (ou migrar para TS).
+
+## P3 - DOCKER FUNCIONAL (por último, agora que o código é TS)
+
+- [ ] `Dockerfile` multi-stage atualizado: stage `build` (tsc), prod copia `dist/`.
+- [ ] Validar `docker compose up` dev (auth-service + mongodb + redis) com health checks.
+- [ ] `docker-compose.prod.yml`: revisar (referencia `nginx/nginx-prod.conf` e `nginx/ssl`
+      inexistentes; 3 instâncias + nginx). Decidir simplificar, como no dev, ou criar os arquivos.
+- [ ] `.env.example`/`.env.prod.example` refletindo variáveis realmente usadas.
+- [ ] Auditoria final de segredos (`.env*`, `*.key`, `*.crt` nunca no git).
+
+## Referências quebradas que já foram eliminadas na preparação
+- [x] `scripts/mongo-init.js`, `monitoring/prometheus.yml`, `monitoring/grafana/*`,
+      `nginx/nginx.conf`, `nginx/ssl`, `logs/` — removidos do compose dev.

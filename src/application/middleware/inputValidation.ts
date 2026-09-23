@@ -1,0 +1,446 @@
+/**
+ * @fileoverview Validação rigorosa de input com schemas
+ * Implementa validação de schema e políticas de caracteres por
+ * CLASSIFICAÇÃO (proteção principal). Regex não é usada como regra
+ * padrão de rejeição — apenas como auxiliar em contextos externos.
+ */
+
+import Joi from 'joi';
+import type { NextFunction, Request, Response } from 'express';
+import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH, validatePasswordStrength } from '../../shared/utils/passwordValidator.js';
+import { hasAllowedUsernameChars, USERNAME_MIN_LENGTH, USERNAME_MAX_LENGTH } from '../../shared/utils/usernamePolicy.js';
+import { HttpError } from '../../shared/utils/errorHandler.js';
+
+// ===================================================================
+// Políticas de caracteres via CLASSIFICAÇÃO (proteção principal).
+// Expressões regulares ficam reservadas apenas para detecção/
+// monitoramento — a validação de entrada não depende delas.
+// ===================================================================
+
+const isASCIILetter = (code: number): boolean => (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+const isASCIIDigit = (code: number): boolean => code >= 48 && code <= 57;
+
+const everyChar = (value: string, predicate: (code: number, char: string) => boolean): boolean => {
+  for (const char of value) {
+    if (!predicate(char.charCodeAt(0), char)) {
+      return false;
+    }
+  }
+  return true;
+};
+
+const emailPolicy = (value: string): boolean => {
+  const atIndex = value.lastIndexOf('@');
+  if (atIndex <= 0 || atIndex === value.length - 1) {
+    return false;
+  }
+
+  const localPart = value.slice(0, atIndex);
+  const domainPart = value.slice(atIndex + 1);
+
+  const localOk = everyChar(
+    localPart,
+    (code: number, char: string) => isASCIILetter(code) || isASCIIDigit(code) || '._%+-'.includes(char)
+  );
+  if (!localOk) {
+    return false;
+  }
+
+  const lastDot = domainPart.lastIndexOf('.');
+  if (lastDot <= 0 || lastDot === domainPart.length - 1) {
+    return false;
+  }
+
+  const tld = domainPart.slice(lastDot + 1);
+  if (!everyChar(tld, (code: number) => isASCIILetter(code)) || tld.length < 2) {
+    return false;
+  }
+
+  return everyChar(
+    domainPart,
+    (code: number, char: string) => isASCIILetter(code) || isASCIIDigit(code) || '.-'.includes(char)
+  );
+};
+
+const PASSWORD_ALLOWED_CHARS = new Set([
+  'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
+  'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
+  'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
+  'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
+  '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+  '@', '$', '!', '%', '*', '?', '&'
+]);
+
+const passwordPolicy = (value: string): boolean =>
+  value.length > 0 && everyChar(value, (code: number, char: string) => PASSWORD_ALLOWED_CHARS.has(char));
+
+const GENERAL_PUNCTUATION = new Set([
+  ' ', '.', ',', '!', '?', '@', '#', '$', '%', '^', '&', '*', '(', ')',
+  '_', '+', '-', '=', '[', ']', '{', '}', '|', ';', ':', '\'', '"', '<',
+  '>', '/', '~', '`', '\\'
+]);
+
+const generalPolicy = (value: string): boolean =>
+  value.length > 0 && everyChar(value, (code: number, char: string) => isASCIILetter(code) || isASCIIDigit(code) || GENERAL_PUNCTUATION.has(char));
+
+type CharacterPolicy = (value: string) => boolean;
+
+// Validador customizado de senha usado nos schemas Joi (sem lookaround regex)
+const joiPasswordPolicy = (password: string, helpers: Joi.CustomHelpers<string>) => {
+  const strength = validatePasswordStrength(password);
+  if (!strength.isValid) {
+    return helpers.error('string.passwordStrength', { reasons: strength.errors.join('; ') });
+  }
+  if (!passwordPolicy(password)) {
+    return helpers.error('string.passwordChars');
+  }
+  return password;
+};
+
+// Schemas de validação
+const schemas: Record<string, Joi.ObjectSchema> = {
+  login: Joi.object({
+    username: Joi.string()
+      .min(USERNAME_MIN_LENGTH)
+      .max(USERNAME_MAX_LENGTH)
+      .custom((username: string, helpers: Joi.CustomHelpers<string>) => (
+        hasAllowedUsernameChars(username) ? username : helpers.error('string.usernameChars')
+      ))
+      .required()
+      .messages({
+        'string.usernameChars': 'Username deve conter apenas letras, números, underscores e hífens',
+        'string.min': 'Username deve ter pelo menos 3 caracteres',
+        'string.max': 'Username deve ter no máximo 30 caracteres'
+      }),
+    password: Joi.string()
+      .min(PASSWORD_MIN_LENGTH)
+      .max(PASSWORD_MAX_LENGTH)
+      .custom(joiPasswordPolicy)
+      .required()
+      .messages({
+        'string.min': `Password deve ter pelo menos ${PASSWORD_MIN_LENGTH} caracteres`,
+        'string.max': `Password deve ter no máximo ${PASSWORD_MAX_LENGTH} caracteres`,
+        'string.passwordStrength': 'Password não atende à política de senha forte ({#reasons})',
+        'string.passwordChars': 'Password contém caracteres não permitidos'
+      })
+  }),
+
+  register: Joi.object({
+    username: Joi.string()
+      .min(USERNAME_MIN_LENGTH)
+      .max(USERNAME_MAX_LENGTH)
+      .custom((username: string, helpers: Joi.CustomHelpers<string>) => (
+        hasAllowedUsernameChars(username) ? username : helpers.error('string.usernameChars')
+      ))
+      .required(),
+    email: Joi.string()
+      .email()
+      .max(255)
+      .required()
+      .messages({
+        'string.email': 'Email deve ter formato válido',
+        'string.max': 'Email deve ter no máximo 255 caracteres'
+      }),
+    password: Joi.string()
+      .min(PASSWORD_MIN_LENGTH)
+      .max(PASSWORD_MAX_LENGTH)
+      .custom(joiPasswordPolicy)
+      .required(),
+    confirmPassword: Joi.string()
+      .valid(Joi.ref('password'))
+      .required()
+      .messages({
+        'any.only': 'Confirmação de password deve ser igual ao password'
+      })
+  }),
+
+  updateProfile: Joi.object({
+    username: Joi.string()
+      .min(USERNAME_MIN_LENGTH)
+      .max(USERNAME_MAX_LENGTH)
+      .custom((username: string, helpers: Joi.CustomHelpers<string>) => (
+        hasAllowedUsernameChars(username) ? username : helpers.error('string.usernameChars')
+      ))
+      .optional(),
+    email: Joi.string()
+      .email()
+      .max(255)
+      .optional(),
+    currentPassword: Joi.string()
+      .min(PASSWORD_MIN_LENGTH)
+      .max(PASSWORD_MAX_LENGTH)
+      .when('newPassword', {
+        is: Joi.exist(),
+        then: Joi.required(),
+        otherwise: Joi.optional()
+      }),
+    newPassword: Joi.string()
+      .min(PASSWORD_MIN_LENGTH)
+      .max(PASSWORD_MAX_LENGTH)
+      .custom(joiPasswordPolicy)
+      .optional()
+  })
+};
+
+// Políticas de caracteres permitidos por contexto (via classificação, sem regex)
+const characterPolicies: Record<string, CharacterPolicy> = {
+  username: hasAllowedUsernameChars,
+  email: emailPolicy,
+  password: passwordPolicy,
+  general: generalPolicy
+};
+
+interface ValidationErrorItem {
+  field: string;
+  message: string;
+}
+
+interface ValidationResult {
+  isValid: boolean;
+  errors: ValidationErrorItem[];
+  data: unknown;
+}
+
+interface CharacterValidationResult {
+  isValid: boolean;
+  message: string;
+}
+
+interface PayloadSizeResult {
+  isValid: boolean;
+  message: string;
+  size: number;
+  maxSize: number;
+}
+
+interface CompleteValidationResult {
+  isValid: boolean;
+  errors: ValidationErrorItem[];
+  data?: unknown;
+  validationDetails?: unknown;
+}
+
+class InputValidator {
+  private maxPayloadSizes: Record<string, number>;
+
+  constructor() {
+    this.maxPayloadSizes = {
+      login: 1024,        // 1KB
+      register: 2048,     // 2KB
+      updateProfile: 2048, // 2KB
+      default: 10240      // 10KB
+    };
+  }
+
+  /**
+   * Valida payload baseado no schema
+   */
+  validateSchema(schemaName: string, data: unknown): ValidationResult {
+    const schema = schemas[schemaName];
+    if (!schema) {
+      throw new Error(`Schema '${schemaName}' não encontrado`);
+    }
+
+    const { error, value } = schema.validate(data, {
+      abortEarly: false,
+      stripUnknown: true
+    });
+
+    if (error) {
+      const errors = error.details.map((detail: Joi.ValidationErrorItem) => ({
+        field: detail.path.join('.'),
+        message: detail.message
+      }));
+
+      return {
+        isValid: false,
+        errors,
+        data: null
+      };
+    }
+
+    return {
+      isValid: true,
+      errors: [],
+      data: value
+    };
+  }
+
+  /**
+   * Valida caracteres usando a política de classificação do contexto
+   */
+  validateCharacters(value: string, type = 'general'): CharacterValidationResult {
+    const policy = characterPolicies[type];
+    if (!policy) {
+      throw new Error(`Política de caracteres '${type}' não encontrada`);
+    }
+
+    if (typeof value !== 'string') {
+      return { isValid: false, message: 'Valor deve ser string' };
+    }
+
+    if (!policy(value)) {
+      return {
+        isValid: false,
+        message: `Caracteres não permitidos detectados para tipo '${type}'`
+      };
+    }
+
+    return { isValid: true, message: 'Caracteres válidos' };
+  }
+
+  /**
+   * Valida tamanho do payload
+   */
+  validatePayloadSize(data: unknown, context = 'default'): PayloadSizeResult {
+    const maxSize = this.maxPayloadSizes[context] || this.maxPayloadSizes.default;
+    const dataString = JSON.stringify(data);
+    const size = Buffer.byteLength(dataString, 'utf8');
+
+    if (size > maxSize) {
+      return {
+        isValid: false,
+        message: `Payload muito grande: ${size} bytes. Máximo permitido: ${maxSize} bytes`,
+        size,
+        maxSize
+      };
+    }
+
+    return {
+      isValid: true,
+      message: 'Tamanho válido',
+      size,
+      maxSize
+    };
+  }
+
+  /**
+   * Valida input completo (schema + caracteres + tamanho)
+   */
+  validateComplete(schemaName: string, data: Record<string, unknown>): CompleteValidationResult {
+    // Validar tamanho primeiro
+    const sizeValidation = this.validatePayloadSize(data, schemaName);
+    if (!sizeValidation.isValid) {
+      return {
+        isValid: false,
+        errors: [{ field: 'payload', message: sizeValidation.message }],
+        validationDetails: { size: sizeValidation }
+      };
+    }
+
+    // Validar schema
+    const schemaValidation = this.validateSchema(schemaName, data);
+    if (!schemaValidation.isValid) {
+      return {
+        isValid: false,
+        errors: schemaValidation.errors,
+        validationDetails: {
+          schema: schemaValidation,
+          size: sizeValidation
+        }
+      };
+    }
+
+    // Validar caracteres em campos específicos
+    const characterErrors: ValidationErrorItem[] = [];
+    if (typeof data.username === 'string') {
+      const usernameValidation = this.validateCharacters(data.username, 'username');
+      if (!usernameValidation.isValid) {
+        characterErrors.push({ field: 'username', message: usernameValidation.message });
+      }
+    }
+
+    if (typeof data.email === 'string') {
+      const emailValidation = this.validateCharacters(data.email, 'email');
+      if (!emailValidation.isValid) {
+        characterErrors.push({ field: 'email', message: emailValidation.message });
+      }
+    }
+
+    if (typeof data.password === 'string') {
+      const passwordValidation = this.validateCharacters(data.password, 'password');
+      if (!passwordValidation.isValid) {
+        characterErrors.push({ field: 'password', message: passwordValidation.message });
+      }
+    }
+
+    if (characterErrors.length > 0) {
+      return {
+        isValid: false,
+        errors: characterErrors,
+        validationDetails: {
+          schema: schemaValidation,
+          size: sizeValidation,
+          characters: characterErrors
+        }
+      };
+    }
+
+    return {
+      isValid: true,
+      errors: [],
+      data: schemaValidation.data,
+      validationDetails: {
+        schema: schemaValidation,
+        size: sizeValidation
+      }
+    };
+  }
+
+  /**
+   * Middleware Express para validação
+   */
+  createValidationMiddleware(schemaName: string): (req: Request, res: Response, next: NextFunction) => void {
+    return (req: Request, res: Response, next: NextFunction): void => {
+      try {
+        const validation = this.validateComplete(schemaName, req.body);
+
+        if (!validation.isValid) {
+          next(new HttpError(400, 'VALIDATION_ERROR', 'Dados inválidos fornecidos', validation.errors));
+          return;
+        }
+
+        // Substituir req.body pelos dados validados e sanitizados
+        req.body = validation.data;
+        req.validationDetails = validation.validationDetails;
+
+        next();
+      } catch (error) {
+        next(error);
+      }
+    };
+  }
+
+  /**
+   * Adiciona novo schema de validação
+   */
+  addSchema(name: string, schema: Joi.ObjectSchema): void {
+    schemas[name] = schema;
+  }
+
+  /**
+   * Registra nova política de caracteres (proteção principal).
+   * Aceita apenas função `(value) => boolean`; policy.type === 'function'.
+   */
+  addCharacterWhitelist(name: string, policy: CharacterPolicy): void {
+    if (typeof policy !== 'function') {
+      throw new TypeError('Política de caracteres deve ser uma função de classificação');
+    }
+    characterPolicies[name] = policy;
+  }
+
+  /**
+   * Atualiza limite de tamanho para contexto
+   */
+  updatePayloadSizeLimit(context: string, size: number): void {
+    this.maxPayloadSizes[context] = size;
+  }
+}
+
+// Instância global do validador
+export const inputValidator = new InputValidator();
+
+// Middlewares pré-configurados
+export const validateLogin = inputValidator.createValidationMiddleware('login');
+export const validateRegister = inputValidator.createValidationMiddleware('register');
+export const validateUpdateProfile = inputValidator.createValidationMiddleware('updateProfile');
