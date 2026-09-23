@@ -36,6 +36,17 @@ export default tseslint.config(
     }
   },
   {
+    files: ['**/*.js'],
+    languageOptions: {
+      globals: {
+        process: 'readonly'
+      },
+      parserOptions: {
+        projectService: false
+      }
+    }
+  },
+  {
     ignores: [
       'node_modules/',
       'coverage/',
