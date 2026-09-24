@@ -73,7 +73,7 @@ jobs:
     needs: code-quality
     strategy:
       matrix:
-        test-type: [unit-fast, integration]
+        test-type: [unit-fast, integration, e2e]
     
     steps:
       - name: 📥 Checkout code
@@ -105,6 +105,13 @@ jobs:
         run: |
           npm run test:integration:app
           echo "✅ Integration tests completed successfully"
+
+      - name: 🧪 Run E2E tests (compose real)
+        if: matrix.test-type == 'e2e'
+        run: |
+          npm run test:e2e
+          npm run test:e2e:down
+          echo "✅ E2E tests completed successfully"
 
       - name: 📊 Generate coverage report
         if: matrix.test-type == 'unit-fast'

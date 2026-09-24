@@ -4,6 +4,7 @@ import cors from 'cors';
 import https from 'https';
 import fs from 'fs';
 import compression from 'compression';
+import type { Server } from 'http';
 import { pathToFileURL } from 'url';
 
 // Configurações centralizadas (carrega .env automaticamente)
@@ -34,6 +35,7 @@ import { logger } from './shared/utils/logger.js';
  */
 class AuthService {
   app: Express;
+  server: Server | null = null;
 
   constructor() {
     this.validateEnvironment();
@@ -131,6 +133,7 @@ class AuthService {
         };
 
         const server = https.createServer(options, this.app);
+        this.server = server;
         setupErrorHandlers(server, serverConfig.timeout.gracefulShutdown);
 
         server.timeout = serverConfig.timeout.server;
@@ -141,7 +144,7 @@ class AuthService {
         });
       } else {
         // Servidor HTTP para desenvolvimento
-        this.app.listen(port, () => {
+        this.server = this.app.listen(port, () => {
           logger.info(`🚀 Servidor HTTP rodando em http://${serverConfig.host}:${port}`);
           logger.info(`📚 API Docs: http://${serverConfig.host}:${port}/api-docs | 📊 Métricas: http://${serverConfig.host}:${port}/metrics | 🏥 Health: http://${serverConfig.host}:${port}/health`);
           if (serverConfig.nodeEnv !== 'production') {

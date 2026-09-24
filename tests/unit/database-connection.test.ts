@@ -25,33 +25,18 @@ describe('connectDatabase - conexão MongoDB', () => {
     expect(mongooseMock.connect).toHaveBeenCalledWith('mongodb://localhost:27017/app', {});
   });
 
-  it('encerra o processo quando a URI não está configurada', async() => {
-    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-    const exitSpy = jest.spyOn(process, 'exit').mockImplementation(() => {});
+  it('rejeita quando a URI não está configurada', async() => {
     const { connectDatabase } = await loadConnection();
 
-    await connectDatabase();
-
-    expect(errorSpy).toHaveBeenCalled();
-    expect(exitSpy).toHaveBeenCalledWith(1);
-
-    errorSpy.mockRestore();
-    exitSpy.mockRestore();
+    await expect(connectDatabase()).rejects.toThrow('URI_MONGODB não definida');
   });
 
-  it('encerra o processo quando a conexão falha', async() => {
+  it('rejeita quando a conexão falha', async() => {
     mongooseMock.connect.mockRejectedValueOnce(new Error('connection timeout'));
 
-    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-    const exitSpy = jest.spyOn(process, 'exit').mockImplementation(() => {});
     const { connectDatabase } = await loadConnection();
     process.env.URI_MONGODB = 'mongodb://localhost:27017/app';
 
-    await connectDatabase();
-
-    expect(exitSpy).toHaveBeenCalledWith(1);
-
-    errorSpy.mockRestore();
-    exitSpy.mockRestore();
+    await expect(connectDatabase()).rejects.toThrow('connection timeout');
   });
 });

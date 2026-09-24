@@ -13,6 +13,7 @@
  */
 
 import jwt, { SignOptions } from 'jsonwebtoken';
+import { randomUUID } from 'crypto';
 import type { RedisClient } from '../cache/connection.js';
 import type { TokenGenerationOptions, TokenPair, TokenService } from '../../domain/index.js';
 import { logger } from '../../shared/utils/logger.js';
@@ -23,6 +24,7 @@ interface JwtIssuedPayload {
   token_type?: string;
   iat?: number;
   exp?: number;
+  jti?: string;
 }
 
 /**
@@ -80,7 +82,10 @@ export class JWTTokenService implements TokenService {
       const signOptions: SignOptions = {
         issuer,
         audience,
-        subject: payload.id
+        subject: payload.id,
+        // nonce único: evita que tokens emitidos no mesmo segundo (iat em segundos)
+        // sejam byte-idênticos e que o "novo" refresh coincida com o revogado
+        jwtid: randomUUID()
       };
 
       // ✅ Access Token (curta vida)

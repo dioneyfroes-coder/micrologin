@@ -50,7 +50,6 @@ export default {
 
   // Jest configuration for clean output
   detectOpenHandles: true,
-  forceExit: true,
 
   // Verbose output
   verbose: true,

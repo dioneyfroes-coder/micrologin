@@ -48,7 +48,7 @@
 - [ ] APM/tracing (OpenTelemetry) se consumido por outros serviços — **decisão em aberto** (hoje é serviço consumido via HTTP direto).
 
 ## Qualidade / Testes
-- [ ] Testes E2E completos contra compose (HTTP + MongoDB/Redis reais): hoje `tests/integration/auth-flow.test.ts` cobre o domínio com fakes em memória. 🗒️ Criar suíte HTTP real contra o compose fica para a etapa de deploy.
+- [x] Testes E2E completos contra compose (HTTP + MongoDB/Redis reais): `tests/e2e/auth-http.e2e.test.ts` sobe a app e testa health/register/login/profile/update/refresh(rotação)/logout + blacklist no Redis via `npm run test:e2e` (subir) e roda também no CI (job `tests`, matrix `e2e`). ✅ De brinde, o E2E revelou 2 melhorias: `connectDatabase` passou a lançar erro em vez de `process.exit` (testável) e tokens JWT ganharam `jwtid` (nonce único — tokens emitidos no mesmo segundo não são mais byte-idênticos e a rotação de refresh não blacklistava o próprio token novo).
 - [x] `--forceExit` **removido** dos scripts de teste: unit (231) e integration (4) passaram sem ele e sem vazamentos; `--detectOpenHandles` mantido como rede de segurança (falha o run se houver handle aberto).
 - [x] Teste de carga **k6**: script pronto em `k6/load-test.js` (`npm run test:load`, cenários health/login/register com thresholds e env vars). 🗒️ Executar com o serviço de pé.
 - [x] Testes de regressão para segurança existem e passam: rate limiting (`rate-limiter`, `rate-limit-config`), validação (`input-validation`, `validation-middleware`), blacklist JWT (`jwt-token-service`).
