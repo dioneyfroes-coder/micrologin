@@ -65,7 +65,7 @@ Base path configurável (padrão `/api`):
 | GET    | `/health`      | —                      | Health check                              |
 | GET    | `/metrics`     | `METRICS_TOKEN` (opcional) | Métricas Prometheus                   |
 
-Rotas de segurança (auditoria/monitoramento) ficam em `src/application/routes/securityRoutes.js`. Um guia prático de uso do dashboard de segurança está em [`DASHBOARD_SEGURANCA_GUIA.md`](DASHBOARD_SEGURANCA_GUIA.md), com exemplos em [`examples/`](examples).
+Rotas de segurança (auditoria/monitoramento) ficam em `src/application/routes/securityRoutes.ts`. Um guia prático de uso do dashboard de segurança está em [`DASHBOARD_SEGURANCA_GUIA.md`](DASHBOARD_SEGURANCA_GUIA.md), com exemplos em [`examples/`](examples).
 
 A documentação Swagger fica disponível quando `SWAGGER_ENABLED=true`.
 
@@ -74,17 +74,19 @@ A documentação Swagger fica disponível quando `SWAGGER_ENABLED=true`.
 Com Docker:
 
 ```bash
-npm install
-cp .env.example .env
-npm run docker:up   # sobe aplicação, MongoDB, Redis, Prometheus e Grafana (usa .env.docker)
-npm run dev
+cp .env.example .env   # opcional — o compose já injeta as variáveis dev
+npm run docker:up       # sobe auth-service + MongoDB + Redis (hot reload via tsx)
 ```
+
+> Portas publicadas pelo compose dev: `3000` (API), `27017` (MongoDB), `6379` (Redis).
+> O container de dev roda `npm run dev` (tsx watch) e monta `./src` em `/app/src`.
 
 Sem Docker:
 
 ```bash
 npm install
 cp .env.example .env
+npm run dev            # NODE_ENV=development, tsx watch
 npm test
 ```
 

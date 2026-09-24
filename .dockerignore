@@ -3,8 +3,12 @@ npm-debug.log
 .env
 .env.docker
 .env.prod
+.env.prod.example
+.env.example
 logs
 coverage
+dist
+dist-test
 .git
 .github
 .gitignore

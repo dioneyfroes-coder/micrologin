@@ -1,96 +1,83 @@
-# ====================================
-# DOCKERFILE MULTI-STAGE OTIMIZADO
-# Authentication Microservice
-# ====================================
+# =====================================
+# DOCKERFILE MULTI-STAGE
+# Authentication Microservice (TypeScript)
+#
+# O stage final (default) é PRODUCTION:
+#   docker build -t auth-service .          # -> imagem de produção (dist/)
+# Para desenvolvimento local (com compose):
+#   docker compose build                     # usa --target development
+# =====================================
 
 # =====================================
-# STAGE 1: Base com dependências comuns
+# STAGE 1: Base
 # =====================================
 FROM node:22-alpine AS base
 
-# Instalar dependências do sistema
+# Dependências do sistema (dumb-init como PID 1 + curl para healthcheck)
 RUN apk add --no-cache \
     dumb-init \
     curl \
     && rm -rf /var/cache/apk/*
 
-# Criar usuário não-root
+# Usuário não-root
 RUN addgroup -g 1001 -S nodejs \
     && adduser -S nodeuser -u 1001 -G nodejs
 
-# Definir diretório de trabalho
 WORKDIR /app
 
-# Copiar arquivos de dependências
 COPY package*.json ./
 
 # =====================================
-# STAGE 2: Build de dependências
+# STAGE 2: Build (deps completas + tsc)
 # =====================================
-FROM base AS dependencies
+FROM base AS build
 
-# Instalar todas as dependências (dev + prod)
+# Instalar dependências (dev + prod) necessárias para compilar
 RUN npm ci --include=dev
 
-# Copiar código fonte
+# Copiar fonte e compilar com tsc (gera dist/)
 COPY . .
-
-# Executar testes (opcional - pode ser feito no CI)
-# RUN npm run test:unit:fast
+RUN npm run build
 
 # =====================================
-# STAGE 3: Produção otimizada
+# STAGE 3: Desenvolvimento (tsx watch + hot reload)
+# =====================================
+FROM build AS development
+
+ENV NODE_ENV=development
+
+USER nodeuser
+
+EXPOSE 3000
+
+CMD ["npm", "run", "dev"]
+
+# =====================================
+# STAGE 4: Produção (apenas dist/ + deps prod) — stage final/default
 # =====================================
 FROM base AS production
 
-# Definir variáveis de ambiente de produção
 ENV NODE_ENV=production
 ENV PORT=3000
 
-# Instalar apenas dependências de produção
-RUN npm ci --only=production && npm cache clean --force
+# Somente dependências de produção
+RUN npm ci --omit=dev && npm cache clean --force
 
-# Copiar código da aplicação
-COPY --from=dependencies --chown=nodeuser:nodejs /app/src ./src
-COPY --from=dependencies --chown=nodeuser:nodejs /app/package*.json ./
+# Artefatos compilados (não copiamos src/ — só dist/)
+COPY --from=build --chown=nodeuser:nodejs /app/dist ./dist
 
-# Criar diretórios necessários
 RUN mkdir -p logs && chown -R nodeuser:nodejs logs
 
-# Trocar para usuário não-root
 USER nodeuser
 
-# Expor porta
 EXPOSE 3000
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:3000/health || exit 1
 
-# Labels para metadados
 LABEL maintainer="Auth Team <auth@company.com>"
 LABEL description="Authentication Microservice"
 LABEL version="1.0.0"
 
-# Comando de inicialização
 ENTRYPOINT ["dumb-init", "--"]
-CMD ["node", "src/app.js"]
-
-# =====================================
-# STAGE 4: Development
-# =====================================
-FROM dependencies AS development
-
-ENV NODE_ENV=development
-
-# Instalar nodemon globalmente
-RUN npm install -g nodemon
-
-# Trocar para usuário não-root
-USER nodeuser
-
-# Expor porta e porta de debug
-EXPOSE 3000 9229
-
-# Comando para desenvolvimento
-CMD ["nodemon", "--inspect=0.0.0.0:9229", "src/app.js"]
+CMD ["node", "dist/app.js"]

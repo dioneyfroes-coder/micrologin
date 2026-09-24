@@ -86,8 +86,8 @@
 - [x] `npm run build` (tsc → dist/) gerando JS limpo (build OK, lint OK, 0 erros tsc).
 - [x] `npm start` / PM2 apontando para dist/ (atualizar `ecosystem.config.cjs`).
 - [x] Scripts do package.json atualizados (`dev` com `tsx watch`, `build` com tsc).
-- [ ] Dockerfile: stage `build` roda `tsc`; imagens de prod consomem `dist/`
-      (fase Docker abaixo).
+- [x] Dockerfile: stage `build` roda `tsc`; imagens de prod consomem `dist/`
+      (concluído na fase Docker/P3 abaixo).
 
 ## P2 - TESTS EM TYPESCRIPT
 
@@ -105,14 +105,34 @@
 - [x] Testes de integração do fluxo de auth (register/login/profile/refresh/logout).
 - [x] ESLint cobrindo `tests/` via `tests/tsconfig.json` (projectService).
 
-## P3 - DOCKER FUNCIONAL (por último, agora que o código é TS)
+## P3 - DOCKER FUNCIONAL (feito, código TS)
 
-- [ ] `Dockerfile` multi-stage atualizado: stage `build` (tsc), prod copia `dist/`.
-- [ ] Validar `docker compose up` dev (auth-service + mongodb + redis) com health checks.
-- [ ] `docker-compose.prod.yml`: revisar (referencia `nginx/nginx-prod.conf` e `nginx/ssl`
-      inexistentes; 3 instâncias + nginx). Decidir simplificar, como no dev, ou criar os arquivos.
-- [ ] `.env.example`/`.env.prod.example` refletindo variáveis realmente usadas.
-- [ ] Auditoria final de segredos (`.env*`, `*.key`, `*.crt` nunca no git).
+> Dockerfile multi-stage com build via `tsc`. Stage final (default) = produção:
+> `docker build -t auth-service .` gera imagem com `node dist/app.js` apenas
+> (deps de prod + dist/). Dev via `--target development` (tsx watch, src montada).
+
+- [x] `Dockerfile` multi-stage atualizado: stage `build` roda `tsc`; prod copia
+      `dist/` (sem `src/`) e roda `node dist/app.js` (dumb-init, usuário não-root,
+      healthcheck). `development` = `npm run dev` (tsx watch). Corrigido bug da
+      primeira versão: stage `development` ficava por último e virava o default.
+- [x] Validar `docker compose up` dev (auth-service + mongodb + redis) com health
+      checks: mongodb/redis healthy, `/health` reportando mongodb+redis saudáveis;
+      fluxo register→login→profile→logout exercitado com sucesso (blacklist de JWT
+      no Redis confirmada pós-logout). No ambiente de validação o compose foi rodado
+      com override de portas porque 6379/27017/3000 estavam em uso por outro projeto.
+- [x] `docker-compose.prod.yml`: **simplificado como no dev** (decisão registrada).
+      Removido nginx (apontava para `nginx/nginx-prod.conf` e `nginx/ssl`
+      inexistentes) e as 3 instâncias hardcoded; escala com `--scale auth-service=3`.
+      Variáveis injetadas via `env_file: .env.prod` (valida com
+      `docker compose --env-file .env.prod -f docker-compose.prod.yml config`).
+- [x] `.env.example`/`.env.prod.example` alinhados com as variáveis realmente
+      consumidas (`URI_MONGODB` no lugar de `MONGODB_URI`; `RATE_LIMIT_PROD_*`;
+      `METRICS_TOKEN`; `SSL_ENABLED=false` + nota de certificados para o app rodar
+      atrás de proxy; `CLUSTER_ENABLED=false` no container).
+- [x] Auditoria final de segredos: apenas `.env.example` e `.env.prod.example`
+      versionados; `.env*`, `*.key`, `*.crt` (`server.key`/`server.crt`) ignorados;
+      `.dockerignore` agora também exclui `dist/`, `dist-test/`, `.env.prod.example`
+      e `.env.example`.
 
 ## Referências quebradas que já foram eliminadas na preparação
 - [x] `scripts/mongo-init.js`, `monitoring/prometheus.yml`, `monitoring/grafana/*`,
