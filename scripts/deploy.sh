@@ -84,9 +84,21 @@ run_tests() {
 
 build_and_push() {
     log_info "Building and pushing Docker image..."
-    docker build -t "${REGISTRY}/${IMAGE_NAME}:${VERSION}" .
+    local ts sha commit_tag
+    ts=$(date +%Y%m%d%H%M%S)
+    sha=$(git rev-parse --short=12 HEAD 2>/dev/null || echo "no-git")
+    commit_tag="${sha}-${ts}"
+
+    # Tag imutável (SHA do commit + data) para rastreabilidade/rollback
+    docker build -t "${REGISTRY}/${IMAGE_NAME}:${commit_tag}" .
+    docker push "${REGISTRY}/${IMAGE_NAME}:${commit_tag}"
+
+    # Tag mutável (latest ou VERSION) apontando para o mesmo build
+    docker tag "${REGISTRY}/${IMAGE_NAME}:${commit_tag}" "${REGISTRY}/${IMAGE_NAME}:${VERSION}"
     docker push "${REGISTRY}/${IMAGE_NAME}:${VERSION}"
-    log_success "Image built and pushed: ${REGISTRY}/${IMAGE_NAME}:${VERSION}"
+
+    export IMAGE_TAG="${commit_tag}"
+    log_success "Image built and pushed: ${REGISTRY}/${IMAGE_NAME}:${commit_tag} (${VERSION})"
 }
 
 wait_for_health_check() {
@@ -147,7 +159,28 @@ cleanup() {
 }
 
 rollback() {
-    log_error "Deployment failed, iniciando rollback (restaurar a última imagem: ${REGISTRY}/${IMAGE_NAME}:latest)"
+    log_error "Deployment failed, iniciando rollback..."
+    local backup_tag latest_backup
+    latest_backup=$(docker images "${REGISTRY}/${IMAGE_NAME}" --format '{{.Tag}}' \
+        | grep -E "^${IMAGE_NAME}-backup-" | sort | tail -1 || true)
+
+    if [ -z "$latest_backup" ]; then
+        log_warning "Nenhuma imagem de backup encontrada (${IMAGE_NAME}-backup-*)."
+        log_warning "Abortando rollback; verifique o estado do serviço manualmente."
+        exit 1
+    fi
+
+    log_info "Restaurando imagem de backup: ${REGISTRY}/${IMAGE_NAME}:${latest_backup}"
+    docker pull "${REGISTRY}/${IMAGE_NAME}:${latest_backup}" || true
+    docker tag "${REGISTRY}/${IMAGE_NAME}:${latest_backup}" "${REGISTRY}/${IMAGE_NAME}:${VERSION}"
+
+    if [ "$ENVIRONMENT" = "production" ]; then
+        docker compose --env-file ".env.prod" -f docker-compose.prod.yml up -d
+    else
+        docker compose up -d
+    fi
+
+    log_success "Rollback concluído (voltou para ${latest_backup})"
 }
 
 # ====================================

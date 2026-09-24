@@ -1,6 +1,8 @@
 export const PASSWORD_MIN_LENGTH = 12;
 export const PASSWORD_MAX_LENGTH = 128;
 
+import { logger } from './logger.js';
+
 /**
  * @fileoverview Validador de Política de Senha Forte
  *
@@ -179,7 +181,7 @@ export async function wasPasswordUsedBefore(
         return true;
       }
     } catch (error) {
-      console.error('Erro ao comparar histórico de senha:', error);
+      logger.error('Erro ao comparar histórico de senha', error);
     }
   }
 

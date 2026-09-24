@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import type { Request, Response, NextFunction } from 'express';
+import { logger } from './logger.js';
 
 export class HttpError extends Error {
   name: string;
@@ -37,7 +38,7 @@ export const errorHandler = (error: unknown, _req: Request, res: Response, _next
   }
 
   if (!isHttpError) {
-    console.error('Erro HTTP não tratado:', error);
+    logger.error('Erro HTTP não tratado', error);
   }
 
   return res.status(statusCode).json(response);
@@ -53,7 +54,7 @@ interface NodeServer {
 export const setupErrorHandlers = (server: NodeServer, timeoutMs = 10000) => {
   const forceCloseTimeoutMs = timeoutMs;
   const gracefulShutdown = async(signal: string) => {
-    console.log(`📵 Recebido ${signal}, iniciando graceful shutdown...`);
+    logger.info(`📵 Recebido ${signal}, iniciando graceful shutdown...`);
 
     try {
       server.close(async() => {
@@ -63,19 +64,19 @@ export const setupErrorHandlers = (server: NodeServer, timeoutMs = 10000) => {
             await mongoose.connection.close();
           }
         } catch (dbError) {
-          console.error('⚠️ Erro ao fechar MongoDB:', (dbError as Error).message);
+          logger.error('⚠️ Erro ao fechar MongoDB', dbError);
         }
 
         process.exit(0);
       });
     } catch (serverError) {
-      console.error('⚠️ Erro ao fechar servidor:', (serverError as Error).message);
+      logger.error('⚠️ Erro ao fechar servidor', serverError);
       process.exit(1);
     }
 
     // Force close após timeout configurado
     setTimeout(() => {
-      console.error('❌ Timeout - forçando fechamento...');
+      logger.error('❌ Timeout - forçando fechamento...');
       process.exit(1);
     }, forceCloseTimeoutMs);
   };
@@ -85,7 +86,7 @@ export const setupErrorHandlers = (server: NodeServer, timeoutMs = 10000) => {
 
   // MELHOR tratamento de erros não críticos
   process.on('uncaughtException', (err: Error) => {
-    console.error('❌ Erro não tratado:', err.message);
+    logger.error('❌ Erro não tratado', err);
 
     // Se for erro de métricas, não quebrar a aplicação
     if (err.message.includes('forEach') || err.message.includes('metrics')) {
@@ -96,7 +97,7 @@ export const setupErrorHandlers = (server: NodeServer, timeoutMs = 10000) => {
   });
 
   process.on('unhandledRejection', (reason: unknown, _promise: Promise<unknown>) => {
-    console.error('❌ Rejeição não tratada:', reason);
+    logger.error('❌ Rejeição não tratada', reason);
     gracefulShutdown('unhandledRejection');
   });
 };

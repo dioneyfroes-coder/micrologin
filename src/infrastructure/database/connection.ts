@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { logger } from '../../shared/utils/logger.js';
 
 /**
  * Conecta ao banco de dados MongoDB
@@ -11,7 +12,7 @@ export const connectDatabase = async(): Promise<void> => {
 
     await mongoose.connect(process.env.URI_MONGODB, {});
   } catch (error) {
-    console.error('❌ Erro ao conectar ao MongoDB:', error);
+    logger.error('❌ Erro ao conectar ao MongoDB', error);
     process.exit(1);
   }
 };

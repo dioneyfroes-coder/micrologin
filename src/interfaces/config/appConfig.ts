@@ -11,6 +11,7 @@ import './env.js';
 import os from 'os';
 import { parseEnvNumber } from './rateLimitConfig.js';
 import { getRedisConfig } from './redisConfig.js';
+import { logger } from '../../shared/utils/logger.js';
 
 /**
  * Configurações de servidor e aplicação
@@ -162,7 +163,7 @@ export function validateConfiguration(): boolean {
 
   // Validações de SSL em produção
   if (environmentConfig.isProduction && !serverConfig.ssl.enabled) {
-    console.warn('⚠️ SSL não está habilitado em produção');
+    logger.warn('⚠️ SSL não está habilitado em produção');
   }
 
   if (errors.length > 0) {

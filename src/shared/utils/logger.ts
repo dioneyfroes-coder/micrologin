@@ -3,19 +3,23 @@
  *
  * Único ponto de emissão de logs da aplicação.
  * Respeita LOG_LEVEL (debug|info|warn|error) e LOG_FORMAT (console|structured).
+ *
+ * Lê as variáveis diretamente do environment para não depender de
+ * appConfig (evita dependência circular em arquivos de bootstrap).
  */
-
-import { monitoringConfig } from '../../interfaces/config/appConfig.js';
 
 export const LOG_LEVELS = { debug: 10, info: 20, warn: 30, error: 40 } as const;
 
 export type LogLevel = keyof typeof LOG_LEVELS;
 
-const configuredLevel = monitoringConfig.logging.level || 'info';
-const minLevel = LOG_LEVELS[configuredLevel as LogLevel] ?? LOG_LEVELS.info;
-const isStructured = monitoringConfig.logging.format === 'structured';
+// Lidos sob demanda (a cada chamada) para permitir que o dotenv carregue
+// LOG_LEVEL/LOG_FORMAT depois da avaliação deste módulo (env.ts roda antes).
+const currentLevel = (): LogLevel => (process.env.LOG_LEVEL as LogLevel) || 'info';
+const isStructured = (): boolean => (process.env.LOG_FORMAT || 'console') === 'structured';
 
 export const shouldLog = (level: LogLevel): boolean => {
+  const configuredLevel = currentLevel();
+  const minLevel = LOG_LEVELS[configuredLevel as LogLevel] ?? LOG_LEVELS.info;
   return (LOG_LEVELS[level] ?? LOG_LEVELS.info) >= minLevel;
 };
 
@@ -42,7 +46,7 @@ const write = (level: LogLevel, message: string, meta?: unknown): void => {
       : meta !== undefined ? { error: String(meta) } : {})
   };
 
-  const output = isStructured
+  const output = isStructured()
     ? JSON.stringify(entry)
     : `[${entry.timestamp}] ${level.toUpperCase()} ${entry.pid} ${message}`;
 
@@ -56,8 +60,8 @@ const write = (level: LogLevel, message: string, meta?: unknown): void => {
 };
 
 export const logger = {
-  debug: (message: string, meta?: Record<string, unknown>): void => write('debug', message, meta),
-  info: (message: string, meta?: Record<string, unknown>): void => write('info', message, meta),
-  warn: (message: string, meta?: Record<string, unknown>): void => write('warn', message, meta),
+  debug: (message: string, meta?: unknown): void => write('debug', message, meta),
+  info: (message: string, meta?: unknown): void => write('info', message, meta),
+  warn: (message: string, meta?: unknown): void => write('warn', message, meta),
   error: (message: string, error?: unknown): void => write('error', message, error)
 };

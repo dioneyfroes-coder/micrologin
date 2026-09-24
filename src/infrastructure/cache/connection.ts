@@ -10,6 +10,7 @@
 
 import redis, { RedisClientType, RedisDefaultModules, RedisClientOptions } from 'redis';
 import { getRedisClientOptions, RedisConnectionOptions } from '../../interfaces/config/redisConfig.js';
+import { logger } from '../../shared/utils/logger.js';
 
 export type RedisClient = RedisClientType<RedisDefaultModules>;
 
@@ -35,7 +36,7 @@ export const initRedis = async(): Promise<RedisClient | null> => {
         ...(baseOptions.socket || {}),
         reconnectStrategy: (retries: number) => {
           if (retries > MAX_RETRY_ATTEMPTS) {
-            console.error(`❌ Redis: máximo de tentativas de reconexão (${MAX_RETRY_ATTEMPTS}) excedido`);
+            logger.error(`❌ Redis: máximo de tentativas de reconexão (${MAX_RETRY_ATTEMPTS}) excedido`);
             return new Error('Redis reconnection failed');
           }
           const delay = Math.min(retries * 50, 500);
@@ -51,12 +52,12 @@ export const initRedis = async(): Promise<RedisClient | null> => {
     // Event handlers
     newClient.on('error', (err: Error) => {
       isHealthy = false;
-      console.error('❌ Redis Error:', err.message);
+      logger.error('❌ Redis Error', err);
     });
 
     newClient.on('end', () => {
       isHealthy = false;
-      console.warn('⚠️ Redis desconectado');
+      logger.warn('⚠️ Redis desconectado');
     });
 
     // Conectar ao Redis
@@ -67,7 +68,7 @@ export const initRedis = async(): Promise<RedisClient | null> => {
     isHealthy = pingResult;
 
     if (!isHealthy) {
-      console.warn('⚠️ Redis conectado mas health check falhou');
+      logger.warn('⚠️ Redis conectado mas health check falhou');
       client = null;
       return null;
     }
@@ -75,8 +76,8 @@ export const initRedis = async(): Promise<RedisClient | null> => {
     return client;
   } catch (error) {
     isHealthy = false;
-    console.warn('⚠️ Redis não disponível, operando sem cache:', (error as Error).message);
-    console.warn('   Funcionalidade de cache e rate limiting baseado em Redis será desabilitada');
+    logger.warn('⚠️ Redis não disponível, operando sem cache', error);
+    logger.warn('   Funcionalidade de cache e rate limiting baseado em Redis será desabilitada');
     client = null;
     return null;
   }
@@ -108,7 +109,7 @@ export const performHealthCheck = async(redisClient: RedisClient): Promise<boole
 
     return false;
   } catch (error) {
-    console.error(`❌ Redis health check falhou: ${(error as Error).message}`);
+    logger.error('❌ Redis health check falhou', error);
     return false;
   }
 };
@@ -159,7 +160,7 @@ export const cacheJWT = async(token: string, userData: unknown, ttl = 3600): Pro
       JSON.stringify(userData)
     );
   } catch (error) {
-    console.error('❌ Erro ao salvar JWT em cache:', (error as Error).message);
+    logger.error('❌ Erro ao salvar JWT em cache', error);
     // Continuar mesmo se falhar
   }
 };
@@ -177,7 +178,7 @@ export const getCachedJWT = async(token: string): Promise<unknown | null> => {
     const cached = await client.get(`jwt:${token}`);
     return cached ? JSON.parse(cached) : null;
   } catch (error) {
-    console.error('❌ Erro ao buscar JWT em cache:', (error as Error).message);
+    logger.error('❌ Erro ao buscar JWT em cache', error);
     return null;
   }
 };
@@ -198,7 +199,7 @@ export const clearCache = async(key: string | null = null): Promise<void> => {
       await client.flushDb();
     }
   } catch (error) {
-    console.error('❌ Erro ao limpar cache:', (error as Error).message);
+    logger.error('❌ Erro ao limpar cache', error);
   }
 };
 
@@ -212,7 +213,7 @@ export const disconnectRedis = async(): Promise<void> => {
       client = null;
       isHealthy = false;
     } catch (error) {
-      console.error('❌ Erro ao desconectar Redis:', (error as Error).message);
+      logger.error('❌ Erro ao desconectar Redis', error);
     }
   }
 };

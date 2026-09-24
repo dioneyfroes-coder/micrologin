@@ -44,7 +44,10 @@ jobs:
         run: npm ci
 
       - name: 🎨 ESLint check
-        run: npx eslint src/ tests/ --ext .js --format stylish
+        run: npx eslint src/ tests/ --format stylish
+
+      - name: 🧪 TypeScript typecheck
+        run: npm run typecheck
 
       - name: 🔒 Security audit
         run: npm audit --audit-level=high
@@ -130,13 +133,10 @@ jobs:
           cache: 'npm'
 
       - name: 📦 Install dependencies
-        run: npm ci --only=production
+        run: npm ci
 
       - name: 🏗️ Build application
-        run: |
-          echo "Building application..."
-          # Aqui você pode adicionar steps de build se necessário
-          echo "✅ Build completed"
+        run: npm run build
 
       - name: 🐳 Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -156,6 +156,7 @@ jobs:
           tags: |
             type=ref,event=branch
             type=ref,event=pr
+            type=sha
             type=sha,prefix={{branch}}-
             type=raw,value=latest,enable={{is_default_branch}}
 

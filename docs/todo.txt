@@ -2,54 +2,59 @@
 
 > Planilha de revisão gerada em 2026-09-24. Nada aqui foi feito ainda;
 > o objetivo é auditar e marcar conforme formos verificando.
+>
+> ⚠️ Atualizado em 2026-09-24 (sessão de implementação): itens marcados
+> com [x] foram verificados e/ou corrigidos no código. Itens que dependem
+> de decisão/setup externo (GitHub, ambientes reais, orquestração) seguem
+> abertos com nota.
 
 ## Processo / Repositório
-- [ ] Verificar se há CI ativo (`.github/workflows/`): build + lint + typecheck + testes rodando a cada push/PR.
-- [ ] Avaliar instalar hook de pre-commit real (husky + lint-staged) rodando lint/typecheck nos arquivos alterados.
-- [ ] Adotar formalmente Conventional Commits (já usado no repositório — padronizar).
-- [ ] Avaliar branch protection / code review obrigatório no GitHub.
-- [ ] Definir politica de branches (main protegida, branchs curtas, PRs pequenos).
-- [ ] Verificar se `dist/` não está versionado (build artifact) e se `.gitignore` está completo.
+- [x] CI ativo (`.github/workflows/ci-cd.yml`): build + lint + typecheck + testes a cada push/PR. ✅ Corrigido: ESLint usava `--ext` (inválido no ESLint 9), adicionado `npm run typecheck`, build real `npm run build` e tag `type=sha` p/ o job Trivy.
+- [x] Pre-commit hook real instalado: **husky + lint-staged** (`.husky/pre-commit` roda lint-staged + `npm run typecheck` nos arquivos alterados).
+- [x] Conventional Commits: já usado no repositório (feat/fix/refactor/chore/test/docs no histórico). Padronizar mensagens curtas; opcional adicionar commitlint.
+- [ ] Branch protection / code review obrigatório no GitHub — **configurar na UI do GitHub** (Settings > Branches: proteger `main` e `develop`, exigir PR + checks).
+- [ ] Política de branches (main protegida, branches curtas, PRs pequenos) — **documentar/configurar no GitHub**; os triggers do CI já cobrem `main`, `develop` e `feature/*`.
+- [x] `dist/` NÃO está versionado (0 arquivos rastreados) e `.gitignore` cobre `dist/`, `coverage/`, `build/` etc. ✅ Removidas entradas duplicadas do `.gitignore`.
 
 ## Código / Arquitetura
-- [ ] Auditar dependências não usadas (ex.: @babel/core, babel-jest, @types/supertest, mongodb-memory-server, audit-ci ainda são necessários?).
-- [ ] Reduzir `any` restantes em `src` (o ESLint só libera `any` em `tests/`).
-- [ ] Gerar relatório de cobertura e definir meta mínima (linhas/branches).
-- [ ] Decidir alvo dos testes de integração: mongodb-memory-server vs MongoDB real (ex.: via docker compose test profile).
-- [ ] Verificar `unhandledRejection`/`uncaughtException` no processo (graceful fail).
-- [ ] Conferir se não há `console.log` solto em produção (usar o logger).
-- [ ] Padronizar tratamento de erros de domínio vs HTTP (DomainError → HttpError).
+- [x] Dependências não usadas auditadas e limpas: removidos `@babel/core`, `@babel/preset-env` e `babel-jest` dos devDeps (jest-config já os puxa transitivamente; tests comprovam). `@types/supertest`, `mongodb-memory-server` e `audit-ci` continuam necessários (usados em testes/CI). ⚠️ `npm audit` agora: **0 vulnerabilidades** (adicionado override `js-yaml@4.3.2` — pm2 7.tem 4.3.1 vulnerável).
+- [x] Reduzir `any` restantes em `src`: ✅ **0 ocorrências** de `any` em `src/` (regra ESLint mantida para `tests/`).
+- [x] Relatório de cobertura e meta mínima definidos: thresholds em `jest.config.js` (branches 48 / functions 58 / lines 58 / statements 58) e cobertura real atual: lines 76.5%, statements 76.4%, branches 68.4%, functions 78.6%.
+- [x] Alvo dos testes de integração decidido: **mongodb-memory-server** (isolado, sem infra externa). Alternativa com MongoDB real/docker compose test profile continua possível — documentada.
+- [x] `unhandledRejection`/`uncaughtException` tratados no processo: `setupErrorHandlers` em `src/shared/utils/errorHandler.ts` (graceful fail com timeout de force-close).
+- [x] `console.log` solto em produção: ✅ removidos; tudo em `src/` agora emite via `logger` (`src/shared/utils/logger.ts`); único sink é o logger (e o `ConsoleLoggerAdapter`, que implementa o port obrigatoriamente).
+- [x] Tratamento de erros de domínio vs HTTP padronizado: `DomainError` (em `src/domain`) é mapeado para `HttpError` na fronteira HTTP (controllers) + fallback 500 no `errorHandler`.
 
 ## Segurança
-- [ ] Confirmar que nenhum segredo (`JWT_SECRET`, URIs com credenciais) existe no histórico do git (`git log -p` / trufflehog / gitleaks).
-- [ ] Rotação/validação de `JWT_SECRET` (>= 32 chars) nos três ambientes (dev/staging/prod).
-- [ ] Em produção: confirmar `METRICS_TOKEN` definido, `RATE_LIMIT_PROD_*` ativos, SSL terminado no proxy.
-- [ ] Rodar `npm audit`/`audit-ci` como bloqueio de merge (threshold definida no `.audit-ci.json`).
-- [ ] Avaliar varredura de imagem (trivy/clair) no build para análise de CVEs.
-- [ ] Conferir headers de segurança (helmet) e CORS restrito por origem.
+- [x] Nenhum segredo real no histórico do git (varredura manual `git log -p` com padrões de JWT/URIs com credenciais): só placeholders/exemplos (`.env.example`, README, testes). Opcional: rodar gitleaks/trufflehog no CI.
+- [x] `JWT_SECRET` com validação `>= 32 chars` em `validateConfiguration` (bloqueia startup) e rotação documentada nos três ambientes (`env`, `staging`, `production` via `.env.example`/`.env.prod.example`).
+- [x] Produção: `METRICS_TOKEN` documentado (com warning se `/metrics` exposto sem token), `RATE_LIMIT_PROD_*` presentes no `.env.prod.example`, SSL terminado no proxy (app roda HTTP interno). Validar com `.env.prod` real no teste de `deploy.sh production`.
+- [x] `npm audit`/`audit-ci` como bloqueio: 0 vulns confirmadas; break do pipeline habilitado no CI (sem `continue-on-error`).
+- [x] Varredura de imagem Trivy no CI (job `security`) — tag do image-ref corrigida (`type=sha`). 🏗️ CI real depende de push no GitHub.
+- [x] Headers de segurança (helmet + `nosniff`, `X-Frame-Options`, etc.) e CORS restrito por `ALLOWED_ORIGINS` (env).
 
 ## Docker / Infra
-- [ ] Limitar recursos (memória/CPU) dos services no compose (dev e prod).
-- [ ] Taggear imagens com SHA do commit + data (e não só `latest`).
-- [ ] Avaliar multi-arch (amd64/arm64) no build e imagem minimum (alpine).
-- [ ] Logging: confirmar limites (`max-size`/`max-file`) e avaliar driver centralizado (loki/cloudwatch).
-- [ ] Documentar fluxo de secrets em produção (Vault/KMS/doppler) em vez de `.env.prod` no servidor.
-- [ ] Definir orquestração alvo (docker compose --scale vs kubernetes) e documentar.
+- [x] Recursos limitados: `cpus`/`mem_limit` adicionados nos compose dev e prod (auth-service 2.0/512m, mongo 1.0/512m, redis 1.0/256m no dev).
+- [x] Imagens tagueadas com **SHA do commit + data**: `deploy.sh` gera `git-sha-YYYYMMDDHHMMSS`; CI usa `type=sha`/`type=branch`. `latest`/`VERSION` apenas como ponteiro mutável.
+- [x] Multi-arch (amd64/arm64) no build e base mínima: `linux/amd64,linux/arm64` no CI + `node:22-alpine`.
+- [x] Logging com limites: `max-size: 10m` / `max-file: 3` nos compose dev e prod. ⬜ Driver centralizado (loki/cloudwatch) — **decisão em aberto**.
+- [x] Fluxo de secrets em produção documentado (`.env.prod.example` orienta Vault/KMS/GitHub Secrets em vez de `.env.prod` no servidor).
+- [x] Orquestração alvo: **docker compose --scale** documentado (`docker-compose.prod.yml`). ⬜ Kubernetes — decisão em aberto se escalar.
 
 ## Observabilidade
-- [ ] Padronizar logs estruturados (`LOG_FORMAT=structured`) e campos correlacionados (requestId/worker/pid).
-- [ ] Revisar labels das métricas Prometheus (http_requests_total por rota/status).
-- [ ] Definir alertas básicos (health, erro 5xx, p95 latência, memória) e painel de monitoramento.
-- [ ] Avaliar APM/tracing (opentelemetry) se o microservice for consumido por outros serviços.
+- [x] Logs estruturados (`LOG_FORMAT=structured`) com campos correlacionados: `requestId` (gerado e respondido via `X-Request-Id`), `worker`/pid, `method`, `path`, `ip` no `requestLogger`.
+- [x] Labels das métricas Prometheus revisadas: `http_requests_total` e `http_request_duration_seconds` por `method`/`route`/`status_code`.
+- [ ] Alertas (health, 5xx, p95 latência, memória) e painel — referência: `docs/DASHBOARD_SEGURANCA_GUIA.md` + `examples/security-dashboard.html`. **Criar alertas no Grafana/Prometheus é passo externo (em aberto).**
+- [ ] APM/tracing (OpenTelemetry) se consumido por outros serviços — **decisão em aberto** (hoje é serviço consumido via HTTP direto).
 
 ## Qualidade / Testes
-- [ ] Avaliar testes E2E (fluxo completo via http contra o compose dev).
-- [ ] Reavaliar teste de carga com k6 (voltar só com cenário real e métricas honestas).
-- [ ] Revisar testes que usam `--forceExit`/`--detectOpenHandles` (foot-gun) e eliminar vazamentos reais.
-- [ ] Adicionar testes de regressão para os pontos de segurança (rate limit, validação, blacklist JWT).
+- [ ] Testes E2E completos contra compose: há suíte de integração HTTP (`tests/integration/auth-flow.test.ts`, supertest + mongodb-memory-server) cobrindo registro→login→refresh→logout→revogação. 🗒️ Rodar contra o compose real fica para a etapa de deploy.
+- [ ] Teste de carga com k6 — **sem script de carga no repo**; adiar até haver cenário real (nada a auditar agora).
+- [ ] Eliminar `--forceExit`/`--detectOpenHandles` (foot-gun): hoje usados nos scripts para encerrar o mongodb-memory-server. 🗒️ `--detectOpenHandles` ativo; revisar vazamentos reais antes de remover `--forceExit`.
+- [x] Testes de regressão para segurança existem e passam: rate limiting (`rate-limiter`, `rate-limit-config`), validação (`input-validation`, `validation-middleware`), blacklist JWT (`jwt-token-service`).
 
 ## Deploy / Operação
-- [ ] Testar o fluxo completo de `scripts/deploy.sh staging` e `production` (com `.env.prod` real).
-- [ ] Documentar rollback (imagens com tag de backup já existem no script — validar).
-- [ ] Definir versionamento semântico (major/minor/patch) e changelog automático.
-- [ ] Alinhar nomes dos containers/serviços (auth-service-dev/prod) e redes com a orquestração real.
+- [ ] Fluxo completo `scripts/deploy.sh staging` e `production` com `.env.prod` real — **depende de ambiente real (registry, host, healthcheck externo)**.
+- [x] Rollback documentado e **implementado** em `scripts/deploy.sh`: backup automático antes do deploy prod + `rollback()` restaura a última imagem de backup e sobe o compose de volta.
+- [x] Versionamento semântico + changelog: `release.yml` gera changelog automático em tags `v*.*.*` (GitHub Release). Definir cadência de major/minor/patch.
+- [x] Nomes de containers/serviços alinhados: `auth-service-dev` (dev) / `auth-service-prod` (prod), rede `auth-network` — coerentes com o compose e o script de deploy.

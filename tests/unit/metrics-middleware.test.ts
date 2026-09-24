@@ -10,14 +10,17 @@ const { requestLogger } = requestLoggerImport;
 const { metricsMiddleware, httpRequestTotal, httpRequestDuration } = metricsImport;
 
 describe('requestLogger - middleware de log de requisições', () => {
-  it('loga método e path e chama next', () => {
+  it('loga método e path, define X-Request-Id e chama next', () => {
     const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
-    const req = { method: 'POST', path: '/login', headers: {} };
+    const setHeader = jest.fn();
+    const req = { method: 'POST', path: '/login', headers: {}, get: () => undefined };
+    const res = { setHeader };
     const next = jest.fn();
 
-    requestLogger(req as never, {} as never, next);
+    requestLogger(req as never, res as never, next);
 
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('POST /login'));
+    expect(setHeader).toHaveBeenCalledWith('X-Request-Id', expect.any(String));
     expect(next).toHaveBeenCalledTimes(1);
 
     logSpy.mockRestore();

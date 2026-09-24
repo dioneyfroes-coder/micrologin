@@ -5,6 +5,7 @@
  */
 import prometheus from 'prom-client';
 import type { Request, Response, NextFunction } from 'express';
+import { logger } from './logger.js';
 
 export const PROVENANCE_MARKER = 'ML-7F29';
 
@@ -61,7 +62,7 @@ export const metricsMiddleware = (req: Request, res: Response, next: NextFunctio
         .labels(req.method, route, res.statusCode.toString())
         .inc();
     } catch (error) {
-      console.warn('⚠️ Erro ao registrar métrica:', (error as Error).message);
+      logger.warn('⚠️ Erro ao registrar métrica', error);
     }
   });
 

@@ -3,6 +3,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { validateRateLimitConfig } from '../../interfaces/config/rateLimitConfig.js';
 import { securityAuditLogger } from './securityAudit.js';
 import { HttpError } from '../../shared/utils/errorHandler.js';
+import { logger } from '../../shared/utils/logger.js';
 import type { RedisClient } from '../../infrastructure/cache/connection.js';
 
 class AdvancedRateLimiter {
@@ -16,7 +17,7 @@ class AdvancedRateLimiter {
   constructor() {
     const validation = validateRateLimitConfig();
     if (!validation.isValid) {
-      console.error('❌ Erro na configuração de rate limiting:', validation.errors);
+      logger.error('❌ Erro na configuração de rate limiting', { errors: validation.errors });
       throw new Error('Configuração de rate limiting inválida: ' + validation.errors.join(', '));
     }
 
@@ -98,7 +99,7 @@ class AdvancedRateLimiter {
           this.setupRedisLimiters();
         }
       } catch (error) {
-        console.warn('⚠️ Redis não disponível para rate limiting, usando memória:', (error as Error).message);
+        logger.warn('⚠️ Redis não disponível para rate limiting, usando memória', error);
       } finally {
         this.initialized = true;
         this.initPromise = null;
@@ -198,7 +199,7 @@ class AdvancedRateLimiter {
           await this.redisClient.del(keys);
         }
       } catch (error) {
-        console.warn('⚠️ Erro ao limpar Redis:', (error as Error).message);
+        logger.warn('⚠️ Erro ao limpar Redis', error);
       }
 
       this.setupRedisLimiters();
@@ -219,7 +220,7 @@ class AdvancedRateLimiter {
 
   updateConfig(newConfig: Record<string, unknown>): boolean {
     if (this.config.environment !== 'development') {
-      console.warn('⚠️ Atualização de configuração só é permitida em desenvolvimento');
+      logger.warn('⚠️ Atualização de configuração só é permitida em desenvolvimento');
       return false;
     }
 

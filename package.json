@@ -25,6 +25,7 @@
     "typecheck": "tsc --noEmit",
     "lint:fix": "eslint src/ tests/ --fix",
     "audit": "npm audit",
+    "prepare": "husky",
     "build:docker": "docker build -t auth-service .",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down"
@@ -65,8 +66,6 @@
   },
   "type": "module",
   "devDependencies": {
-    "@babel/core": "^7.27.7",
-    "@babel/preset-env": "^7.27.2",
     "@eslint/js": "^9.30.1",
     "@jest/globals": "^30.0.3",
     "@types/bcrypt": "^6.0.0",
@@ -81,15 +80,22 @@
     "@types/swagger-ui-express": "^4.1.8",
     "@types/validator": "^13.15.10",
     "audit-ci": "^7.1.0",
-    "babel-jest": "^30.0.2",
     "cross-env": "^7.0.3",
     "eslint": "^9.30.1",
+    "husky": "^9.1.7",
     "jest": "^30.0.3",
+    "lint-staged": "^15.5.1",
     "mongodb-memory-server": "^10.1.4",
     "supertest": "^7.1.1",
     "ts-jest": "^29.4.13",
     "tsx": "^4.23.15",
     "typescript": "~5.9.0",
     "typescript-eslint": "^8.70.1"
+  },
+  "lint-staged": {
+    "*.{js,ts}": "eslint --fix"
+  },
+  "overrides": {
+    "js-yaml": "4.3.2"
   }
 }

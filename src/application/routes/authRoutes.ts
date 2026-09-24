@@ -7,6 +7,7 @@ import { performHealthCheck } from '../../shared/utils/healthCheck.js';
 import { advancedRateLimit } from '../middleware/advancedRateLimit.js';
 import securityRoutes from './securityRoutes.js';
 import { HttpError } from '../../shared/utils/errorHandler.js';
+import { logger } from '../../shared/utils/logger.js';
 import type { AuthWebController } from '../controllers/AuthController.js';
 import type { AuthWebMiddleware } from '../middleware/AuthMiddleware.js';
 
@@ -452,7 +453,7 @@ export function createAuthRoutes() {
 
   if (METRICS_ENABLED) {
     if (process.env.NODE_ENV === 'production' && !METRICS_TOKEN) {
-      console.warn(`⚠️ ${metricsEndpoint} exposto SEM token de autenticação em produção. Configure METRICS_TOKEN.`);
+      logger.warn(`⚠️ ${metricsEndpoint} exposto SEM token de autenticação em produção. Configure METRICS_TOKEN.`);
     }
 
     const requireMetricsToken = (req: Request, res: Response, next: NextFunction) => {

@@ -23,6 +23,7 @@
 
 import type { NextFunction, Request, Response } from 'express';
 import { securityAuditLogger } from './securityAudit.js';
+import { logger } from '../../shared/utils/logger.js';
 
 interface ThreatEvent {
   type: string;
@@ -99,7 +100,7 @@ class SecurityMonitor {
 
     // LOG: Registrar eventos suspeitos
     if (threats.length > 0) {
-      console.warn(`⚠️ [SECURITY MONITOR] Suspicious pattern detected from ${req.ip}:`, threats);
+      logger.warn(`⚠️ [SECURITY MONITOR] Suspicious pattern detected from ${req.ip}`, { threats });
 
       // Registrar no sistema de auditoria para análise
       securityAuditLogger.logSecurityEvent('suspicious_pattern_detected', {
@@ -153,7 +154,7 @@ class SecurityMonitor {
 
     // ALERTA: Muitas requisições (mas não bloqueia)
     if (recentRequests.length > 100) {
-      console.warn(`⚠️ [SECURITY MONITOR] High request rate from ${clientId}: ${recentRequests.length} in 1min`);
+      logger.warn(`⚠️ [SECURITY MONITOR] High request rate from ${clientId}: ${recentRequests.length} in 1min`);
 
       securityAuditLogger.logSecurityEvent('high_request_rate', {
         ip: req.ip,

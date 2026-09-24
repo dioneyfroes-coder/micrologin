@@ -27,6 +27,7 @@ import setupSecurity from './interfaces/config/helmet.js';
 import { sanitizeInput } from './application/middleware/sanitization.js';
 import { securityMonitor } from './application/middleware/securityMonitoring.js';
 import { advancedRateLimit } from './application/middleware/advancedRateLimit.js';
+import { logger } from './shared/utils/logger.js';
 
 /**
  * Classe principal da aplicação
@@ -50,8 +51,8 @@ class AuthService {
     try {
       validateConfiguration();
     } catch (error) {
-      console.error('❌ Erro na configuração:', (error as Error).message);
-      console.error('💡 Verifique seu arquivo .env');
+      logger.error('❌ Erro na configuração', error);
+      logger.error('💡 Verifique seu arquivo .env');
       throw error;
     }
   }
@@ -135,22 +136,22 @@ class AuthService {
         server.timeout = serverConfig.timeout.server;
 
         server.listen(port, () => {
-          console.log(`🚀 Servidor HTTPS rodando em https://${serverConfig.host}:${port}`);
-          console.log(`📚 API Docs: https://${serverConfig.host}:${port}/api-docs | 📊 Métricas: https://${serverConfig.host}:${port}/metrics | 🏥 Health: https://${serverConfig.host}:${port}/health`);
+          logger.info(`🚀 Servidor HTTPS rodando em https://${serverConfig.host}:${port}`);
+          logger.info(`📚 API Docs: https://${serverConfig.host}:${port}/api-docs | 📊 Métricas: https://${serverConfig.host}:${port}/metrics | 🏥 Health: https://${serverConfig.host}:${port}/health`);
         });
       } else {
         // Servidor HTTP para desenvolvimento
         this.app.listen(port, () => {
-          console.log(`🚀 Servidor HTTP rodando em http://${serverConfig.host}:${port}`);
-          console.log(`📚 API Docs: http://${serverConfig.host}:${port}/api-docs | 📊 Métricas: http://${serverConfig.host}:${port}/metrics | 🏥 Health: http://${serverConfig.host}:${port}/health`);
+          logger.info(`🚀 Servidor HTTP rodando em http://${serverConfig.host}:${port}`);
+          logger.info(`📚 API Docs: http://${serverConfig.host}:${port}/api-docs | 📊 Métricas: http://${serverConfig.host}:${port}/metrics | 🏥 Health: http://${serverConfig.host}:${port}/health`);
           if (serverConfig.nodeEnv !== 'production') {
-            console.log('⚠️ Modo HTTP (sem SSL)');
+            logger.warn('⚠️ Modo HTTP (sem SSL)');
           }
         });
       }
 
     } catch (error) {
-      console.error('❌ Erro ao iniciar servidor:', error);
+      logger.error('❌ Erro ao iniciar servidor', error);
       process.exit(1);
     }
   }
@@ -163,7 +164,7 @@ const isDirectExecution = process.argv[1]
 if (isDirectExecution) {
   // Configuração de clustering inteligente
   if (cluster.isPrimary && serverConfig.cluster.enabled) {
-    console.log(`🔧 Master ${process.pid} iniciando cluster: ${serverConfig.cluster.workers} workers (máx: ${serverConfig.cluster.maxWorkers})`);
+    logger.info(`🔧 Master ${process.pid} iniciando cluster: ${serverConfig.cluster.workers} workers (máx: ${serverConfig.cluster.maxWorkers})`);
 
     // Fork workers conforme configuração
     for (let i = 0; i < serverConfig.cluster.workers; i++) {
@@ -171,7 +172,7 @@ if (isDirectExecution) {
     }
 
     cluster.on('exit', (worker, code, signal) => {
-      console.error(`⚠️ Worker ${worker.process.pid} morreu (código: ${code}, sinal: ${signal})`);
+      logger.error(`⚠️ Worker ${worker.process.pid} morreu (código: ${code}, sinal: ${signal})`);
 
       // Aguarda antes de recriar o worker para evitar loop infinito
       setTimeout(() => {
@@ -181,7 +182,7 @@ if (isDirectExecution) {
 
     // Graceful shutdown do cluster
     process.on('SIGTERM', () => {
-      console.log('🛑 Recebido SIGTERM, fechando cluster...');
+      logger.info('🛑 Recebido SIGTERM, fechando cluster...');
       for (const id in cluster.workers) {
         cluster.workers[id]?.kill();
       }

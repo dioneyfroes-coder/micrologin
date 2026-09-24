@@ -6,14 +6,10 @@ server.key
 .env.prod
 .env.docker
 
-dist    
+dist
 build
 coverage/
-dist/
-build/
 .DS_Store
 npm-debug.log
 ignore.js
-coverage/
 logs/
-

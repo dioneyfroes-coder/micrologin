@@ -34,6 +34,9 @@ services:
     networks:
       - auth-network
     restart: unless-stopped
+    # Limites de recursos (aplicados pelo Docker, mesmo fora de swarm)
+    cpus: 2.0
+    mem_limit: 512m
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       interval: 30s

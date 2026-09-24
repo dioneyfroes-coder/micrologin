@@ -15,6 +15,7 @@
 import jwt, { SignOptions } from 'jsonwebtoken';
 import type { RedisClient } from '../cache/connection.js';
 import type { TokenGenerationOptions, TokenPair, TokenService } from '../../domain/index.js';
+import { logger } from '../../shared/utils/logger.js';
 
 interface JwtIssuedPayload {
   id: string;
@@ -233,7 +234,7 @@ export class JWTTokenService implements TokenService {
       }
       return issuedAtSec * 1000 < parseInt(revokedAt as string, 10);
     } catch (error) {
-      console.error('Erro ao verificar revogação do usuário:', error);
+      logger.error('Erro ao verificar revogação do usuário', error);
       return false;
     }
   }
@@ -279,7 +280,7 @@ export class JWTTokenService implements TokenService {
    */
   async revokeToken(token: string, expiresIn = 3600000): Promise<boolean> {
     if (!this.redisClient) {
-      console.warn('Redis não disponível para revogação de tokens');
+      logger.warn('Redis não disponível para revogação de tokens');
       return false;
     }
 
@@ -290,7 +291,7 @@ export class JWTTokenService implements TokenService {
       await this.redisClient.setEx(key, ttlSeconds, 'true');
       return true;
     } catch (error) {
-      console.error('Erro ao revogar token:', error);
+      logger.error('Erro ao revogar token', error);
       return false;
     }
   }
@@ -303,7 +304,7 @@ export class JWTTokenService implements TokenService {
    */
   async revokeUserTokens(userId: string, expiresIn = 604800000): Promise<boolean> {
     if (!this.redisClient) {
-      console.warn('Redis não disponível para revogação de tokens');
+      logger.warn('Redis não disponível para revogação de tokens');
       return false;
     }
 
@@ -313,7 +314,7 @@ export class JWTTokenService implements TokenService {
       await this.redisClient.setEx(key, ttlSeconds, Date.now().toString());
       return true;
     } catch (error) {
-      console.error('Erro ao revogar tokens do usuário:', error);
+      logger.error('Erro ao revogar tokens do usuário', error);
       return false;
     }
   }
@@ -333,7 +334,7 @@ export class JWTTokenService implements TokenService {
       const result = await this.redisClient.get(key);
       return result !== null;
     } catch (error) {
-      console.error('Erro ao verificar blacklist:', error);
+      logger.error('Erro ao verificar blacklist', error);
       return false;
     }
   }

@@ -44,6 +44,15 @@ services:
     networks:
       - auth-network
     restart: unless-stopped
+    # Limites de recursos (aplicados pelo Docker, mesmo fora de swarm)
+    cpus: 2.0
+    mem_limit: 512m
+    # Logging rotativo para não encher o disco em dev
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       interval: 30s
@@ -64,6 +73,13 @@ services:
     networks:
       - auth-network
     restart: unless-stopped
+    cpus: 1.0
+    mem_limit: 512m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 30s
@@ -85,6 +101,13 @@ services:
     networks:
       - auth-network
     restart: unless-stopped
+    cpus: 1.0
+    mem_limit: 256m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 30s

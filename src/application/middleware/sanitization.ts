@@ -2,6 +2,7 @@
 import DOMPurify from 'isomorphic-dompurify';
 import validator from 'validator';
 import type { NextFunction, Request, Response } from 'express';
+import { logger } from '../../shared/utils/logger.js';
 
 type Sanitizable = string | Record<string, unknown> | null;
 
@@ -66,7 +67,7 @@ export const sanitizeInput = (req: Request, res: Response, next: NextFunction): 
     }
 
   } catch (error) {
-    console.warn('⚠️ Erro na sanitização de input:', (error as Error).message);
+    logger.warn('⚠️ Erro na sanitização de input', error);
     // Continuar sem sanitização em caso de erro
   }
 
