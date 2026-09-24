@@ -20,15 +20,17 @@
 
 services:
   auth-service:
-    image: ${REGISTRY:-auth-service}/${VERSION:-auth-service}:${VERSION:-latest}
+    image: ${REGISTRY:-auth-service}/${IMAGE_NAME:-auth-service}:${VERSION:-latest}
     build:
       context: .
       dockerfile: Dockerfile
     container_name: auth-service-prod
     env_file:
       - .env.prod
+    # Porta do HOST vem do .env.prod (fonte da verdade). Se estiver em uso,
+    # some +1 via scripts/next-port.sh --env .env.prod.
     ports:
-      - "3000:3000"
+      - "${APP_PORT:-3000}:3000"
     networks:
       - auth-network
     restart: unless-stopped

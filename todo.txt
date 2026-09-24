@@ -137,3 +137,21 @@
 ## Referências quebradas que já foram eliminadas na preparação
 - [x] `scripts/mongo-init.js`, `monitoring/prometheus.yml`, `monitoring/grafana/*`,
       `nginx/nginx.conf`, `nginx/ssl`, `logs/` — removidos do compose dev.
+
+## P3.1 - .ENV COMO FONTE DA VERDADE (portas do compose)
+> Portas de host publicadas pelos composes agora vêm do `.env` (com defaults).
+> Se uma porta estiver em uso, soma-se +1 até achar a próxima livre.
+
+- [x] `docker-compose.yml` (dev): portas `- "${APP_PORT:-3000}:3000"`,
+      `${DEBUG_PORT:-9229}`, `${MONGO_PORT:-27017}`, `${REDIS_PORT:-6379}`.
+- [x] `docker-compose.prod.yml`: `"${APP_PORT:-3000}:3000"`; corrigida a tag da
+      imagem (era `${REGISTRY}/${VERSION}:${VERSION}` -> agora
+      `${REGISTRY:-auth-service}/${IMAGE_NAME:-auth-service}:${VERSION:-latest}`).
+- [x] `scripts/next-port.sh`: verifica (ss) se a porta escuta no host e soma +1
+      até achar livre; modos: `next-port.sh PORTA...` ou `next-port.sh --env [.env]`
+      (resolver APP_PORT/DEBUG_PORT/MONGO_PORT/REDIS_PORT do .env). Corrigido
+      matcher (regex ancorada `:PORT$`, não `index()` literal).
+- [x] `scripts/local-deploy.sh`: resolve portas via next-port.sh, avisa/atualiza o
+      `.env` (fonte da verdade) e corrige healthcheck de https para http
+      (dev roda SSL_ENABLED=false).
+- [x] `.env.example`/`.env.prod.example`: seção de portas de host documentada.

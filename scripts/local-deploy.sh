@@ -36,6 +36,55 @@ if ! docker info >/dev/null 2>&1; then
     error "Docker não está rodando. Inicie o Docker primeiro."
 fi
 
+# Localizar raiz do projeto (este script fica em scripts/)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+cd "$ROOT_DIR" || error "Não foi possível acessar $ROOT_DIR"
+
+# ==================================================
+# PORTAS — .env é a fonte da verdade. Se uma porta
+# estiver em uso, next-port.sh soma +1 até achar livre.
+# ==================================================
+ENV_FILE="${ENV_FILE:-.env}"
+if [ ! -f "$ENV_FILE" ]; then
+    warning "$ENV_FILE não existe; copie de .env.example: cp .env.example $ENV_FILE"
+fi
+
+declare -A PORTS
+while IFS='=' read -r key val; do
+    PORTS[$key]="$val"
+done <<< "$(bash "$SCRIPT_DIR/next-port.sh" --env "$ENV_FILE")"
+
+needs_update=0
+declare -A DEF=( [APP_PORT]=3000 [DEBUG_PORT]=9229 [MONGO_PORT]=27017 [REDIS_PORT]=6379 )
+for key in APP_PORT DEBUG_PORT MONGO_PORT REDIS_PORT; do
+    cfg="$(grep -E "^${key}=[0-9]+$" "$ENV_FILE" 2>/dev/null | cut -d= -f2-)"
+    desired="${cfg:-${DEF[$key]}}"
+    if [ "$desired" != "${PORTS[$key]}" ]; then
+        if [ -n "$cfg" ]; then
+            log "Porta ${key}: ${cfg} em uso -> ${PORTS[$key]}"
+        else
+            log "Porta ${key}: ausente no $ENV_FILE; adicionando ${PORTS[$key]}"
+        fi
+        needs_update=1
+    fi
+done
+
+if [ "$needs_update" -eq 1 ]; then
+    read -p "   Atualizar $ENV_FILE com as portas livres? (Y/n): " -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ || -z $REPLY ]]; then
+        for key in APP_PORT DEBUG_PORT MONGO_PORT REDIS_PORT; do
+            if grep -qE "^${key}=" "$ENV_FILE" 2>/dev/null; then
+                sed -i "s/^${key}=.*/${key}=${PORTS[$key]}/" "$ENV_FILE"
+            else
+                echo "${key}=${PORTS[$key]}" >> "$ENV_FILE"
+            fi
+        done
+        success "$ENV_FILE atualizado com portas livres"
+    fi
+fi
+
 # Parar containers existentes
 log "Parando containers existentes..."
 docker compose down 2>/dev/null || true
@@ -88,7 +137,7 @@ fi
 
 # Aplicação
 sleep 5
-if curl -k -s https://localhost:3000/health | grep -q "healthy"; then
+if curl -s "http://localhost:${PORTS[APP_PORT]}/health" | grep -q "healthy"; then
     success "Aplicação está funcionando"
 else
     warning "Aplicação pode não estar funcionando corretamente"
@@ -96,13 +145,13 @@ fi
 
 # Executar testes básicos
 log "Executando testes de saúde..."
-if curl -k -s https://localhost:3000/health >/dev/null; then
+if curl -s "http://localhost:${PORTS[APP_PORT]}/health" >/dev/null; then
     success "Endpoint /health respondendo"
 else
     warning "Endpoint /health não está respondendo"
 fi
 
-if curl -k -s https://localhost:3000/api-docs >/dev/null; then
+if curl -s "http://localhost:${PORTS[APP_PORT]}/api-docs" >/dev/null; then
     success "Swagger UI disponível"
 else
     warning "Swagger UI não está disponível"
@@ -117,10 +166,10 @@ echo ""
 success "Deploy local concluído!"
 echo ""
 echo "🌐 Endpoints disponíveis:"
-echo "  - Aplicação: https://localhost:3000"
-echo "  - Health Check: https://localhost:3000/health"
-echo "  - Swagger UI: https://localhost:3000/api-docs"
-echo "  - Métricas: https://localhost:3000/metrics"
+echo "  - Aplicação: http://localhost:${PORTS[APP_PORT]}"
+echo "  - Health Check: http://localhost:${PORTS[APP_PORT]}/health"
+echo "  - Swagger UI: http://localhost:${PORTS[APP_PORT]}/api-docs"
+echo "  - Métricas: http://localhost:${PORTS[APP_PORT]}/metrics"
 echo ""
 echo "📊 Para monitorar logs:"
 echo "  docker compose logs -f auth-service"

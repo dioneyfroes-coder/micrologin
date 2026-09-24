@@ -13,9 +13,11 @@ services:
       dockerfile: Dockerfile
       target: development
     container_name: auth-service-dev
+    # Portas do HOST vêm do .env (fonte da verdade). Se uma estiver em uso,
+    # use scripts/next-port.sh para achar a próxima livre (+1).
     ports:
-      - "3000:3000"
-      - "9229:9229" # Debug port
+      - "${APP_PORT:-3000}:3000"
+      - "${DEBUG_PORT:-9229}:9229" # Debug port
     environment:
       - NODE_ENV=development
       - PORT=3000
@@ -53,7 +55,7 @@ services:
     image: mongo:7-jammy
     container_name: auth-mongodb-dev
     ports:
-      - "27017:27017"
+      - "${MONGO_PORT:-27017}:27017"
     volumes:
       - mongodb_data:/data/db
     networks:
@@ -73,7 +75,7 @@ services:
     image: redis:7-alpine
     container_name: auth-redis-dev
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
     command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
