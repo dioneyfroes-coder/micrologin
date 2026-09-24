@@ -1,0 +1,16 @@
+# Gitleaks - configuração do scan de segredos
+title = "micrologin gitleaks config"
+
+[extend]
+useDefault = true
+
+# Valores de exemplo/teste que NÃO são segredos reais.
+[allowlist]
+description = "Payloads de teste e exemplos documentais"
+regexes = [
+  '''test-secret-key-with-at-least-32-characters-for-tests''',
+  '''senhaSegura123''',
+]
+paths = [
+  '''.*\.gitleaks\.toml$''',
+]

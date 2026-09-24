@@ -43,6 +43,15 @@ jobs:
       - name: 📦 Install dependencies
         run: npm ci
 
+      - name: 📝 Validate commit messages (commitlint)
+        if: github.event_name == 'pull_request'
+        run: npx --no -- commitlint --from ${{ github.event.pull_request.base.sha }} --to ${{ github.event.pull_request.head.sha }}
+
+      - name: 🕵️ Secret scanning (gitleaks)
+        run: |
+          docker run --rm -v "$(pwd):/repo" -w /repo \
+            ghcr.io/gitleaks/gitleaks:v8.24.0 detect --source /repo --verbose
+
       - name: 🎨 ESLint check
         run: npx eslint src/ tests/ --format stylish
 
