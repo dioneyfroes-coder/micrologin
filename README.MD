@@ -15,7 +15,7 @@ Projeto de portfólio em Node.js para demonstrar uma API de autenticação com a
 - monitoramento auxiliar de segurança com limites de memória (auditoria e anomalias sem crescimento ilimitado)
 - health check e métricas Prometheus (endpoint de métricas protegível via `METRICS_TOKEN`)
 - documento Swagger e resposta HTTP padronizada via `HttpError`
-- testes unitários e de integração (176 testes em 25 suítes)
+- testes unitários e de integração (235 testes em 26 suítes)
 - CI/CD com GitHub Actions onde **lint e audit falham o pipeline** quando há erros reais
 - Docker Compose para desenvolvimento e produção, sem credenciais hardcoded (`.env.docker` / `.env.prod`)
 

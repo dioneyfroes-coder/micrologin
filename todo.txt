@@ -91,15 +91,19 @@
 
 ## P2 - TESTS EM TYPESCRIPT
 
-> Os testes JS antigos foram removidos. Escrever os novos testes em TS,
-> cobrindo o mesmo comportamento que os antigos garantiam.
+> Os testes JS antigos foram removidos. Suíte reescrita em TS cobrindo o
+> mesmo comportamento (e extendendo) que os antigos garantiam: 235 testes em
+> 26 suítes (25 unitárias + 1 integração), usando `ts-jest` com ESM.
 
-- [ ] Substituir/implementar testes de unidade por camada:
-      shared (password policy, username policy), domain (User, AuthService),
-      infra (adapters, jwt, redis/cache), application (middleware/controllers).
-- [ ] Testes de integração do fluxo de auth (login/register/refresh/logout).
-- [ ] Config do Jest em TS (`ts-jest` ou `babel-jest` com preset TS).
-- [ ] Manter `tests/env.setup.js` (ou migrar para TS).
+- [x] Config do Jest em TS (`ts-jest` com `useESM` + `tsconfig.test.json`).
+- [x] Manter `tests/env.setup.js` (setup global de NODE_ENV/JWT_SECRET/URI_MONGODB).
+- [x] Substituir/implementar testes de unidade por camada:
+      shared (password policy, username policy, logger, HttpError/errorHandler,
+      healthCheck, env/redis/rate-limit configs), domain (User, AuthService,
+      value objects), infra (adapters, jwt, redis/cache, database),
+      application (middleware/controllers, ServiceContainer).
+- [x] Testes de integração do fluxo de auth (register/login/profile/refresh/logout).
+- [x] ESLint cobrindo `tests/` via `tests/tsconfig.json` (projectService).
 
 ## P3 - DOCKER FUNCIONAL (por último, agora que o código é TS)
 
