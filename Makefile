@@ -2,9 +2,17 @@
 # Makefile - Authentication Service
 # ======================================
 
-.PHONY: help install test build deploy clean docker lint security
+.PHONY: help install setup dev dev-watch stop logs build build-docker build-docker-prod \
+ test test-unit test-integration test-coverage test-watch lint lint-fix typecheck audit \
+ deploy-local deploy-staging deploy-prod docker-up docker-down docker-rebuild docker-logs docker-clean \
+ health metrics docs shell redis-cli mongo-shell pre-commit status watch reset clean
 
-# Variáveis
+# Porta pública do app: lida de .env (fonte da verdade); default 3000.
+APP_PORT:=$(shell grep -E '^APP_PORT=[0-9]+' .env 2>/dev/null | cut -d= -f2-)
+ifeq ($(strip $(APP_PORT)),)
+APP_PORT:=3000
+endif
+
 NODE_ENV ?= development
 DOCKER_IMAGE_NAME ?= auth-service
 DOCKER_TAG ?= latest
@@ -23,19 +31,19 @@ help: ## Exibir ajuda
 install: ## Instalar dependências
 	npm ci
 
-setup: ## Configurar ambiente de desenvolvimento
-	@bash scripts/setup-env.sh
+setup: ## Criar .env a partir do .env.example (mantém o existente)
+	@if [ -f .env ]; then echo ".env já existe"; else cp .env.example .env; echo ".env criado de .env.example"; fi
 
-dev: ## Iniciar em modo desenvolvimento
-	npm run dev:direct
-
-dev-watch: ## Iniciar com hot reload
+dev: ## Iniciar em modo desenvolvimento (tsx watch)
 	npm run dev
 
-stop: ## Parar aplicação
+dev-watch: ## Iniciar com hot reload (alias de dev)
+	npm run dev
+
+stop: ## Parar aplicação (PM2)
 	npm run stop
 
-logs: ## Ver logs da aplicação
+logs: ## Ver logs da aplicação (PM2)
 	npm run logs
 
 # ======================================
@@ -43,7 +51,7 @@ logs: ## Ver logs da aplicação
 # ======================================
 
 test: ## Executar todos os testes
-	npm run test
+	npm test
 
 test-unit: ## Executar testes unitários
 	npm run test:unit:fast
@@ -57,46 +65,48 @@ test-coverage: ## Gerar relatório de cobertura
 test-watch: ## Executar testes em modo watch
 	npm run test:watch
 
-test-performance: ## Executar testes de performance
-	@bash scripts/performance-test.sh
-
 # ======================================
 # QUALIDADE DE CÓDIGO
 # ======================================
 
 lint: ## Verificar qualidade do código
-	npm run lint:check
+	npm run lint
 
 lint-fix: ## Corrigir problemas de lint
 	npm run lint:fix
 
-security: ## Auditoria de segurança
-	npm run security:audit
+typecheck: ## Verificação de tipos (tsc)
+	npm run typecheck
 
-security-fix: ## Corrigir vulnerabilidades
-	npm run security:fix
+audit: ## Auditoria de dependências (npm audit)
+	npm run audit
+
+pre-commit: ## Verificações pré-commit
+	npm run lint
+	npm run typecheck
+	npm test
 
 # ======================================
 # BUILD E DEPLOY
 # ======================================
 
-build: ## Build da aplicação
+build: ## Build da aplicação (tsc -> dist/)
 	npm run build
 
-build-docker: ## Build da imagem Docker
+build-docker: ## Build da imagem Docker (produção = último stage)
 	docker build -t $(DOCKER_IMAGE_NAME):$(DOCKER_TAG) .
 
-build-docker-prod: ## Build da imagem Docker para produção
+build-docker-prod: ## Build da imagem Docker para produção (idem, tag :prod)
 	docker build -f Dockerfile -t $(DOCKER_IMAGE_NAME):prod .
 
-deploy-local: ## Deploy local com Docker
+deploy-local: ## Deploy local com Docker (resolve portas via .env + next-port.sh)
 	@bash scripts/local-deploy.sh
 
-deploy-staging: ## Deploy para staging
-	npm run deploy:staging
+deploy-staging: ## Deploy para staging (usando compose dev)
+	@bash scripts/deploy.sh staging
 
-deploy-prod: ## Deploy para produção
-	npm run deploy:prod
+deploy-prod: ## Deploy para produção (usando .env.prod)
+	@bash scripts/deploy.sh production
 
 # ======================================
 # DOCKER
@@ -122,62 +132,21 @@ docker-clean: ## Limpar containers e volumes
 # UTILITÁRIOS
 # ======================================
 
-backup: ## Criar backup
-	@bash scripts/backup-restore.sh backup
+health: ## Verificar saúde da aplicação (porta do .env)
+	curl -fsS "http://localhost:$(APP_PORT)/health"
 
-restore: ## Restaurar backup (uso: make restore BACKUP=filename)
-	@bash scripts/backup-restore.sh restore $(BACKUP)
-
-clean: ## Limpeza geral
-	rm -rf node_modules
-	rm -rf coverage
-	rm -rf logs/*
-	docker system prune -f
-
-reset: ## Reset completo do ambiente
-	make clean
-	make install
-	make setup
-
-health: ## Verificar saúde da aplicação
-	curl -k https://localhost:3000/health
-
-pre-commit: ## Executar verificações pré-commit
-	@bash scripts/pre-commit.sh
-
-# ======================================
-# CI/CD
-# ======================================
-
-ci-test: ## Pipeline de testes para CI
-	npm run ci:test
-
-ci-build: ## Pipeline de build para CI
-	npm run ci:build
-
-ci-deploy: ## Pipeline completo de CI/CD
-	npm run ci:deploy
-
-# ======================================
-# MONITORAMENTO
-# ======================================
-
-metrics: ## Ver métricas da aplicação
-	curl -k https://localhost:3000/metrics
+metrics: ## Ver métricas da aplicação (porta do .env)
+	curl -s "http://localhost:$(APP_PORT)/metrics"
 
 docs: ## Abrir documentação da API
-	@echo "Documentação disponível em: https://localhost:3000/api-docs"
+	@echo "Documentação disponível em: http://localhost:$(APP_PORT)/api-docs"
 
-status: ## Status dos serviços
+status: ## Status dos serviços + endpoints
 	@echo "Verificando status dos serviços..."
 	@docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 	@echo ""
-	@echo "Testando endpoints:"
-	@curl -k -s https://localhost:3000/health | jq . 2>/dev/null || echo "Aplicação não está respondendo"
-
-# ======================================
-# DESENVOLVIMENTO AVANÇADO
-# ======================================
+	@echo "Testando endpoints (porta .env):"
+	@curl -s "http://localhost:$(APP_PORT)/health" | jq . 2>/dev/null || echo "Aplicação não está respondendo"
 
 shell: ## Acessar shell do container da aplicação
 	docker compose exec auth-service sh
@@ -188,8 +157,32 @@ redis-cli: ## Acessar Redis CLI
 mongo-shell: ## Acessar MongoDB shell
 	docker compose exec mongodb mongosh
 
-load-test: ## Executar teste de carga
-	npm run test:load
-
 watch: ## Monitorar aplicação em tempo real
 	watch -n 1 'make status'
+
+# ======================================
+# CI
+# ======================================
+
+ci-test: ## Pipeline de testes para CI
+	@make pre-commit
+
+ci-build: ## Pipeline de build para CI
+	npm run typecheck
+	npm run build
+
+# ======================================
+# LIMPEZA
+# ======================================
+
+clean: ## Limpeza geral
+	rm -rf node_modules
+	rm -rf coverage
+	rm -rf dist
+	rm -rf logs/*
+	docker system prune -f
+
+reset: ## Reset completo do ambiente
+	make clean
+	make install
+	make setup

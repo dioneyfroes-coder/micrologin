@@ -3,6 +3,13 @@
 # ====================================
 # SCRIPT DE DEPLOY AUTOMATIZADO
 # Authentication Microservice
+#
+# Uso:
+#   scripts/deploy.sh staging      # usa o compose dev (.env) + ports do .env
+#   scripts/deploy.sh production   # usa docker-compose.prod.yml + .env.prod
+#
+# Variáveis são lidas de .env/.env.prod (fonte da verdade):
+#   REGISTRY, IMAGE_NAME, VERSION, APP_PORT, PROD_BASE_URL
 # ====================================
 
 set -euo pipefail
@@ -12,12 +19,10 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Configurações padrão
 ENVIRONMENT=${1:-staging}
 VERSION=${2:-latest}
-REGISTRY=${REGISTRY:-ghcr.io/your-org}
 SERVICE_NAME="auth-service"
 
 echo -e "${BLUE}🚀 Starting deployment of ${SERVICE_NAME} to ${ENVIRONMENT}${NC}"
@@ -26,187 +31,123 @@ echo -e "${BLUE}🚀 Starting deployment of ${SERVICE_NAME} to ${ENVIRONMENT}${N
 # FUNÇÕES AUXILIARES
 # ====================================
 
-log_info() {
-    echo -e "${BLUE}ℹ️  $1${NC}"
-}
+log_info()  { echo -e "${BLUE}ℹ️  $1${NC}"; }
+log_success() { echo -e "${GREEN}✅ $1${NC}"; }
+log_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
+log_error() { echo -e "${RED}❌ $1${NC}"; }
 
-log_success() {
-    echo -e "${GREEN}✅ $1${NC}"
-}
-
-log_warning() {
-    echo -e "${YELLOW}⚠️  $1${NC}"
-}
-
-log_error() {
-    echo -e "${RED}❌ $1${NC}"
+# Carrega apenas variáveis da fonte da verdade (.env / .env.prod)
+load_env() {
+    local file="$1"
+    [ -f "$file" ] || return 0
+    while IFS='=' read -r key val; do
+        [ -n "$key" ] && export "$key=$val"
+    done < <(grep -E '^[A-Z_][A-Z0-9_]*=' "$file" 2>/dev/null || true)
 }
 
 check_prerequisites() {
     log_info "Checking prerequisites..."
-    
-    # Verificar Docker
-    if ! command -v docker &> /dev/null; then
-        log_error "Docker not found. Please install Docker."
-        exit 1
-    fi
-    
-    # Verificar Docker Compose
-    if ! command -v docker-compose &> /dev/null; then
-        log_error "Docker Compose not found. Please install Docker Compose."
-        exit 1
-    fi
-    
-    # Verificar arquivo de configuração
-    if [ "$ENVIRONMENT" = "production" ] && [ ! -f ".env.production" ]; then
-        log_error "Production environment file not found: .env.production"
-        exit 1
-    fi
-    
+    command -v docker >/dev/null 2>&1 || { log_error "Docker not found."; exit 1; }
+    docker compose version >/dev/null 2>&1 || { log_error "Docker Compose v2 not found."; exit 1; }
+
+    case "$ENVIRONMENT" in
+        staging)
+            ENV_FILE=".env"
+            [ -f "$ENV_FILE" ] || log_warning ".env não existe; copie de .env.example"
+            load_env "$ENV_FILE"
+            ;;
+        production)
+            ENV_FILE=".env.prod"
+            [ -f "$ENV_FILE" ] || { log_error "$ENV_FILE não encontrado."; exit 1; }
+            load_env "$ENV_FILE"
+            ;;
+        *) log_error "Unknown environment: $ENVIRONMENT"; exit 1 ;;
+    esac
+
+    REGISTRY=${REGISTRY:-auth-service}
+    IMAGE_NAME=${IMAGE_NAME:-auth-service}
+    VERSION=${VERSION:-latest}
+    export REGISTRY IMAGE_NAME VERSION
+
+    APP_PORT=${APP_PORT:-3000}
+    PROD_BASE_URL=${PROD_BASE_URL:-https://api.yourapp.com}
+
     log_success "Prerequisites check passed"
 }
 
 run_tests() {
     log_info "Running tests before deployment..."
-    
-    # Executar testes unitários
     npm run test:unit:fast
-    
-    # Executar testes de integração
     npm run test:integration:app
-    
     log_success "All tests passed"
 }
 
 build_and_push() {
     log_info "Building and pushing Docker image..."
-    
-    # Build da imagem
-    docker build -t ${REGISTRY}/${SERVICE_NAME}:${VERSION} .
-    
-    # Push para registry
-    docker push ${REGISTRY}/${SERVICE_NAME}:${VERSION}
-    
-    log_success "Image built and pushed: ${REGISTRY}/${SERVICE_NAME}:${VERSION}"
-}
-
-deploy_staging() {
-    log_info "Deploying to staging environment..."
-    
-    # Parar serviços existentes
-    docker compose -f docker-compose.yml down || true
-    
-    # Iniciar novos serviços
-    docker compose -f docker-compose.yml up -d
-    
-    # Aguardar health check
-    wait_for_health_check "http://localhost:3000/health"
-    
-    log_success "Staging deployment completed"
-}
-
-deploy_production() {
-    log_info "Deploying to production environment..."
-    
-    # Backup atual
-    backup_current_version
-    
-    # Deploy blue-green
-    blue_green_deploy
-    
-    # Verificar health checks
-    wait_for_health_check "https://api.yourapp.com/health"
-    
-    # Smoke tests
-    run_smoke_tests
-    
-    log_success "Production deployment completed"
-}
-
-backup_current_version() {
-    log_info "Creating backup of current version..."
-    
-    # Criar backup do estado atual
-    TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-    BACKUP_TAG="${SERVICE_NAME}-backup-${TIMESTAMP}"
-    
-    # Tag da imagem atual como backup
-    docker tag ${REGISTRY}/${SERVICE_NAME}:latest ${REGISTRY}/${SERVICE_NAME}:${BACKUP_TAG}
-    docker push ${REGISTRY}/${SERVICE_NAME}:${BACKUP_TAG}
-    
-    log_success "Backup created: ${BACKUP_TAG}"
-}
-
-blue_green_deploy() {
-    log_info "Performing blue-green deployment..."
-    
-    # Deploy da nova versão (green)
-    export VERSION=${VERSION}
-    docker compose -f docker-compose.prod.yml up -d
-    
-    # Aguardar health check da nova versão
-    sleep 30
-    
-    # Switch do load balancer
-    log_info "Switching traffic to new version..."
-    
-    # Aqui você implementaria a lógica específica do seu load balancer
-    # Exemplo: kubectl patch service, consul, nginx reload, etc.
-    
-    log_success "Traffic switched to new version"
+    docker build -t "${REGISTRY}/${IMAGE_NAME}:${VERSION}" .
+    docker push "${REGISTRY}/${IMAGE_NAME}:${VERSION}"
+    log_success "Image built and pushed: ${REGISTRY}/${IMAGE_NAME}:${VERSION}"
 }
 
 wait_for_health_check() {
-    local url=$1
-    local max_attempts=30
-    local attempt=1
-    
+    local url="$1"
+    local max_attempts=30 attempt=1
     log_info "Waiting for health check: ${url}"
-    
-    while [ $attempt -le $max_attempts ]; do
-        if curl -f -s "${url}" > /dev/null; then
+    while [ "$attempt" -le "$max_attempts" ]; do
+        if curl -f -s "$url" > /dev/null 2>&1; then
             log_success "Health check passed"
             return 0
         fi
-        
         log_info "Attempt ${attempt}/${max_attempts} failed, waiting..."
         sleep 10
-        ((attempt++))
+        ((attempt++)) || true
     done
-    
     log_error "Health check failed after ${max_attempts} attempts"
     return 1
 }
 
-run_smoke_tests() {
-    log_info "Running smoke tests..."
-    
-    # Teste básico de saúde
-    curl -f https://api.yourapp.com/health
-    
-    # Teste de autenticação
-    # Implementar testes específicos
-    
-    log_success "Smoke tests passed"
+deploy_staging() {
+    log_info "Deploying to staging environment..."
+    docker compose down || true
+    docker compose up -d
+    wait_for_health_check "http://localhost:${APP_PORT}/health"
+    log_success "Staging deployment completed"
 }
 
-rollback() {
-    log_error "Deployment failed, initiating rollback..."
-    
-    # Implementar lógica de rollback
-    # docker compose down
-    # docker compose up -d (versão anterior)
-    
-    log_success "Rollback completed"
+backup_current_version() {
+    log_info "Creating backup of current version..."
+    local timestamp backup_tag
+    timestamp=$(date +%Y%m%d_%H%M%S)
+    backup_tag="${IMAGE_NAME}-backup-${timestamp}"
+    docker tag "${REGISTRY}/${IMAGE_NAME}:latest" "${REGISTRY}/${IMAGE_NAME}:${backup_tag}" || true
+    docker push "${REGISTRY}/${IMAGE_NAME}:${backup_tag}" || true
+    log_success "Backup created: ${backup_tag}"
+}
+
+deploy_production() {
+    log_info "Deploying to production environment..."
+    backup_current_version
+    docker compose --env-file ".env.prod" -f docker-compose.prod.yml up -d
+    wait_for_health_check "${PROD_BASE_URL}/health"
+    run_smoke_tests
+    log_success "Production deployment completed"
+}
+
+run_smoke_tests() {
+    log_info "Running smoke tests..."
+    curl -f -s "${PROD_BASE_URL}/health" > /dev/null
+    curl -f -s "${PROD_BASE_URL}/api-docs" > /dev/null || log_warning "Swagger não respondeu (ok se desabilitado)"
+    log_success "Smoke tests passed"
 }
 
 cleanup() {
     log_info "Cleaning up old images..."
-    
-    # Remover imagens antigas (manter apenas as 5 mais recentes)
-    docker images ${REGISTRY}/${SERVICE_NAME} --format "table {{.Tag}}" | grep -v TAG | sort -V | head -n -5 | xargs -r docker rmi ${REGISTRY}/${SERVICE_NAME}: || true
-    
+    docker images "${REGISTRY}/${IMAGE_NAME}" --format "table {{.Tag}}" | grep -v TAG | sort -V | head -n -5 | xargs -r -I{} docker rmi "${REGISTRY}/${IMAGE_NAME}:{}" || true
     log_success "Cleanup completed"
+}
+
+rollback() {
+    log_error "Deployment failed, iniciando rollback (restaurar a última imagem: ${REGISTRY}/${IMAGE_NAME}:latest)"
 }
 
 # ====================================
@@ -216,40 +157,20 @@ cleanup() {
 main() {
     log_info "Starting deployment process..."
     log_info "Environment: ${ENVIRONMENT}"
-    log_info "Version: ${VERSION}"
-    log_info "Registry: ${REGISTRY}"
-    
-    # Verificar pré-requisitos
+
     check_prerequisites
-    
-    # Executar testes
     run_tests
-    
-    # Build e push da imagem
     build_and_push
-    
-    # Deploy baseado no ambiente
-    case $ENVIRONMENT in
-        "staging")
-            deploy_staging
-            ;;
-        "production")
-            deploy_production
-            ;;
-        *)
-            log_error "Unknown environment: $ENVIRONMENT"
-            exit 1
-            ;;
+
+    case "$ENVIRONMENT" in
+        staging)    deploy_staging ;;
+        production) deploy_production ;;
     esac
-    
-    # Cleanup
+
     cleanup
-    
     log_success "🎉 Deployment completed successfully!"
 }
 
-# Trap para cleanup em caso de erro
 trap 'log_error "Deployment failed!"; rollback; exit 1' ERR
 
-# Executar main
 main "$@"

@@ -155,3 +155,23 @@
       `.env` (fonte da verdade) e corrige healthcheck de https para http
       (dev roda SSL_ENABLED=false).
 - [x] `.env.example`/`.env.prod.example`: seção de portas de host documentada.
+
+## P3.2 - CONFIGURAÇÃO CENTRALIZADA NO .env (limpeza de hardcodes)
+> Fonte da verdade = .env. Auditado e corrigido o restante que ainda era
+> hardcoded/desatualizado.
+
+- [x] `docker-compose.yml` (dev): bloco `environment:` passa a usar
+      `${VAR:-default}` do .env; URIs internas docker via `URI_MONGODB_DOCKER`/
+      `REDIS_URL_DOCKER` (hostnames dos serviços; localhost não existe na rede).
+- [x] `Makefile`: removidos targets mortos (`dev:direct`, `setup-env.sh`,
+      `test:watch`, `test-performance`, `lint:check`, `security:*`, `deploy:*`,
+      `backup/restore`, `pre-commit`, `ci-*`, `load-test`); novos targets
+      funcionais; `health`/`metrics`/`status`/`docs` usam a porta do .env
+      (http, não https).
+- [x] `package.json`: scripts `test:watch` e `audit` adicionados.
+- [x] `deploy.sh`: docker-compose v2, `.env.prod` (antes `.env.production`),
+      REGISTRY/IMAGE_NAME/VERSION/APP_PORT lidos do .env; URLs sobrescrevíveis.
+- [x] `monitor-service.sh`: SERVICE_URL vem do .env (APP_PORT); vars
+      operacionais sobrescrevíveis por ambiente.
+- [x] `ecosystem.config.cjs`: valores vêm de `.env` via dotenv (PM2 não
+      sobrescreve mais NODE_ENV/PORT fixos).

@@ -20,9 +20,11 @@
     "test:integration:app": "cross-env NODE_ENV=test NODE_OPTIONS=\"--experimental-vm-modules\" jest tests/integration --detectOpenHandles --forceExit --runInBand",
     "test:coverage:fast": "cross-env NODE_ENV=test NODE_OPTIONS=\"--experimental-vm-modules\" jest --coverage --detectOpenHandles --forceExit --runInBand",
     "test:all": "npm run test:unit && npm run test:integration",
+    "test:watch": "cross-env NODE_ENV=test NODE_OPTIONS=\"--experimental-vm-modules\" jest --watch --detectOpenHandles",
     "lint": "eslint src/ tests/",
     "typecheck": "tsc --noEmit",
     "lint:fix": "eslint src/ tests/ --fix",
+    "audit": "npm audit",
     "build:docker": "docker build -t auth-service .",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down"

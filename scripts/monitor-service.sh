@@ -4,12 +4,20 @@
 # SCRIPT DE MONITORAMENTO AUTOMATIZADO
 # ======================================
 
-# Configurações
-SERVICE_URL="https://localhost:3000"
-ALERT_EMAIL="admin@company.com"
-SLACK_WEBHOOK="https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK"
-LOG_FILE="/var/log/auth-service-monitor.log"
-CHECK_INTERVAL=30  # segundos
+# Configurações — lidas do .env (fonte da verdade) e sobrescrevíveis por variável de ambiente.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+ENV_FILE="${ENV_FILE:-$PROJECT_DIR/.env}"
+
+# Porta pública do app vem do .env (next-port.sh resolve a APP_PORT configurada).
+resolved_port="$(bash "$SCRIPT_DIR/next-port.sh" --env "$ENV_FILE" 2>/dev/null | sed -n 's/^APP_PORT=//p')"
+SERVICE_URL="${SERVICE_URL:-http://localhost:${resolved_port:-3000}}"
+ALERT_EMAIL="${ALERT_EMAIL:-admin@company.com}"
+SLACK_WEBHOOK="${SLACK_WEBHOOK:-}" # deixe vazio para desativar Slack
+LOG_FILE="${LOG_FILE:-$PROJECT_DIR/logs/auth-service-monitor.log}"
+CHECK_INTERVAL="${CHECK_INTERVAL:-30}" # segundos
+
+mkdir -p "$(dirname "$LOG_FILE")"
 
 # Cores
 RED='\033[0;31m'
@@ -253,9 +261,10 @@ show_help() {
     echo "  status     - Show current service status"
     echo "  help       - Show this help message"
     echo ""
-    echo "Configuration:"
+    echo "Configuration (defaults do .env, sobrescreva com vars de ambiente):"
     echo "  SERVICE_URL: $SERVICE_URL"
     echo "  ALERT_EMAIL: $ALERT_EMAIL"
+    echo "  LOG_FILE: $LOG_FILE"
     echo "  CHECK_INTERVAL: ${CHECK_INTERVAL}s"
 }
 
