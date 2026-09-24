@@ -65,7 +65,7 @@ Base path configurável (padrão `/api`):
 | GET    | `/health`      | —                      | Health check                              |
 | GET    | `/metrics`     | `METRICS_TOKEN` (opcional) | Métricas Prometheus                   |
 
-Rotas de segurança (auditoria/monitoramento) ficam em `src/application/routes/securityRoutes.ts`. Um guia prático de uso do dashboard de segurança está em [`DASHBOARD_SEGURANCA_GUIA.md`](DASHBOARD_SEGURANCA_GUIA.md), com exemplos em [`examples/`](examples).
+Rotas de segurança (auditoria/monitoramento) ficam em `src/application/routes/securityRoutes.ts`. Um guia prático de uso do dashboard de segurança está em [`docs/DASHBOARD_SEGURANCA_GUIA.md`](docs/DASHBOARD_SEGURANCA_GUIA.md), com exemplos em [`examples/`](examples).
 
 A documentação Swagger fica disponível quando `SWAGGER_ENABLED=true`.
 

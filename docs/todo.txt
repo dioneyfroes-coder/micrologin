@@ -1,0 +1,55 @@
+# Vamos verificar amanhã — boas práticas (sugestões)
+
+> Planilha de revisão gerada em 2026-09-24. Nada aqui foi feito ainda;
+> o objetivo é auditar e marcar conforme formos verificando.
+
+## Processo / Repositório
+- [ ] Verificar se há CI ativo (`.github/workflows/`): build + lint + typecheck + testes rodando a cada push/PR.
+- [ ] Avaliar instalar hook de pre-commit real (husky + lint-staged) rodando lint/typecheck nos arquivos alterados.
+- [ ] Adotar formalmente Conventional Commits (já usado no repositório — padronizar).
+- [ ] Avaliar branch protection / code review obrigatório no GitHub.
+- [ ] Definir politica de branches (main protegida, branchs curtas, PRs pequenos).
+- [ ] Verificar se `dist/` não está versionado (build artifact) e se `.gitignore` está completo.
+
+## Código / Arquitetura
+- [ ] Auditar dependências não usadas (ex.: @babel/core, babel-jest, @types/supertest, mongodb-memory-server, audit-ci ainda são necessários?).
+- [ ] Reduzir `any` restantes em `src` (o ESLint só libera `any` em `tests/`).
+- [ ] Gerar relatório de cobertura e definir meta mínima (linhas/branches).
+- [ ] Decidir alvo dos testes de integração: mongodb-memory-server vs MongoDB real (ex.: via docker compose test profile).
+- [ ] Verificar `unhandledRejection`/`uncaughtException` no processo (graceful fail).
+- [ ] Conferir se não há `console.log` solto em produção (usar o logger).
+- [ ] Padronizar tratamento de erros de domínio vs HTTP (DomainError → HttpError).
+
+## Segurança
+- [ ] Confirmar que nenhum segredo (`JWT_SECRET`, URIs com credenciais) existe no histórico do git (`git log -p` / trufflehog / gitleaks).
+- [ ] Rotação/validação de `JWT_SECRET` (>= 32 chars) nos três ambientes (dev/staging/prod).
+- [ ] Em produção: confirmar `METRICS_TOKEN` definido, `RATE_LIMIT_PROD_*` ativos, SSL terminado no proxy.
+- [ ] Rodar `npm audit`/`audit-ci` como bloqueio de merge (threshold definida no `.audit-ci.json`).
+- [ ] Avaliar varredura de imagem (trivy/clair) no build para análise de CVEs.
+- [ ] Conferir headers de segurança (helmet) e CORS restrito por origem.
+
+## Docker / Infra
+- [ ] Limitar recursos (memória/CPU) dos services no compose (dev e prod).
+- [ ] Taggear imagens com SHA do commit + data (e não só `latest`).
+- [ ] Avaliar multi-arch (amd64/arm64) no build e imagem minimum (alpine).
+- [ ] Logging: confirmar limites (`max-size`/`max-file`) e avaliar driver centralizado (loki/cloudwatch).
+- [ ] Documentar fluxo de secrets em produção (Vault/KMS/doppler) em vez de `.env.prod` no servidor.
+- [ ] Definir orquestração alvo (docker compose --scale vs kubernetes) e documentar.
+
+## Observabilidade
+- [ ] Padronizar logs estruturados (`LOG_FORMAT=structured`) e campos correlacionados (requestId/worker/pid).
+- [ ] Revisar labels das métricas Prometheus (http_requests_total por rota/status).
+- [ ] Definir alertas básicos (health, erro 5xx, p95 latência, memória) e painel de monitoramento.
+- [ ] Avaliar APM/tracing (opentelemetry) se o microservice for consumido por outros serviços.
+
+## Qualidade / Testes
+- [ ] Avaliar testes E2E (fluxo completo via http contra o compose dev).
+- [ ] Reavaliar teste de carga com k6 (voltar só com cenário real e métricas honestas).
+- [ ] Revisar testes que usam `--forceExit`/`--detectOpenHandles` (foot-gun) e eliminar vazamentos reais.
+- [ ] Adicionar testes de regressão para os pontos de segurança (rate limit, validação, blacklist JWT).
+
+## Deploy / Operação
+- [ ] Testar o fluxo completo de `scripts/deploy.sh staging` e `production` (com `.env.prod` real).
+- [ ] Documentar rollback (imagens com tag de backup já existem no script — validar).
+- [ ] Definir versionamento semântico (major/minor/patch) e changelog automático.
+- [ ] Alinhar nomes dos containers/serviços (auth-service-dev/prod) e redes com a orquestração real.
