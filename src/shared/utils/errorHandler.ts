@@ -24,20 +24,49 @@ interface ErrorResponse {
   details?: unknown;
 }
 
+interface ClientErrorLike {
+  status?: number;
+  statusCode?: number;
+  type?: string;
+}
+
+/**
+ * Erros de cliente (body-parser, validations do express etc.) carregam status 4xx.
+ * Sem isso, payload JSON inválido virava 500 (inflado a taxa de 5xx na observabilidade).
+ */
+const getClientStatus = (error: unknown): number | null => {
+  if (typeof error !== 'object' || error === null) {
+    return null;
+  }
+  const candidate = error as ClientErrorLike;
+  const status = candidate.statusCode ?? candidate.status;
+  if (typeof status === 'number' && status >= 400 && status < 500) {
+    return status;
+  }
+  return null;
+};
+
 export const errorHandler = (error: unknown, _req: Request, res: Response, _next: NextFunction) => {
   const isHttpError = error instanceof HttpError;
-  const statusCode = isHttpError ? error.statusCode : 500;
+  const clientStatus = isHttpError ? null : getClientStatus(error);
+  const isParseError = !isHttpError && typeof error === 'object' && error !== null
+    && (error as ClientErrorLike).type === 'entity.parse.failed';
+
+  const statusCode = isHttpError ? error.statusCode : clientStatus ?? 500;
   const response: ErrorResponse = {
     success: false,
-    code: isHttpError ? error.code : 'INTERNAL_ERROR',
-    message: isHttpError ? error.message : 'Erro interno do servidor'
+    code: isHttpError ? error.code : isParseError ? 'INVALID_JSON' : clientStatus !== null ? 'BAD_REQUEST' : 'INTERNAL_ERROR',
+    message: isHttpError ? error.message
+      : isParseError ? 'Payload JSON inválido'
+        : clientStatus !== null ? 'Requisição inválida'
+          : 'Erro interno do servidor'
   };
 
   if (isHttpError && error.details) {
     response.details = error.details;
   }
 
-  if (!isHttpError) {
+  if (!isHttpError && clientStatus === null) {
     logger.error('Erro HTTP não tratado', error);
   }
 

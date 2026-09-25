@@ -1,10 +1,10 @@
 import { Router } from 'express';
-import type { NextFunction, Request, Response } from 'express';
 import { resolve, bootstrapServices } from '../../core/bootstrap.js';
 import { validateLogin, validateRegister, validateUpdate, validateRefresh } from '../middleware/validation.js';
 import { prometheus } from '../../shared/utils/metrics.js';
 import { performHealthCheck } from '../../shared/utils/healthCheck.js';
 import { advancedRateLimit } from '../middleware/advancedRateLimit.js';
+import { requireMetricsToken } from '../middleware/metricsToken.js';
 import securityRoutes from './securityRoutes.js';
 import { HttpError } from '../../shared/utils/errorHandler.js';
 import { logger } from '../../shared/utils/logger.js';
@@ -455,16 +455,6 @@ export function createAuthRoutes() {
     if (process.env.NODE_ENV === 'production' && !METRICS_TOKEN) {
       logger.warn(`⚠️ ${metricsEndpoint} exposto SEM token de autenticação em produção. Configure METRICS_TOKEN.`);
     }
-
-    const requireMetricsToken = (req: Request, res: Response, next: NextFunction) => {
-      if (!METRICS_TOKEN) {
-        return next();
-      }
-      if (req.get('x-metrics-token') !== METRICS_TOKEN) {
-        return next(new HttpError(401, 'METRICS_FORBIDDEN', 'Acesso não autorizado às métricas'));
-      }
-      return next();
-    };
 
     /**
      * @swagger

@@ -8,20 +8,38 @@ const [requestLoggerImport, metricsImport] = await (async() => {
 
 const { requestLogger } = requestLoggerImport;
 const { metricsMiddleware, httpRequestTotal, httpRequestDuration } = metricsImport;
+const { requestLogAggregator } = await import('../../src/application/observability/requestLogAggregator.js');
 
 describe('requestLogger - middleware de log de requisições', () => {
-  it('loga método e path, define X-Request-Id e chama next', () => {
+  it('define X-Request-Id, loga método/path/status/duration no finish e alimenta o agregador', () => {
+    requestLogAggregator.reset();
     const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
     const setHeader = jest.fn();
-    const req = { method: 'POST', path: '/login', headers: {}, get: () => undefined };
-    const res = { setHeader };
+    let finishHandler: () => void = () => {};
+    const req = { method: 'POST', path: '/login', route: null, get: () => undefined };
+    const res = {
+      setHeader,
+      statusCode: 201,
+      on: jest.fn((event: string, handler: () => void) => {
+        if (event === 'finish') {
+          finishHandler = handler;
+        }
+      })
+    };
     const next = jest.fn();
 
     requestLogger(req as never, res as never, next);
 
-    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('POST /login'));
     expect(setHeader).toHaveBeenCalledWith('X-Request-Id', expect.any(String));
     expect(next).toHaveBeenCalledTimes(1);
+    expect(finishHandler).not.toBe(undefined);
+
+    finishHandler();
+
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('POST /login'));
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('201'));
+    expect(requestLogAggregator.getSnapshot().total).toBe(1);
+    expect(requestLogAggregator.getSnapshot().by_status['201']).toBe(1);
 
     logSpy.mockRestore();
   });

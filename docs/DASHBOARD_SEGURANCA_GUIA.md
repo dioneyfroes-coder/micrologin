@@ -4,6 +4,8 @@
 
 Este documento fornece um guia prático e didático para utilizar o sistema de monitoramento e dashboard de segurança implementado no microserviço de autenticação.
 
+> 🚨 **Alertas Prometheus**: regras de alerta prontas (health, 5xx, p95 latência, memória e event loop) em [`examples/prometheus-alerts.yml`](examples/prometheus-alerts.yml). É o primeiro passo para o Grafana/Prometheus: monte o arquivo no Prometheus e configure o Alertmanager para entrega das notificações.
+
 ---
 
 ## ⚠️ RESOLUÇÃO DE PROBLEMAS

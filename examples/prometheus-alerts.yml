@@ -1,0 +1,116 @@
+# ============================================================
+# REGRAS DE ALERTA PROMETHEUS — Authentication Microservice
+# ============================================================
+#
+# Template pronto para o passo externo (Grafana/Prometheus).
+# Uso: montar este arquivo na imagem/pasta do Prometheus (ex.:
+# prom/prometheus com `-rule_files` apontando para ele) e
+# configurar o alertmanager para entregar as notificações.
+#
+# Métricas base (verdeiro no /metrics da app):
+#   - http_requests_total                    (counter)   labels: method, route, status_code
+#   - http_request_duration_seconds          (histogram) labels: method, route, status_code
+#   - nodejs_process_resident_memory_bytes   (gauge)     memória RSS do processo
+#   - nodejs_nodejs_eventloop_lag_seconds    (gauge)     lag do event loop
+#   - up                                     (alvo)      métrica de scrape do próprio Prometheus
+#
+# Ajuste os `for`, thresholds e labels de rota conforme o tráfego
+# real antes de ativar em produção.
+#
+# --------------------------------------------
+groups:
+  - name: auth-service-availability
+    rules:
+      # 1) Serviço fora do ar (scrape falhou)
+      - alert: AuthServiceDown
+        expr: |
+          up{job="auth-service"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "AuthService indisponível (job {{ $labels.job }})"
+          description: "O Prometheus não consegue consultar {{ $labels.instance }} há mais de 1 minuto."
+
+      # 2) Health check sem MongoDB/Redis nunca volta a 200
+      - alert: AuthServiceUnhealthy
+        expr: |
+          sum(rate(http_requests_total{route="/api/health", status_code="503"}[2m]))
+            / clamp_min(sum(rate(http_requests_total{route="/api/health"}[2m])), 1)
+            > 0.9
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Health check do AuthService retornando 503"
+          description: "Mais de 90% das requisições ao /api/health estão falhando nos últimos 5 minutos (banco/infra dependente indisponível)."
+  - name: auth-service-errors
+    rules:
+      # 3) Taxa alta de erros 5xx nas rotas de API
+      - alert: High5xxErrorRate
+        expr: |
+          sum(rate(http_requests_total{status_code=~"5.."}[5m])) by (route)
+            / clamp_min(sum(rate(http_requests_total[5m])) by (route), 1)
+            > 0.05
+        for: 10m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Taxa de erros 5xx acima de 5% a rota {{ $labels.route }}"
+          description: "A rota {{ $labels.route }} está com {{ $value | humanizePercentage }} de respostas 5xx nos últimos 10 minutos."
+  - name: auth-service-performance
+    rules:
+      # 4) Latência p95 acima do limite (métricas HTTP próprias)
+      - alert: HighLatencyP95
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
+          ) > 1.0
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Latência p95 acima de 1s"
+          description: "O p95 das respostas está em {{ $value }}s há mais de 10 minutos."
+
+      # 5) Event loop travado (indica bloqueio/CPU)
+      - alert: EventLoopHighLag
+        expr: |
+          nodejs_nodejs_eventloop_lag_seconds > 1
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Event loop com lag alto ({{ $value }}s)"
+          description: "O event loop do Node está com lag acima de 1s (operação síncrona bloqueante ou CPU saturada)."
+  - name: auth-service-resources
+    rules:
+      # 6) Memória RSS subindo demais (compose limita em 512m)
+      - alert: HighMemoryUsage
+        expr: |
+          nodejs_process_resident_memory_bytes > 400 * 1024 * 1024
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Memória do AuthService acima de 400MB"
+          description: "O RSS está em {{ $value | humanize1024 }}B há mais de 10 minutos (limite do container: 512MB)."
+
+      # 7) Crescimento rápido de memória (vazamento suspeito)
+      - alert: MemoryLeakSuspect
+        expr: |
+          increase(nodejs_process_resident_memory_bytes[1h]) > 100 * 1024 * 1024
+        for: 15m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Crescimento de memória superior a 100MB em 1h"
+          description: "A memória RSS subiu mais de 100MB na última hora — avaliar possível vazamento ou pico de carga."

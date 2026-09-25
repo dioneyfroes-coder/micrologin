@@ -64,8 +64,33 @@ Base path configurável (padrão `/api`):
 | DELETE | `/delete`      | Bearer                 | Remove o usuário                          |
 | GET    | `/health`      | —                      | Health check                              |
 | GET    | `/metrics`     | `METRICS_TOKEN` (opcional) | Métricas Prometheus                   |
+| GET    | `/observability` | `METRICS_TOKEN` (opcional) | Snapshot JSON de observabilidade **por logs** (janela rolante de requisições: volumes, P50/P95/P99, taxas de erro, top rotas) + health + segurança + memória/uptime. Path próprio, sem coletor externo. |
 
-Rotas de segurança (auditoria/monitoramento) ficam em `src/application/routes/securityRoutes.ts`. Um guia prático de uso do dashboard de segurança está em [`docs/DASHBOARD_SEGURANCA_GUIA.md`](docs/DASHBOARD_SEGURANCA_GUIA.md), com exemplos em [`examples/`](examples).
+Rotas de segurança (auditoria/monitoramento) ficam em `src/application/routes/securityRoutes.ts` (montadas em `/security/*`). Um guia prático de uso do dashboard de segurança está em [`docs/DASHBOARD_SEGURANCA_GUIA.md`](docs/DASHBOARD_SEGURANCA_GUIA.md), com exemplos em [`examples/`](examples).
+
+Exemplo do `/observability`:
+
+```bash
+curl -H "x-metrics-token: $METRICS_TOKEN" http://localhost:3000/observability
+```
+
+```json
+{
+  "service": { "name": "auth-service", "version": "43fa497027ef-...", "environment": "production" },
+  "requests": {
+    "total": 1024,
+    "by_status": { "200": 1010, "401": 11, "500": 3 },
+    "errors": { "4xx": 11, "5xx": 3, "rate_pct": 1.37 },
+    "latency_ms": { "p50": 6.2, "p95": 22.1, "p99": 48.9 },
+    "by_route": [{ "method": "POST", "route": "/login", "count": 501 }]
+  },
+  "health": { "status": "healthy", "services": { "mongodb": { "status": "healthy" }, "redis": { "status": "healthy" } } },
+  "security": { "riskLevel": "MINIMAL", "blockedRequests": 0, "failedLogins": 1 },
+  "logging": { "format": "structured", "level": "info", "request_id_header": "X-Request-Id" }
+}
+```
+
+A fonte do snapshot é a mesma dos logs estruturados (`requestLogger` alimenta um agregador em memória em `src/application/observability/`): nada depende de coletor externo. Erros de parsing JSON de payload agora respondem **400 `INVALID_JSON`** (antes 500, inflando a taxa de 5xx).
 
 A documentação Swagger fica disponível quando `SWAGGER_ENABLED=true`.
 
@@ -126,7 +151,14 @@ O workflow [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml) executa:
 2. **tests**: unitários rápidos, integração e upload de cobertura para Codecov
 3. **build**: build e push da imagem multi-plataforma (amd64/arm64) para GHCR
 4. **security**: scan de vulnerabilidades com Trivy
-5. **deploy**: staging (branch `develop`) e produção (branch `main`) com blue-green
+5. **deploy**: staging e produção a cada push na branch `main` com blue-green
+
+### Política de branches (main-only)
+
+- apenas a branch `main` existe; **sem** `develop` ou `feature/*`
+- no GitHub, `main` deve estar **protegida**: exigir PR + code review e checks de CI
+- branches de trabalho são **efêmeras**: criadas para um PR pequeno e apagadas após o merge em `main`
+- o CI dispara em push/PR para `main`; deploys de staging e produção rodam no push à `main`
 
 ## Observações importantes
 

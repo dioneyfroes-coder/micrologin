@@ -22,6 +22,7 @@ import { connectDatabase } from './infrastructure/database/connection.js';
 import { setupSwagger } from './interfaces/config/swagger.js';
 import { errorHandler, setupErrorHandlers } from './shared/utils/errorHandler.js';
 import { createAuthRoutes } from './application/routes/authRoutes.js';
+import observabilityRoutes from './application/routes/observabilityRoutes.js';
 import { bootstrapServices, resolve } from './core/bootstrap.js';
 
 import setupSecurity from './interfaces/config/helmet.js';
@@ -95,6 +96,7 @@ class AuthService {
     // Criar rotas com dependências injetadas
     const authRoutes = createAuthRoutes();
     this.app.use('/', authRoutes);
+    this.app.use('/', observabilityRoutes);
     this.app.use(errorHandler);
   }
 

@@ -85,6 +85,51 @@ describe('errorHandler - respostas HTTP de erro', () => {
 
     errSpy.mockRestore();
   });
+
+  it('mapeia payload JSON inválido (body-parser) para 400 INVALID_JSON sem logar erro', async() => {
+    const { errorHandler } = await loadErrorHandler();
+    const json = jest.fn();
+    const res = { status: jest.fn(() => ({ json })) };
+    const errSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    const parseError = new SyntaxError('Unexpected token');
+    (parseError as unknown as Record<string, unknown>).type = 'entity.parse.failed';
+    (parseError as unknown as Record<string, unknown>).status = 400;
+
+    errorHandler(parseError, {} as never, res as never);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(json).toHaveBeenCalledWith({
+      success: false,
+      code: 'INVALID_JSON',
+      message: 'Payload JSON inválido'
+    });
+    expect(errSpy).not.toHaveBeenCalled();
+
+    errSpy.mockRestore();
+  });
+
+  it('respeita o status 4xx carregado pelo erro de cliente', async() => {
+    const { errorHandler } = await loadErrorHandler();
+    const json = jest.fn();
+    const res = { status: jest.fn(() => ({ json })) };
+    const errSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    const clientError = new Error('Entidade muito grande');
+    (clientError as unknown as Record<string, unknown>).statusCode = 413;
+
+    errorHandler(clientError, {} as never, res as never);
+
+    expect(res.status).toHaveBeenCalledWith(413);
+    expect(json).toHaveBeenCalledWith({
+      success: false,
+      code: 'BAD_REQUEST',
+      message: 'Requisição inválida'
+    });
+    expect(errSpy).not.toHaveBeenCalled();
+
+    errSpy.mockRestore();
+  });
 });
 
 describe('setupErrorHandlers - graceful shutdown', () => {
