@@ -69,6 +69,10 @@ check_prerequisites() {
     VERSION=${VERSION:-latest}
     export REGISTRY IMAGE_NAME VERSION
 
+    if [ "$ENVIRONMENT" = "production" ] && can_push; then
+        log_warning "Garanta que o host está logado no registry: docker login ${REGISTRY%%/*}"
+    fi
+
     APP_PORT=${APP_PORT:-3000}
     PROD_BASE_URL=${PROD_BASE_URL:-https://api.yourapp.com}
 
@@ -77,28 +81,45 @@ check_prerequisites() {
 
 run_tests() {
     log_info "Running tests before deployment..."
-    npm run test:unit:fast
-    npm run test:integration:app
+    npm run test:unit:fast || return 1
+    npm run test:integration:app || return 1
     log_success "All tests passed"
 }
 
+# Só faz push de fato se houver um registry remoto (contém `.` ou `:`).
+# Sem registry, a imagem fica apenas local (deploy local/staging sem push).
+can_push() {
+    case "$REGISTRY" in
+        *.*|*:*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 build_and_push() {
-    log_info "Building and pushing Docker image..."
+    log_info "Building Docker image..."
     local ts sha commit_tag
     ts=$(date +%Y%m%d%H%M%S)
     sha=$(git rev-parse --short=12 HEAD 2>/dev/null || echo "no-git")
     commit_tag="${sha}-${ts}"
 
-    # Tag imutável (SHA do commit + data) para rastreabilidade/rollback
-    docker build -t "${REGISTRY}/${IMAGE_NAME}:${commit_tag}" .
-    docker push "${REGISTRY}/${IMAGE_NAME}:${commit_tag}"
+    # Tag imutável (SHA do commit + data) para rastreabilidade/rollback.
+    # O compose passa a subir essa tag (e não `latest`).
+    export VERSION="${commit_tag}"
 
-    # Tag mutável (latest ou VERSION) apontando para o mesmo build
-    docker tag "${REGISTRY}/${IMAGE_NAME}:${commit_tag}" "${REGISTRY}/${IMAGE_NAME}:${VERSION}"
-    docker push "${REGISTRY}/${IMAGE_NAME}:${VERSION}"
+    docker build -t "${REGISTRY}/${IMAGE_NAME}:${commit_tag}" . || return 1
 
-    export IMAGE_TAG="${commit_tag}"
-    log_success "Image built and pushed: ${REGISTRY}/${IMAGE_NAME}:${commit_tag} (${VERSION})"
+    # Tag mutável (latest) apontando para o mesmo build (usada por backup/rollback)
+    docker tag "${REGISTRY}/${IMAGE_NAME}:${commit_tag}" "${REGISTRY}/${IMAGE_NAME}:latest" || return 1
+
+    if can_push; then
+        log_info "Pushing image to ${REGISTRY}..."
+        docker push "${REGISTRY}/${IMAGE_NAME}:${commit_tag}" || return 1
+        docker push "${REGISTRY}/${IMAGE_NAME}:latest" || return 1
+    else
+        log_warning "REGISTRY=${REGISTRY} não é um registry remoto; pulando push (imagem apenas local)."
+    fi
+
+    log_success "Image built: ${REGISTRY}/${IMAGE_NAME}:${commit_tag} (latest)"
 }
 
 wait_for_health_check() {
@@ -121,8 +142,8 @@ wait_for_health_check() {
 deploy_staging() {
     log_info "Deploying to staging environment..."
     docker compose down || true
-    docker compose up -d
-    wait_for_health_check "http://localhost:${APP_PORT}/health"
+    docker compose up -d || return 1
+    wait_for_health_check "http://localhost:${APP_PORT}/health" || return 1
     log_success "Staging deployment completed"
 }
 
@@ -132,16 +153,17 @@ backup_current_version() {
     timestamp=$(date +%Y%m%d_%H%M%S)
     backup_tag="${IMAGE_NAME}-backup-${timestamp}"
     docker tag "${REGISTRY}/${IMAGE_NAME}:latest" "${REGISTRY}/${IMAGE_NAME}:${backup_tag}" || true
-    docker push "${REGISTRY}/${IMAGE_NAME}:${backup_tag}" || true
+    if can_push; then
+        docker push "${REGISTRY}/${IMAGE_NAME}:${backup_tag}" || true
+    fi
     log_success "Backup created: ${backup_tag}"
 }
 
 deploy_production() {
     log_info "Deploying to production environment..."
-    backup_current_version
-    docker compose --env-file ".env.prod" -f docker-compose.prod.yml up -d
-    wait_for_health_check "${PROD_BASE_URL}/health"
-    run_smoke_tests
+    docker compose --env-file ".env.prod" -f docker-compose.prod.yml up -d || return 1
+    wait_for_health_check "${PROD_BASE_URL}/health" || return 1
+    run_smoke_tests || return 1
     log_success "Production deployment completed"
 }
 
@@ -154,7 +176,14 @@ run_smoke_tests() {
 
 cleanup() {
     log_info "Cleaning up old images..."
-    docker images "${REGISTRY}/${IMAGE_NAME}" --format "table {{.Tag}}" | grep -v TAG | sort -V | head -n -5 | xargs -r -I{} docker rmi "${REGISTRY}/${IMAGE_NAME}:{}" || true
+    # Mantém as 5 mais recentes por data de criação; remove o resto.
+    docker image ls "${REGISTRY}/${IMAGE_NAME}" --format '{{.CreatedAt}}\t{{.Tag}}' \
+        | sort -r \
+        | tail -n +6 \
+        | cut -f2 \
+        | while read -r tag; do
+            [ -n "$tag" ] && docker rmi "${REGISTRY}/${IMAGE_NAME}:${tag}" >/dev/null 2>&1 || true
+        done
     log_success "Cleanup completed"
 }
 
@@ -191,19 +220,28 @@ main() {
     log_info "Starting deployment process..."
     log_info "Environment: ${ENVIRONMENT}"
 
-    check_prerequisites
-    run_tests
-    build_and_push
+    check_prerequisites || { log_error "Pré-requisitos falharam."; exit 1; }
+    run_tests || { log_error "Testes falharam; abortando deploy."; exit 1; }
+
+    # Backup ANTES de build_and_push: `latest` ainda aponta para a imagem em
+    # execução (rollback precisa da versão anterior, não da recém-construída).
+    if [ "$ENVIRONMENT" = "production" ]; then
+        backup_current_version || log_warning "Backup não pôde ser criado (primeiro deploy?)."
+    fi
+
+    build_and_push || { log_error "Build/push falhou; iniciando rollback."; rollback; exit 1; }
 
     case "$ENVIRONMENT" in
-        staging)    deploy_staging ;;
-        production) deploy_production ;;
+        staging)
+            deploy_staging || { log_error "Deploy de staging falhou; iniciando rollback."; rollback; exit 1; }
+            ;;
+        production)
+            deploy_production || { log_error "Deploy de produção falhou; iniciando rollback."; rollback; exit 1; }
+            ;;
     esac
 
-    cleanup
+    cleanup || true
     log_success "🎉 Deployment completed successfully!"
 }
-
-trap 'log_error "Deployment failed!"; rollback; exit 1' ERR
 
 main "$@"

@@ -30,7 +30,7 @@
     "lint:fix": "eslint src/ tests/ --fix",
     "audit": "npm audit",
     "commit:lint": "commitlint --from=HEAD~1 --to HEAD",
-    "prepare": "husky",
+    "prepare": "husky || true",
     "build:docker": "docker build -t auth-service .",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down"
