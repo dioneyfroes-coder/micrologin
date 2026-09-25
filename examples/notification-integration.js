@@ -7,6 +7,25 @@
 import nodemailer from 'nodemailer';
 import { WebClient } from '@slack/web-api';
 
+const SECURITY_API_BASE = process.env.AUTH_SERVICE_URL || 'https://localhost:3000';
+
+const fetchSecurityResource = async(path) => {
+  const token = process.env.SECURITY_DASHBOARD_TOKEN;
+  if (!token) {
+    throw new Error('SECURITY_DASHBOARD_TOKEN não configurado');
+  }
+
+  const response = await fetch(`${SECURITY_API_BASE}${path}`, {
+    headers: { 'X-Security-Token': token }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Falha ao consultar ${path}: HTTP ${response.status}`);
+  }
+
+  return response.json();
+};
+
 /**
  * Sistema de notificações para alertas de segurança
  */
@@ -232,8 +251,8 @@ class NotificationService {
   async sendDailySecurityReport() {
     try {
       // Buscar estatísticas do dia
-      const stats = await fetch('https://localhost:3000/security/stats').then(r => r.json());
-      const events = await fetch('https://localhost:3000/security/events?period=24h').then(r => r.json());
+      const stats = await fetchSecurityResource('/security/stats');
+      const events = await fetchSecurityResource('/security/events?period=24h');
 
       const report = {
         title: '📊 Relatório Diário de Segurança',

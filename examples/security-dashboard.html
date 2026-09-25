@@ -200,6 +200,14 @@
             box-shadow: 0 5px 15px rgba(0, 123, 255, 0.4);
         }
         
+        .security-token-input {
+            padding: 10px 14px;
+            border: 1px solid rgba(255, 255, 255, 0.4);
+            border-radius: 8px;
+            margin: 0 8px 10px 0;
+            min-width: 260px;
+        }
+
         .loading {
             text-align: center;
             color: #666;
@@ -251,6 +259,8 @@
         </div>
         
         <div class="controls">
+            <input class="security-token-input" type="password" id="securityToken" placeholder="SECURITY_DASHBOARD_TOKEN" autocomplete="off">
+            <button class="refresh-btn" onclick="saveSecurityToken()">Conectar</button>
             <button class="refresh-btn" onclick="refreshAll()">🔄 Atualizar Dados</button>
             <div class="auto-refresh">
                 <input type="checkbox" id="autoRefresh" onchange="toggleAutoRefresh()">
@@ -318,7 +328,13 @@
 
     <script>
         const API_BASE = 'https://localhost:3000';
+        let securityToken = '';
         let autoRefreshInterval = null;
+
+        function saveSecurityToken() {
+            securityToken = document.getElementById('securityToken').value.trim();
+            refreshAll();
+        }
 
         // Função para fazer requisições à API
         async function apiRequest(endpoint) {
@@ -326,7 +342,8 @@
                 const response = await fetch(`${API_BASE}${endpoint}`, {
                     method: 'GET',
                     headers: {
-                        'Accept': 'application/json'
+                        'Accept': 'application/json',
+                        ...(securityToken ? { 'X-Security-Token': securityToken } : {})
                     }
                 });
                 

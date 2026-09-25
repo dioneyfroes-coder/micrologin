@@ -8,9 +8,12 @@ import { Router } from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import { securityAuditLogger } from '../middleware/securityAudit.js';
 import { advancedRateLimit } from '../middleware/advancedRateLimit.js';
+import { requireSecurityToken } from '../middleware/securityToken.js';
 import { HttpError } from '../../shared/utils/errorHandler.js';
 
 const router = Router();
+
+router.use(requireSecurityToken);
 
 /**
  * GET /security/stats

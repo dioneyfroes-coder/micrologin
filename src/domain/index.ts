@@ -259,6 +259,10 @@ export class AuthService {
       // Regra de negócio: usuário não pode já existir
       const userExists = await this.userRepository.exists(credentials.username);
       if (userExists) {
+        this.logger.warn('Falha ao registrar usuário', {
+          username: credentials.username,
+          reason: 'USER_ALREADY_EXISTS'
+        });
         return { success: false, error: 'Usuário já existe' };
       }
 

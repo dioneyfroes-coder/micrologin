@@ -81,6 +81,8 @@ export const securityConfig = {
     audience: process.env.JWT_AUDIENCE || 'api-users'
   },
 
+  dashboardToken: process.env.SECURITY_DASHBOARD_TOKEN,
+
   bcrypt: {
     saltRounds: parseEnvNumber(process.env.BCRYPT_SALT_ROUNDS, 12)
   },
@@ -141,6 +143,14 @@ export function validateConfiguration(): boolean {
   // Validações obrigatórias
   if (!securityConfig.jwt.secret) {
     errors.push('JWT_SECRET é obrigatório');
+  }
+
+  if (environmentConfig.isProduction && !securityConfig.dashboardToken) {
+    errors.push('SECURITY_DASHBOARD_TOKEN é obrigatório em produção');
+  }
+
+  if (environmentConfig.isProduction && securityConfig.dashboardToken && securityConfig.dashboardToken.length < 32) {
+    errors.push('SECURITY_DASHBOARD_TOKEN deve ter pelo menos 32 caracteres em produção');
   }
 
   if (!databaseConfig.mongodb.uri) {
@@ -207,6 +217,7 @@ export function getConfigSummary() {
     },
     security: {
       jwt: !!securityConfig.jwt.secret,
+      dashboardTokenConfigured: Boolean(securityConfig.dashboardToken),
       bcrypt: securityConfig.bcrypt.saltRounds
     },
     features: environmentConfig.features

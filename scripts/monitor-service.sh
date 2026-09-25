@@ -16,6 +16,12 @@ ALERT_EMAIL="${ALERT_EMAIL:-admin@company.com}"
 SLACK_WEBHOOK="${SLACK_WEBHOOK:-}" # deixe vazio para desativar Slack
 LOG_FILE="${LOG_FILE:-$PROJECT_DIR/logs/auth-service-monitor.log}"
 CHECK_INTERVAL="${CHECK_INTERVAL:-30}" # segundos
+SECURITY_DASHBOARD_TOKEN="${SECURITY_DASHBOARD_TOKEN:-}"
+SECURITY_HEADERS=()
+
+if [[ -n "$SECURITY_DASHBOARD_TOKEN" ]]; then
+    SECURITY_HEADERS=(-H "X-Security-Token: $SECURITY_DASHBOARD_TOKEN")
+fi
 
 mkdir -p "$(dirname "$LOG_FILE")"
 
@@ -69,6 +75,14 @@ send_slack_alert() {
     fi
 }
 
+require_security_token() {
+    if [[ -z "$SECURITY_DASHBOARD_TOKEN" ]]; then
+        error "SECURITY_DASHBOARD_TOKEN is required for security dashboard checks"
+        return 1
+    fi
+    return 0
+}
+
 # Verificar saúde do serviço
 check_health() {
     local response=$(curl -k -s -w "%{http_code}" -o /tmp/health_response.json "$SERVICE_URL/health")
@@ -111,7 +125,7 @@ check_metrics() {
 
 # Verificar dashboard de segurança
 check_security_dashboard() {
-    local security_stats=$(curl -k -s "$SERVICE_URL/security/stats")
+    local security_stats=$(curl -k -s "${SECURITY_HEADERS[@]}" "$SERVICE_URL/security/stats")
     
     if [[ -z "$security_stats" ]]; then
         error "Security dashboard not responding"
@@ -141,7 +155,7 @@ check_security_dashboard() {
 
 # Verificar logs de segurança
 check_security_logs() {
-    local recent_events=$(curl -k -s "$SERVICE_URL/security/events?limit=10")
+    local recent_events=$(curl -k -s "${SECURITY_HEADERS[@]}" "$SERVICE_URL/security/events?limit=10")
     
     if [[ -z "$recent_events" ]]; then
         warning "No recent security events"
@@ -210,6 +224,9 @@ monitor_service() {
     check_metrics
     
     # Verificar segurança
+    if ! require_security_token; then
+        return 1
+    fi
     check_security_dashboard
     check_security_logs
     
@@ -241,14 +258,15 @@ run_continuous() {
 
 # Função para mostrar status atual
 show_status() {
+    require_security_token || return 1
     echo "=== AUTH SERVICE STATUS ==="
     curl -k -s "$SERVICE_URL/health" | jq '.'
     echo ""
     echo "=== SECURITY STATS ==="
-    curl -k -s "$SERVICE_URL/security/stats" | jq '.'
+    curl -k -s "${SECURITY_HEADERS[@]}" "$SERVICE_URL/security/stats" | jq '.'
     echo ""
     echo "=== RECENT EVENTS ==="
-    curl -k -s "$SERVICE_URL/security/events?limit=5" | jq '.events[]'
+    curl -k -s "${SECURITY_HEADERS[@]}" "$SERVICE_URL/security/events?limit=5" | jq '.events[]'
 }
 
 # Função para mostrar ajuda
@@ -266,6 +284,7 @@ show_help() {
     echo "  ALERT_EMAIL: $ALERT_EMAIL"
     echo "  LOG_FILE: $LOG_FILE"
     echo "  CHECK_INTERVAL: ${CHECK_INTERVAL}s"
+    echo "  SECURITY_DASHBOARD_TOKEN: ${SECURITY_DASHBOARD_TOKEN:+configured}"
 }
 
 # Verificar dependências

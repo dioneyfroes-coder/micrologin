@@ -10,12 +10,13 @@ describe('SecurityAuditLogger - auditoria de segurança', () => {
     const audit = makeLogger();
 
     audit.logLoginAttempt('alice', '1.2.3.4', 'agent', true);
-    audit.logLoginAttempt('alice', '1.2.3.4', 'agent', false);
+    audit.logLoginAttempt('alice', '1.2.3.4', 'agent', false, 'Senha incorreta');
 
     const stats = audit.getSecurityStats();
     expect(stats.totalRequests).toBe(2);
-    expect(stats.failedLogins).toBe(2);
+    expect(stats.failedLogins).toBe(1);
     expect(stats.recentEvents).toBe(2);
+    expect(audit.getRecentEvents()[1].details.reason).toBe('Senha incorreta');
     expect(warnSpy).toHaveBeenCalled();
     expect(successSpy).not.toHaveBeenCalled();
 

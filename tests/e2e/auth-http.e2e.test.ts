@@ -22,6 +22,7 @@ const E2E_PORT = 3400;
 const MONGO_PORT = Number(process.env.E2E_MONGO_PORT || 27020);
 const REDIS_PORT = Number(process.env.E2E_REDIS_PORT || 6380);
 const BASE_URL = `http://127.0.0.1:${E2E_PORT}`;
+const SECURITY_DASHBOARD_TOKEN = 'e2e-security-dashboard-token-with-32-chars';
 
 const waitForPort = async(port: number, timeoutMs: number): Promise<void> => {
   const deadline = Date.now() + timeoutMs;
@@ -75,6 +76,7 @@ describe('E2E HTTP - fluxo completo contra infra real (compose)', () => {
     process.env.REDIS_URL = process.env.REDIS_URL || `redis://localhost:${REDIS_PORT}/2`;
     process.env.REDIS_ENABLED = 'true';
     process.env.JWT_SECRET = process.env.JWT_SECRET || 'e2e-secret-key-with-at-least-32-chars!!';
+    process.env.SECURITY_DASHBOARD_TOKEN = SECURITY_DASHBOARD_TOKEN;
     process.env.LOG_LEVEL = 'error';
 
     // Pré-flight: dependências precisam estar de pé (falha com mensagem útil)
@@ -84,6 +86,8 @@ describe('E2E HTTP - fluxo completo contra infra real (compose)', () => {
     const { default: AuthService } = await import('../../src/app.js');
     const service = new AuthService();
     await service.start(E2E_PORT);
+    const { advancedRateLimit } = await import('../../src/application/middleware/advancedRateLimit.js');
+    await advancedRateLimit.reset();
     server = service.server;
   }, 30000);
 
@@ -106,6 +110,21 @@ describe('E2E HTTP - fluxo completo contra infra real (compose)', () => {
     expect([200, 503]).toContain(res.status);
     expect(body.services?.mongodb?.status).toBe('healthy');
     expect(body.services?.redis?.status).toBe('healthy');
+  });
+
+  it('protege o dashboard de segurança com token administrativo', async() => {
+    const unauthorized = await getJson('/security/stats');
+    expect(unauthorized.status).toBe(401);
+
+    const wrongToken = await getJson('/security/stats', {
+      'X-Security-Token': 'wrong-token'
+    });
+    expect(wrongToken.status).toBe(401);
+
+    const authorized = await getJson('/security/stats', {
+      'X-Security-Token': SECURITY_DASHBOARD_TOKEN
+    });
+    expect(authorized.status).toBe(200);
   });
 
   it('ciclo de vida: register -> login -> profile -> update -> refresh -> logout', async() => {
@@ -184,13 +203,41 @@ describe('E2E HTTP - fluxo completo contra infra real (compose)', () => {
     // 8. Registro duplicado continua bloqueado
     const duplicateRes = await postJson('/register', { user: newName, password });
     expect(duplicateRes.status).toBe(400);
+    const duplicateBody = await duplicateRes.json() as { success?: boolean; code?: string; message?: string };
+    expect(duplicateBody).toEqual({
+      success: false,
+      code: 'REGISTRATION_FAILED',
+      message: 'Não foi possível criar a conta'
+    });
   }, 30000);
 
-  it('login com senha incorreta responde 401', async() => {
-    const res = await postJson('/login', { user: 'nao-existe-e2e', password: 'WrongPass123!' });
-    expect(res.status).toBe(401);
-    const body = await res.json() as { success?: boolean };
-    expect(body.success).toBe(false);
+  it('login com credenciais inválidas não enumera usuários', async() => {
+    const existingUser = `enum_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const password = 'StrongPass123!';
+    const registerRes = await postJson('/register', { user: existingUser, password });
+    expect(registerRes.status).toBe(201);
+
+    const wrongPassword = await postJson('/login', {
+      user: existingUser,
+      password: 'WrongPass123!'
+    });
+    const unknownUser = await postJson('/login', {
+      user: `missing_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      password: 'WrongPass123!'
+    });
+
+    expect(wrongPassword.status).toBe(401);
+    expect(unknownUser.status).toBe(401);
+
+    const wrongPasswordBody = await wrongPassword.json() as { success?: boolean; code?: string; message?: string };
+    const unknownUserBody = await unknownUser.json() as { success?: boolean; code?: string; message?: string };
+
+    expect(wrongPasswordBody).toEqual(unknownUserBody);
+    expect(wrongPasswordBody).toEqual({
+      success: false,
+      code: 'AUTHENTICATION_FAILED',
+      message: 'Credenciais inválidas'
+    });
   });
 
   it('sem token, profile responde 401', async() => {

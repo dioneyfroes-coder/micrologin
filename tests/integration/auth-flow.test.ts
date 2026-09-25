@@ -203,6 +203,10 @@ describe('Integration - fluxo completo de autenticação', () => {
 
     expect(duplicate.success).toBe(false);
     expect(duplicate.error).toBe('Usuário já existe');
+    expect(logger.warn).toHaveBeenCalledWith('Falha ao registrar usuário', {
+      username: 'carol',
+      reason: 'USER_ALREADY_EXISTS'
+    });
   });
 
   it('revoga tokens pontualmente', async() => {

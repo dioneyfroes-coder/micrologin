@@ -198,7 +198,7 @@ export function createAuthRoutes() {
    *             schema:
    *               $ref: '#/components/schemas/StandardResponse'
    *       400:
-   *         description: Dados inválidos ou usuário já existe
+   *         description: Não foi possível criar a conta
    *         content:
    *           application/json:
    *             schema:

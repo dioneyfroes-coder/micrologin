@@ -11,13 +11,13 @@ Projeto de portfólio em Node.js para demonstrar uma API de autenticação com a
 - fluxo HTTP completo de renovação/revogação: `POST /refresh` e `POST /logout`
 - política única de username: 3 a 30 caracteres, apenas letras, números, `_` e `-` (fonte única em `shared/utils/usernamePolicy.js`)
 - validação de senha com política forte (12+ caracteres, complexidade, lista de senhas comuns)
-- rate limiting por IP e por login, com backend Redis e fallback em memória
+- rate limiting por IP e por login, com backend Redis e fallback em memória quando o Redis está indisponível
 - monitoramento auxiliar de segurança com limites de memória (auditoria e anomalias sem crescimento ilimitado)
 - health check e métricas Prometheus (endpoint de métricas protegível via `METRICS_TOKEN`)
 - documento Swagger e resposta HTTP padronizada via `HttpError`
-- testes unitários e de integração (235 testes em 26 suítes)
+- suítes de testes unitários, integração e E2E
 - CI/CD com GitHub Actions onde **lint e audit falham o pipeline** quando há erros reais
-- Docker Compose para desenvolvimento e produção, sem credenciais hardcoded (`.env.docker` / `.env.prod`)
+- Docker Compose para desenvolvimento e produção, sem credenciais hardcoded (`.env.prod`)
 
 ## Stack
 
@@ -51,7 +51,7 @@ Organização em arquitetura hexagonal: o domínio fica isolado, a aplicação o
 
 ## Endpoints principais
 
-Base path configurável (padrão `/api`):
+As rotas são montadas na raiz da aplicação:
 
 | Método | Rota       | Proteção               | Descrição                                  |
 | ------ | ---------- | ---------------------- | ------------------------------------------ |
@@ -65,13 +65,17 @@ Base path configurável (padrão `/api`):
 | GET    | `/health`      | —                      | Health check                              |
 | GET    | `/metrics`     | `METRICS_TOKEN` (opcional) | Métricas Prometheus                   |
 | GET    | `/observability` | `METRICS_TOKEN` (opcional) | Snapshot JSON de observabilidade **por logs** (janela rolante de requisições: volumes, P50/P95/P99, taxas de erro, top rotas) + health + segurança + memória/uptime. Path próprio, sem coletor externo. |
+| GET    | `/security/*` | `SECURITY_DASHBOARD_TOKEN` | Dashboard, auditoria e diagnóstico de segurança |
 
-Rotas de segurança (auditoria/monitoramento) ficam em `src/application/routes/securityRoutes.ts` (montadas em `/security/*`). Um guia prático de uso do dashboard de segurança está em [`docs/DASHBOARD_SEGURANCA_GUIA.md`](docs/DASHBOARD_SEGURANCA_GUIA.md), com exemplos em [`examples/`](examples).
+Rotas de segurança (auditoria/monitoramento) ficam em `src/application/routes/securityRoutes.ts` (montadas em `/security/*`) e exigem o header `X-Security-Token`. Um guia prático de uso do dashboard de segurança está em [`docs/DASHBOARD_SEGURANCA_GUIA.md`](docs/DASHBOARD_SEGURANCA_GUIA.md), com exemplos em [`examples/`](examples).
+
+Falhas de login retornam `401 AUTHENTICATION_FAILED` com a mensagem `Credenciais inválidas`; falhas de registro retornam `400 REGISTRATION_FAILED` com a mensagem `Não foi possível criar a conta`, sem revelar se a conta existe.
 
 Exemplo do `/observability`:
 
 ```bash
 curl -H "x-metrics-token: $METRICS_TOKEN" http://localhost:3000/observability
+curl -H "X-Security-Token: $SECURITY_DASHBOARD_TOKEN" http://localhost:3000/security/stats
 ```
 
 ```json
@@ -127,9 +131,10 @@ Principais campos:
 - `JWT_SECRET`, `JWT_EXPIRES`, `JWT_REFRESH_EXPIRES`
 - `ALLOWED_ORIGINS`
 - `METRICS_ENABLED`, `METRICS_ENDPOINT`, `METRICS_TOKEN` (em produção, configure um token)
+- `SECURITY_DASHBOARD_TOKEN` (obrigatório em produção; envia-se no header `X-Security-Token`)
 - `RATE_LIMIT_*_POINTS` (pontos por janela)
 
-Nenhuma credencial real fica versionada: apenas exemplos (`.env.example` e `.env.prod.example`) são commitados; `.env`, `.env.docker` e `.env.prod` ficam no `.gitignore`.
+Nenhuma credencial real fica versionada: apenas exemplos (`.env.example` e `.env.prod.example`) são commitados; `.env` e `.env.prod` ficam no `.gitignore`.
 
 ## Testes
 
@@ -151,14 +156,14 @@ O workflow [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml) executa:
 2. **tests**: unitários rápidos, integração e upload de cobertura para Codecov
 3. **build**: build e push da imagem multi-plataforma (amd64/arm64) para GHCR
 4. **security**: scan de vulnerabilidades com Trivy
-5. **deploy**: staging e produção a cada push na branch `main` com blue-green
+5. **deploy**: jobs de staging e produção existem como template; o deploy real e o blue-green ainda não estão implementados
 
 ### Política de branches (main-only)
 
 - apenas a branch `main` existe; **sem** `develop` ou `feature/*`
-- no GitHub, `main` deve estar **protegida**: exigir PR + code review e checks de CI
+- no GitHub, a proteção da `main` (PR + code review + checks de CI) é uma recomendação de operação e depende da configuração externa; ela não está aplicada pelo repositório
 - branches de trabalho são **efêmeras**: criadas para um PR pequeno e apagadas após o merge em `main`
-- o CI dispara em push/PR para `main`; deploys de staging e produção rodam no push à `main`
+- o CI dispara em push/PR para `main`; os jobs de deploy também disparam no push à `main`, mas hoje são placeholders
 
 ## Observações importantes
 

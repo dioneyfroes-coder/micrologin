@@ -897,16 +897,16 @@ Remover discrepâncias entre código e documentação.
 
 ### Tarefas
 
-- [ ] Corrigir contagem de testes no README.
-- [ ] Corrigir referência a `/api`.
-- [ ] Remover referência a `.env.docker` se ele não existir.
-- [ ] Marcar CI como completo e CD como template até o deploy real existir.
-- [ ] Corrigir descrição de blue-green.
-- [ ] Reescrever `docs/todo.txt` com estados:
+- [x] Corrigir contagem de testes no README.
+- [x] Corrigir referência a `/api`.
+- [x] Remover referência a `.env.docker` se ele não existir.
+- [x] Marcar CI como completo e CD como template até o deploy real existir.
+- [x] Corrigir descrição de blue-green.
+- [x] Reescrever `docs/todo.txt` com estados:
   - `[x] implementado`
   - `[~] parcial`
   - `[ ] pendente`
-- [ ] Documentar explicitamente o comportamento quando Redis está indisponível.
+- [x] Documentar explicitamente o comportamento quando Redis está indisponível.
 
 ### Resultado esperado
 O README passa a descrever exatamente o sistema existente.
@@ -916,6 +916,8 @@ O README passa a descrever exatamente o sistema existente.
 # Fase 1 — fechar segurança crítica
 
 ## 1.1 Proteger `/security/*`
+
+**Status: concluído.** O dashboard exige `SECURITY_DASHBOARD_TOKEN` no header `X-Security-Token`, com middleware aplicado às rotas administrativas.
 
 Criar middleware específico:
 
@@ -936,6 +938,8 @@ Aplicar em:
 Não usar o mesmo segredo destinado ao Prometheus se o objetivo for separar responsabilidades.
 
 ## 1.2 Remover enumeração de contas
+
+**Status: concluído.** Login e registro retornam mensagens públicas uniformes; o motivo permanece disponível na auditoria e nos logs internos.
 
 Login:
 

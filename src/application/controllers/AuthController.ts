@@ -41,7 +41,8 @@ export class AuthWebController {
         username,
         req.ip || 'unknown',
         req.get('User-Agent') || 'unknown',
-        result.success
+        result.success,
+        result.error ?? undefined
       );
 
       if (result.success && result.user && result.token) {
@@ -57,7 +58,7 @@ export class AuthWebController {
           }
         });
       } else {
-        next(new HttpError(401, 'AUTHENTICATION_FAILED', result.error || 'Falha na autenticação'));
+        next(new HttpError(401, 'AUTHENTICATION_FAILED', 'Credenciais inválidas'));
       }
 
     } catch (error) {
@@ -91,7 +92,7 @@ export class AuthWebController {
           }
         });
       } else {
-        next(new HttpError(400, 'REGISTRATION_FAILED', result.error || 'Falha no registro'));
+        next(new HttpError(400, 'REGISTRATION_FAILED', 'Não foi possível criar a conta'));
       }
 
     } catch (error) {

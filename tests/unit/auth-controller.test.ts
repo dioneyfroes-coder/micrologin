@@ -52,6 +52,7 @@ describe('AuthWebController - contrato HTTP', () => {
     const err = next.mock.calls[0][0];
     expect(err.statusCode).toBe(400);
     expect(err.code).toBe('REGISTRATION_FAILED');
+    expect(err.message).toBe('Não foi possível criar a conta');
   });
 
   it('faz login com sucesso devolvendo tokens e usuário', async() => {
@@ -84,6 +85,38 @@ describe('AuthWebController - contrato HTTP', () => {
     const err = next.mock.calls[0][0];
     expect(err.statusCode).toBe(401);
     expect(err.code).toBe('AUTHENTICATION_FAILED');
+    expect(err.message).toBe('Credenciais inválidas');
+  });
+
+  it.each([
+    'Usuário não encontrado',
+    'Senha incorreta',
+    'Não foi possível autenticar o usuário'
+  ])('normaliza a mensagem pública de falha %s', async(error) => {
+    const service = {
+      authenticateUser: jest.fn().mockResolvedValue({ success: false, error })
+    };
+    req.body = { user: 'alice', password: 'StrongPass123!' };
+
+    await buildController(service).login(req, res, next);
+
+    const err = next.mock.calls[0][0];
+    expect(err.message).toBe('Credenciais inválidas');
+  });
+
+  it.each([
+    'Usuário já existe',
+    'Não foi possível registrar o usuário'
+  ])('normaliza a mensagem pública de registro %s', async(error) => {
+    const service = {
+      registerUser: jest.fn().mockResolvedValue({ success: false, error })
+    };
+    req.body = { user: 'alice', password: 'StrongPass123!' };
+
+    await buildController(service).register(req, res, next);
+
+    const err = next.mock.calls[0][0];
+    expect(err.message).toBe('Não foi possível criar a conta');
   });
 
   it('responde 400 quando a validação HTTP falha no refresh', async() => {

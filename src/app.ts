@@ -71,7 +71,7 @@ class AuthService {
       credentials: securityConfig.cors.credentials,
       optionsSuccessStatus: 200,
       methods: ['GET', 'POST', 'PUT', 'DELETE'],
-      allowedHeaders: ['Content-Type', 'Authorization']
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-Security-Token']
     }));
   }
 

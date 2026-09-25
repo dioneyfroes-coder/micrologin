@@ -6,6 +6,14 @@ Este documento fornece um guia prático e didático para utilizar o sistema de m
 
 > 🚨 **Alertas Prometheus**: regras de alerta prontas (health, 5xx, p95 latência, memória e event loop) em [`examples/prometheus-alerts.yml`](examples/prometheus-alerts.yml). É o primeiro passo para o Grafana/Prometheus: monte o arquivo no Prometheus e configure o Alertmanager para entrega das notificações.
 
+## Credencial do dashboard
+
+Todos os endpoints `/security/*` exigem `SECURITY_DASHBOARD_TOKEN` no header `X-Security-Token`. Configure um valor aleatório com pelo menos 32 caracteres antes de iniciar o serviço:
+
+```bash
+export SECURITY_DASHBOARD_TOKEN="$(openssl rand -hex 32)"
+```
+
 ---
 
 ## ⚠️ RESOLUÇÃO DE PROBLEMAS
@@ -83,7 +91,7 @@ curl -k https://localhost:3000/health
 ### **🔍 1. Estatísticas em Tempo Real**
 ```bash
 # Obter estatísticas atuais
-curl -k https://localhost:3000/security/stats
+curl -k -H "X-Security-Token: $SECURITY_DASHBOARD_TOKEN" https://localhost:3000/security/stats
 
 # Exemplo de resposta:
 {
@@ -109,10 +117,10 @@ curl -k https://localhost:3000/security/stats
 ### **📋 2. Relatório Completo**
 ```bash
 # Gerar relatório detalhado
-curl -k https://localhost:3000/security/report
+curl -k -H "X-Security-Token: $SECURITY_DASHBOARD_TOKEN" https://localhost:3000/security/report
 
 # Salvar relatório em arquivo
-curl -k https://localhost:3000/security/report > security-report.json
+curl -k -H "X-Security-Token: $SECURITY_DASHBOARD_TOKEN" https://localhost:3000/security/report > security-report.json
 
 # Exemplo de resposta:
 {
@@ -141,13 +149,13 @@ curl -k https://localhost:3000/security/report > security-report.json
 ### **📝 3. Eventos Recentes**
 ```bash
 # Últimos eventos de segurança
-curl -k https://localhost:3000/security/events
+curl -k -H "X-Security-Token: $SECURITY_DASHBOARD_TOKEN" https://localhost:3000/security/events
 
 # Filtrar por tipo de evento
-curl -k "https://localhost:3000/security/events?type=failed_login"
+curl -k -H "X-Security-Token: $SECURITY_DASHBOARD_TOKEN" "https://localhost:3000/security/events?type=failed_login"
 
 # Filtrar por IP específico
-curl -k "https://localhost:3000/security/events?ip=192.168.1.100"
+curl -k -H "X-Security-Token: $SECURITY_DASHBOARD_TOKEN" "https://localhost:3000/security/events?ip=192.168.1.100"
 
 # Exemplo de resposta:
 {
@@ -174,7 +182,7 @@ curl -k "https://localhost:3000/security/events?ip=192.168.1.100"
 ### **🚨 4. Análise de Ameaças**
 ```bash
 # Análise detalhada de ameaças
-curl -k https://localhost:3000/security/threats
+curl -k -H "X-Security-Token: $SECURITY_DASHBOARD_TOKEN" https://localhost:3000/security/threats
 
 # Exemplo de resposta:
 {
@@ -203,7 +211,7 @@ curl -k https://localhost:3000/security/threats
 ### **🏥 5. Health Check de Segurança**
 ```bash
 # Status geral do sistema de segurança
-curl -k https://localhost:3000/security/health
+curl -k -H "X-Security-Token: $SECURITY_DASHBOARD_TOKEN" https://localhost:3000/security/health
 
 # Exemplo de resposta:
 {
@@ -232,7 +240,7 @@ curl -k https://localhost:3000/security/health
 # Salvar como: monitor-security.ps1
 
 while ($true) {
-    $stats = Invoke-RestMethod -Uri "https://localhost:3000/security/stats" -SkipCertificateCheck
+    $stats = Invoke-RestMethod -Uri "https://localhost:3000/security/stats" -Headers @{ 'X-Security-Token' = $env:SECURITY_DASHBOARD_TOKEN } -SkipCertificateCheck
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     
     Write-Host "[$timestamp] Risk Level: $($stats.security.riskLevel)"
@@ -250,7 +258,7 @@ while ($true) {
 # Script para verificar alertas críticos
 # Salvar como: check-alerts.ps1
 
-$report = Invoke-RestMethod -Uri "https://localhost:3000/security/report" -SkipCertificateCheck
+$report = Invoke-RestMethod -Uri "https://localhost:3000/security/report" -Headers @{ 'X-Security-Token' = $env:SECURITY_DASHBOARD_TOKEN } -SkipCertificateCheck
 
 if ($report.summary.blockedRequests -gt 50) {
     Write-Warning "ALERTA: Muitas requisições bloqueadas ($($report.summary.blockedRequests))"
@@ -271,7 +279,7 @@ foreach ($recommendation in $report.recommendations) {
 # Salvar como: daily-report.ps1
 
 $date = Get-Date -Format "yyyy-MM-dd"
-$report = Invoke-RestMethod -Uri "https://localhost:3000/security/report" -SkipCertificateCheck
+$report = Invoke-RestMethod -Uri "https://localhost:3000/security/report" -Headers @{ 'X-Security-Token' = $env:SECURITY_DASHBOARD_TOKEN } -SkipCertificateCheck
 
 # Salvar relatório
 $report | ConvertTo-Json -Depth 10 | Out-File "security-report-$date.json"
@@ -299,7 +307,7 @@ function Send-SecurityAlert {
 }
 
 # Verificar e alertar
-$stats = Invoke-RestMethod -Uri "https://localhost:3000/security/stats" -SkipCertificateCheck
+$stats = Invoke-RestMethod -Uri "https://localhost:3000/security/stats" -Headers @{ 'X-Security-Token' = $env:SECURITY_DASHBOARD_TOKEN } -SkipCertificateCheck
 if ($stats.security.riskLevel -eq "HIGH") {
     Send-SecurityAlert "Nível de risco ALTO detectado!" "CRITICAL"
 }
@@ -321,7 +329,7 @@ send_slack_alert() {
 }
 
 # Verificar e alertar
-STATS=$(curl -s -k https://localhost:3000/security/stats)
+STATS=$(curl -s -k -H "X-Security-Token: $SECURITY_DASHBOARD_TOKEN" https://localhost:3000/security/stats)
 RISK_LEVEL=$(echo $STATS | jq -r '.security.riskLevel')
 
 if [ "$RISK_LEVEL" = "HIGH" ]; then
@@ -427,15 +435,15 @@ Este warning **NÃO afeta o funcionamento** do microserviço. É apenas um probl
 ```bash
 # 🔍 Verificações básicas
 curl -k https://localhost:3000/health
-curl -k https://localhost:3000/security/stats
+curl -k -H "X-Security-Token: $SECURITY_DASHBOARD_TOKEN" https://localhost:3000/security/stats
 
 # 📊 Monitoramento
-curl -k https://localhost:3000/security/report
-curl -k https://localhost:3000/security/events
+curl -k -H "X-Security-Token: $SECURITY_DASHBOARD_TOKEN" https://localhost:3000/security/report
+curl -k -H "X-Security-Token: $SECURITY_DASHBOARD_TOKEN" https://localhost:3000/security/events
 
 # 🚨 Análise de ameaças
-curl -k https://localhost:3000/security/threats
-curl -k https://localhost:3000/security/health
+curl -k -H "X-Security-Token: $SECURITY_DASHBOARD_TOKEN" https://localhost:3000/security/threats
+curl -k -H "X-Security-Token: $SECURITY_DASHBOARD_TOKEN" https://localhost:3000/security/health
 
 # 📋 Logs
 pm2 logs autentication --lines 100

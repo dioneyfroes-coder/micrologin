@@ -65,7 +65,7 @@ export class SecurityAuditLogger {
     };
 
     this.events.push(event);
-    this.updateStats(type);
+    this.updateStats(type, details);
     this.logToConsole(event);
     this.checkAlerts(type);
 
@@ -78,12 +78,13 @@ export class SecurityAuditLogger {
   /**
    * Registra tentativa de login
    */
-  logLoginAttempt(username: string, ip: string, userAgent: string, success = true): void {
+  logLoginAttempt(username: string, ip: string, userAgent: string, success = true, reason?: string): void {
     this.logSecurityEvent('login_attempt', {
       username,
       ip,
       userAgent,
       success,
+      ...(reason ? { reason } : {}),
       timestamp: Date.now()
     }, success ? 'info' : 'warning');
   }
@@ -150,12 +151,14 @@ export class SecurityAuditLogger {
   /**
    * Atualiza estatísticas
    */
-  updateStats(type: string): void {
+  updateStats(type: string, details: AuditEventDetails): void {
     this.stats.totalRequests++;
 
     switch (type) {
     case 'login_attempt':
-      this.stats.failedLogins++;
+      if (details.success === false) {
+        this.stats.failedLogins++;
+      }
       break;
     case 'ip_blocked':
     case 'rate_limit_violation':
@@ -190,7 +193,9 @@ export class SecurityAuditLogger {
    */
   checkAlerts(type: string): void {
     const recentEvents = this.getRecentEvents(300000); // 5 minutos
-    const typeEvents = recentEvents.filter(e => e.type === type);
+    const typeEvents = recentEvents.filter(event =>
+      event.type === type && (type !== 'login_attempt' || event.details.success === false)
+    );
 
     if (type === 'login_attempt' && typeEvents.length >= this.alertThresholds.failedLogins) {
       this.triggerAlert('MULTIPLE_FAILED_LOGINS', typeEvents);
