@@ -75,6 +75,13 @@ export class AuthWebMiddleware {
         return;
       }
 
+      // Falha de infraestrutura no armazenamento de revogação (fail-closed):
+      // a requisição é negada, mas não é culpa do cliente.
+      if (err.code === 'REVOCATION_UNAVAILABLE') {
+        next(new HttpError(503, 'REVOCATION_UNAVAILABLE', 'Validação de sessão temporariamente indisponível'));
+        return;
+      }
+
       next(error);
     }
   };

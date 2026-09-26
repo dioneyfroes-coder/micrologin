@@ -958,43 +958,36 @@ Logs internos continuam detalhando o motivo.
 
 ## 1.3 Normalizar username
 
-Criar:
+**Status: concluído.** A forma canônica é `normalizeUsername()` (`trim` + `lowercase`) em `src/shared/utils/usernamePolicy.ts`, aplicada em:
 
-```text
-normalizeUsername()
-```
+- `LoginCredentials` e `User` (domínio);
+- validação HTTP (`validateLogin`, `validateRegister`, `validateUpdate`);
+- consultas do adapter Mongo (`findByUsername`, `exists`).
 
-Aplicar em todas as portas de entrada.
+A senha **não** é normalizada: é valor opaco.
 
-Adicionar testes:
+Testes adicionados:
 
-```text
-register Alice
-login alice → 200
-login Alice → 200
-update ALICE2
-```
+- `tests/unit/username-policy.test.ts` (normalização, idempotência, idempotência com non-string);
+- `tests/unit/domain-user.test.ts` e `domain-auth-service*.test.ts` (entidade, registro, login e update);
+- `tests/unit/validation-middleware.test.ts` (sanitizador de campo e senha preservada);
+- `tests/integration/auth-flow.test.ts` (identidade única independente da caixa);
+- `tests/e2e/auth-http.e2e.test.ts` (registro/login/update case-insensitive contra MongoDB real).
 
 ## 1.4 Remover fallback automático do refresh secret
 
-Exigir:
-
-```text
-JWT_SECRET
-JWT_REFRESH_SECRET
-```
-
-em produção.
+**Status: concluído.** `JWT_REFRESH_SECRET` é lido em `securityConfig.jwt.refreshSecret` e, em produção, é obrigatório, precisa ter no mínimo 32 caracteres e ser diferente de `JWT_SECRET` (`validateConfiguration`). O bootstrap não faz mais `JWT_REFRESH_SECRET || JWT_SECRET`; o `JWTTokenService` registra aviso quando não recebe segredo de refresh.
 
 ## 1.5 Revisar comportamento quando Redis cai
 
-Testar explicitamente:
+**Status: concluído — decisão: fail-closed em produção.**
 
-```text
-Redis saudável → logout revoga token
-Redis cai → comportamento definido e previsível
-Redis volta → sistema recupera
-```
+`SESSION_FAIL_OPEN` (default: `false` em produção, `true` em dev/test) define a política de revogação:
+
+- **fail-closed** (produção): sem armazenamento de revogação, a verificação de access/refresh token, o refresh e o logout respondem erro `REVOCATION_UNAVAILABLE` (HTTP 503) em vez de aceitar tokens sem controle;
+- **fail-open** (dev/test): comportamento degradado anterior, com log explícito.
+
+Erros do próprio Redis (conexão perdida) também respeitam a política. Testes em `tests/unit/jwt-token-service.test.ts` cobrem: Redis ausente, cliente desconectado (`isReady: false`), Redis respondendo erro, recuperação após reconectar, e os dois modos.
 
 ---
 
@@ -1002,46 +995,36 @@ Redis volta → sistema recupera
 
 ## 2.1 Blacklist por `jti`
 
-Migrar:
+**Status: concluído.** A chave deixou de ser o token e passou a ser o identificador do próprio JWT:
 
 ```text
-token_blacklist:<JWT>
+token_blacklist:jti:<jti>       # tokens emitidos a partir de agora
+token_blacklist:sha256:<hash>   # tokens legados sem jti (fallback)
 ```
 
-para:
-
-```text
-token_blacklist:<jti>
-```
+O token completo nunca vira chave de armazenamento. Cada token emitido recebe `jti` próprio (inclusive access e refresh, que antes compartilhavam o mesmo `jti` — revogar o refresh derrubava o access da mesma emissão). O TTL da entrada é o menor entre o solicitado e a vida restante do token, então a blacklist nunca cresce além da expiração natural. Tokens sem `jti` (versões anteriores) também são consultados na chave legada durante a transição.
 
 ## 2.2 Refresh rotation atômica
 
-Criar um mecanismo Redis de consumo único.
+**Status: concluído.** O consumo do refresh token é uma escrita `SET NX` (`token_blacklist:jti:<jti> = rotated`, TTL = vida restante do token) executada **antes** de emitir o novo par. `SET NX` decide o vencedor de forma atômica no próprio Redis, fechando a janela entre "verificar" e "revogar":
 
-Teste obrigatório:
+- primeira requisição com o token → rotaciona (200);
+- qualquer outra, inclusive simultânea → 401 `REFRESH_TOKEN_REUSED`;
+- token já revogado por logout → 401 `REFRESH_TOKEN_INVALID` (distinção feita pelo valor da entrada: `rotated` vs `revoked`).
+
+Teste obrigatório do roadmap, como E2E contra Redis real (`tests/e2e/auth-http.e2e.test.ts`):
 
 ```text
 Promise.all([
   refresh(oldToken),
   refresh(oldToken)
 ])
+// => uma 200 e uma 401
 ```
-
-Somente uma chamada deve conseguir realizar a rotação.
 
 ## 2.3 Session version / token version
 
-Considerar adicionar uma versão de sessão por usuário:
-
-```text
-sessionVersion: 3
-```
-
-O token carrega a versão.
-
-Logout-all incrementa a versão.
-
-Isso pode reduzir a necessidade de milhares de entradas individuais na blacklist.
+**Status: superado pelo que já existe.** O projeto já invalida por usuário via `user_tokens_revoked:<userId>` (timestamp), e a rotação agora garante consumo único por refresh token. A versão de sessão continua sendo a evolução natural para eliminar a necessidade de entradas individuais, mas não é necessária para o escopo atual.
 
 ---
 
@@ -1096,7 +1079,16 @@ Não deixar estado morto no modelo.
 
 ## 4.1 Remover sanitização global de senha
 
-Não modificar valores de credenciais.
+**Status: concluído.** `src/application/middleware/sanitization.ts` foi renomeado para `inputNormalization.ts` e agora faz apenas o que faz sentido em entrada:
+
+- remove caracteres de controle Unicode (C0/C1);
+- **não** transforma credenciais (`password`, `newPassword`, `refreshToken`, `authorization`, ...): a lista de campos opacos é comparada sem diferenciar maiúsculas/minúsculas;
+- **não** faz HTML escaping (a API responde JSON) nem "escape SQL" (não há SQL no projeto);
+- `isomorphic-dompurify` e `validator` foram removidos das dependências (só eram usados aqui).
+
+Escaping de saída continua sendo responsabilidade do ponto onde o dado é renderizado.
+
+Testes em `tests/unit/input-normalization.test.ts` (antes `sanitization.test.ts`) expressam a nova semântica: senha e refresh token chegam intactos ao domínio.
 
 ## 4.2 Separar
 
@@ -1105,6 +1097,15 @@ validation
 normalization
 sanitization
 output encoding
+```
+
+**Status: concluído.** Fronteiras atuais:
+
+```text
+validation/      → src/application/middleware/validation.ts (formato e limites)
+normalization/   → src/shared/utils/usernamePolicy.ts (identidade)
+                   src/application/middleware/inputNormalization.ts (controles Unicode)
+output encoding  → contexto de saída (a API responde JSON; não há renderização HTML)
 ```
 
 ## 4.3 Eliminar `inputValidation.ts` se ele não for o mecanismo oficial

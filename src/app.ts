@@ -26,7 +26,7 @@ import observabilityRoutes from './application/routes/observabilityRoutes.js';
 import { bootstrapServices, resolve } from './core/bootstrap.js';
 
 import setupSecurity from './interfaces/config/helmet.js';
-import { sanitizeInput } from './application/middleware/sanitization.js';
+import { normalizeInput } from './application/middleware/inputNormalization.js';
 import { securityMonitor } from './application/middleware/securityMonitoring.js';
 import { advancedRateLimit } from './application/middleware/advancedRateLimit.js';
 import { logger } from './shared/utils/logger.js';
@@ -81,7 +81,7 @@ class AuthService {
     this.app.use(express.json({ limit: '100kb' }));
     this.app.use(express.urlencoded({ extended: true }));
     this.app.use(metricsMiddleware);
-    this.app.use(sanitizeInput);
+    this.app.use(normalizeInput);
     this.app.use((req: Request, res: Response, next: NextFunction) => securityMonitor.detectThreats(req, res, next));
     this.app.use(advancedRateLimit.checkLimits);
   }

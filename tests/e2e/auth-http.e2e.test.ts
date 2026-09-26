@@ -78,6 +78,11 @@ describe('E2E HTTP - fluxo completo contra infra real (compose)', () => {
     process.env.JWT_SECRET = process.env.JWT_SECRET || 'e2e-secret-key-with-at-least-32-chars!!';
     process.env.SECURITY_DASHBOARD_TOKEN = SECURITY_DASHBOARD_TOKEN;
     process.env.LOG_LEVEL = 'error';
+    // Limites folgados: o E2E exercita vários logins por IP e não deve
+    // depender do orçamento de rate limit (a política é testada em unidade).
+    process.env.RATE_LIMIT_PROD_LOGIN_POINTS = process.env.RATE_LIMIT_PROD_LOGIN_POINTS || '500';
+    process.env.RATE_LIMIT_PROD_IP_POINTS = process.env.RATE_LIMIT_PROD_IP_POINTS || '2000';
+    process.env.RATE_LIMIT_PROD_USER_POINTS = process.env.RATE_LIMIT_PROD_USER_POINTS || '2000';
 
     // Pré-flight: dependências precisam estar de pé (falha com mensagem útil)
     await waitForPort(MONGO_PORT, 20000);
@@ -244,4 +249,77 @@ describe('E2E HTTP - fluxo completo contra infra real (compose)', () => {
     const res = await getJson('/profile');
     expect(res.status).toBe(401);
   });
+
+  it('refresh concorrente: uma requisição rotaciona, a outra é rejeitada', async() => {
+    const unique = `race_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const password = 'StrongPass123!';
+
+    await postJson('/register', { user: unique, password });
+    const loginRes = await postJson('/login', { user: unique, password });
+    expect(loginRes.status).toBe(200);
+    const loginBody = await loginRes.json() as { data?: { refreshToken?: string } };
+    const refreshToken = loginBody.data?.refreshToken as string;
+
+    // Duas requisições simultâneas com o MESMO refresh token.
+    // O consumo é atômico (SET NX): só uma pode rotacionar.
+    const [first, second] = await Promise.all([
+      postJson('/refresh', { refreshToken }),
+      postJson('/refresh', { refreshToken })
+    ]);
+
+    const statuses = [first.status, second.status].sort();
+    expect(statuses).toEqual([200, 401]);
+
+    const rejected = first.status === 401 ? first : second;
+    const rejectedBody = await rejected.json() as { success?: boolean; code?: string };
+    expect(rejectedBody.success).toBe(false);
+    expect(rejectedBody.code).toMatch(/REFRESH_TOKEN_(INVALID|REUSED)/);
+
+    // O vencedor recebeu um par novo e utilizável
+    const winner = first.status === 200 ? first : second;
+    const winnerBody = await winner.json() as { data?: { accessToken?: string; refreshToken?: string } };
+    expect(winnerBody.data?.accessToken).toBeTruthy();
+    expect(winnerBody.data?.refreshToken).not.toBe(refreshToken);
+
+    const profile = await getJson('/profile', bearer(winnerBody.data?.accessToken as string));
+    expect(profile.status).toBe(200);
+  }, 30000);
+
+  it('identidade é case-insensitive em registro, login e atualização', async() => {
+    const unique = `case_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const mixedCase = `Case_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const password = 'StrongPass123!';
+
+    // Registro com maiúsculas é persistado na forma canônica (minúsculas)
+    const registerRes = await postJson('/register', { user: mixedCase, password });
+    expect(registerRes.status).toBe(201);
+    const registerBody = await registerRes.json() as {
+      data?: { user?: { username?: string } };
+    };
+    expect(registerBody.data?.user?.username).toBe(mixedCase.toLowerCase());
+
+    // Login funciona com qualquer variação de caixa
+    const lowerLogin = await postJson('/login', { user: mixedCase.toLowerCase(), password });
+    const upperLogin = await postJson('/login', { user: mixedCase.toUpperCase(), password });
+    const paddedLogin = await postJson('/login', { user: `  ${mixedCase}  `, password });
+    expect(lowerLogin.status).toBe(200);
+    expect(upperLogin.status).toBe(200);
+    expect(paddedLogin.status).toBe(200);
+
+    // Username duplicado com caixa diferente é rejeitado
+    const duplicateRes = await postJson('/register', { user: mixedCase.toUpperCase(), password });
+    expect(duplicateRes.status).toBe(400);
+
+    // Atualização normaliza o novo username
+    const loginBody = await lowerLogin.json() as { data?: { accessToken?: string } };
+    const accessToken = loginBody.data?.accessToken as string;
+    const updateRes = await fetch(`${BASE_URL}/update`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...bearer(accessToken) },
+      body: JSON.stringify({ user: unique.toUpperCase() })
+    });
+    expect(updateRes.status).toBe(200);
+    const updatedBody = await updateRes.json() as { data?: { user?: { username?: string } } };
+    expect(updatedBody.data?.user?.username).toBe(unique);
+  }, 30000);
 });

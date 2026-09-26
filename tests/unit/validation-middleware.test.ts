@@ -12,6 +12,14 @@ const runChain = async(chain: ReturnType<typeof validateLogin>, body: Record<str
   return validationResult(req);
 };
 
+const runChainWithBody = async(chain: ReturnType<typeof validateLogin>, body: Record<string, unknown>) => {
+  const req = { body };
+  for (const middleware of chain) {
+    await middleware.run(req);
+  }
+  return { result: validationResult(req), body: req.body };
+};
+
 const errorsOf = (result: { array: () => { msg: string }[] }) => result.array().map(e => e.msg);
 
 describe('validation middleware - login', () => {
@@ -83,6 +91,53 @@ describe('validation middleware - refresh', () => {
 
   it('rejeita refreshToken ausente', async() => {
     const result = await runChain(validateRefresh, {});
+    expect(result.isEmpty()).toBe(false);
+  });
+});
+
+describe('validation middleware - normalização de username', () => {
+  it('normaliza o username no login (trim + lowercase)', async() => {
+    const { result, body } = await runChainWithBody(validateLogin, {
+      user: '  AlIcE  ',
+      password: 'some-password'
+    });
+
+    expect(result.isEmpty()).toBe(true);
+    expect(body.user).toBe('alice');
+  });
+
+  it('normaliza o username no registro', async() => {
+    const { result, body } = await runChainWithBody(validateRegister, {
+      user: ' Alice_01 ',
+      password: 'Str0ng!Passw0rd'
+    });
+
+    expect(result.isEmpty()).toBe(true);
+    expect(body.user).toBe('alice_01');
+  });
+
+  it('normaliza o username na atualização', async() => {
+    const { result, body } = await runChainWithBody(validateUpdate, { user: '  BOB-2026 ' });
+
+    expect(result.isEmpty()).toBe(true);
+    expect(body.user).toBe('bob-2026');
+  });
+
+  it('valida o tamanho do username já normalizado', async() => {
+    const result = await runChain(validateRegister, { user: '  ab  ', password: 'Str0ng!Passw0rd' });
+    expect(result.isEmpty()).toBe(false);
+  });
+
+  it('não altera a senha (valor opaco)', async() => {
+    const password = '  Str0ng!Passw0rd  ';
+    const { result, body } = await runChainWithBody(validateLogin, { user: 'alice', password });
+
+    expect(result.isEmpty()).toBe(true);
+    expect(body.password).toBe(password);
+  });
+
+  it('rejeita username não string sem quebrar a cadeia', async() => {
+    const result = await runChain(validateRegister, { user: 123, password: 'Str0ng!Passw0rd' });
     expect(result.isEmpty()).toBe(false);
   });
 });

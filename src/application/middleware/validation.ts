@@ -1,14 +1,18 @@
 import { body } from 'express-validator';
 import { validatePasswordStrength, isCommonPassword } from '../../shared/utils/passwordValidator.js';
-import { hasAllowedUsernameChars, USERNAME_MIN_LENGTH, USERNAME_MAX_LENGTH, USERNAME_CHARS_MESSAGE } from '../../shared/utils/usernamePolicy.js';
+import { hasAllowedUsernameChars, normalizeUsernameField, USERNAME_MIN_LENGTH, USERNAME_MAX_LENGTH, USERNAME_CHARS_MESSAGE } from '../../shared/utils/usernamePolicy.js';
 
 /**
  * Validações para login
+ *
+ * O username é normalizado (trim + lowercase) antes de qualquer validação e
+ * antes de chegar ao domínio, que aplica a mesma forma canônica.
+ * A senha NÃO é normalizada: é um valor opaco.
  */
 export const validateLogin = [
   body('user')
     .isString()
-    .trim()
+    .customSanitizer(normalizeUsernameField)
     .isLength({ min: USERNAME_MIN_LENGTH })
     .withMessage('Usuário deve ter pelo menos 3 caracteres.'),
   body('password')
@@ -23,7 +27,7 @@ export const validateLogin = [
 export const validateRegister = [
   body('user')
     .isString()
-    .trim()
+    .customSanitizer(normalizeUsernameField)
     .isLength({ min: USERNAME_MIN_LENGTH, max: USERNAME_MAX_LENGTH })
     .withMessage('Usuário deve ter entre 3 e 30 caracteres.')
     .custom((user: string) => {
@@ -58,7 +62,8 @@ export const validateRegister = [
 export const validateUpdate = [
   body('user')
     .optional()
-    .trim()
+    .isString()
+    .customSanitizer(normalizeUsernameField)
     .isLength({ min: USERNAME_MIN_LENGTH, max: USERNAME_MAX_LENGTH })
     .withMessage('Usuário deve ter entre 3 e 30 caracteres.')
     .custom((user: string) => {

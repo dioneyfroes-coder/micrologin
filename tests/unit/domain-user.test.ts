@@ -37,6 +37,20 @@ describe('User - entidade de domínio', () => {
     expect(user.updatedAt.getTime()).toBeGreaterThanOrEqual(new Date(2024, 0, 1).getTime());
   });
 
+  it('normaliza o username na criação e na atualização', () => {
+    expect(new User(null, '  Alice  ', HASH).username).toBe('alice');
+
+    const user = new User('u-1', 'alice', HASH);
+    user.updateData('  BOB_2026  ');
+    expect(user.username).toBe('bob_2026');
+  });
+
+  it('trata mudança apenas de caixa como o mesmo username', () => {
+    const user = new User('u-1', 'alice', HASH);
+    user.updateData('ALICE');
+    expect(user.username).toBe('alice');
+  });
+
   it('lança DomainError ao atualizar com username inválido', () => {
     const user = new User('u-1', 'alice', HASH);
     expect(() => user.updateData('bad name')).toThrow(DomainError);
@@ -87,6 +101,19 @@ describe('LoginCredentials - value object de credenciais', () => {
 
   it('rejeita senha ausente', () => {
     expect(() => new LoginCredentials('alice', '')).toThrow(DomainError);
+  });
+
+  it('normaliza o username mas preserva a senha exatamente como recebida', () => {
+    const credentials = new LoginCredentials('  Alice  ', '  Senha Com Espaço  ');
+    expect(credentials.username).toBe('alice');
+    // Senha é valor opaco: nenhuma normalização é aplicada.
+    expect(credentials.plainPassword).toBe('  Senha Com Espaço  ');
+  });
+
+  it('valida o tamanho do username já normalizado', () => {
+    // 4 caracteres com espaços, mas apenas 2 válidos.
+    expect(() => new LoginCredentials(' ab ', 'StrongPass123!')).toThrow('pelo menos 3 caracteres');
+    expect(new LoginCredentials(' abc ', 'StrongPass123!').username).toBe('abc');
   });
 });
 

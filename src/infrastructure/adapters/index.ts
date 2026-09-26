@@ -8,6 +8,7 @@
 import bcrypt from 'bcrypt';
 import type { CryptoService, Logger, UserRepository } from '../../domain/index.js';
 import { User } from '../../domain/index.js';
+import { normalizeUsername } from '../../shared/utils/usernamePolicy.js';
 import { getUserModel } from '../database/models/User.js';
 import { logger } from '../../shared/utils/logger.js';
 
@@ -43,7 +44,9 @@ export class MongoUserAdapter implements UserRepository {
 
   async findByUsername(username: string): Promise<User | null> {
     try {
-      const userData = await this.UserModel.findOne({ user: username });
+      // Consulta sempre pela forma canônica (minúsculas), igual ao que o
+      // schema grava (lowercase: true). Sem isso, `Alice` não encontraria `alice`.
+      const userData = await this.UserModel.findOne({ user: normalizeUsername(username) });
       if (!userData) {
         return null;
       }
@@ -117,7 +120,7 @@ export class MongoUserAdapter implements UserRepository {
 
   async exists(username: string): Promise<boolean> {
     try {
-      const count = await this.UserModel.countDocuments({ user: username });
+      const count = await this.UserModel.countDocuments({ user: normalizeUsername(username) });
       return count > 0;
     } catch (error) {
       throw new Error(`Erro ao verificar existência do usuário: ${(error as Error).message}`);

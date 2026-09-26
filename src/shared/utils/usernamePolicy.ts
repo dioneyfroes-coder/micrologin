@@ -12,6 +12,25 @@
 export const USERNAME_MIN_LENGTH = 3;
 export const USERNAME_MAX_LENGTH = 30;
 
+/**
+ * Forma canônica de identidade: sem espaços nas bordas e em minúsculas.
+ *
+ * É a ÚNICA normalização aplicada a username (registro, login, atualização e
+ * consultas ao repositório). Sem ela, `Alice` e `alice` seriam identidades
+ * diferentes na consulta, apesar de o schema Mongo gravar em minúsculas.
+ *
+ * Senhas NÃO são normalizadas: são valores opacos.
+ */
+export const normalizeUsername = (username: string): string => username.trim().toLowerCase();
+
+/**
+ * Sanitizador seguro para uso em middlewares: preserva o valor original quando
+ * não é string, para que a validação de tipo possa reportar o erro correto.
+ */
+export const normalizeUsernameField = (value: unknown): unknown => (
+  typeof value === 'string' ? normalizeUsername(value) : value
+);
+
 export const hasAllowedUsernameChars = (username: string): boolean => {
   for (const char of username) {
     const code = char.charCodeAt(0);

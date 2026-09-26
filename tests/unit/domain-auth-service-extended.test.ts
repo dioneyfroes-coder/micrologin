@@ -68,6 +68,43 @@ describe('AuthService - perfil do usuário', () => {
     expect(result.error).toBe('Username já existe');
   });
 
+  it('verifica duplicidade na forma canônica ao atualizar o username', async() => {
+    const logger = makeLogger();
+    const user = makeUser();
+    const repo = {
+      findById: jest.fn().mockResolvedValue(user),
+      exists: jest.fn().mockResolvedValue(true),
+      save: jest.fn()
+    };
+
+    const service = new AuthService(repo, {}, {}, logger);
+    const result = await service.updateUserProfile('u-1', '  ALICE2  ', null);
+
+    expect(result.success).toBe(false);
+    expect(repo.exists).toHaveBeenCalledWith('alice2');
+    expect(repo.save).not.toHaveBeenCalled();
+  });
+
+  it('não consulta duplicidade quando o novo username só muda a caixa', async() => {
+    const logger = makeLogger();
+    const user = makeUser();
+    const repo = {
+      findById: jest.fn().mockResolvedValue(user),
+      exists: jest.fn().mockResolvedValue(true),
+      save: jest.fn().mockImplementation(async(u) => ({
+        ...u,
+        toSafeObject: () => ({ id: 'u-1', username: u.username })
+      }))
+    };
+
+    const service = new AuthService(repo, {}, {}, logger);
+    const result = await service.updateUserProfile('u-1', 'ALICE', null);
+
+    expect(result.success).toBe(true);
+    expect(repo.exists).not.toHaveBeenCalled();
+    expect(result.user?.username).toBe('alice');
+  });
+
   it('rejeita nova senha mais curta que o mínimo', async() => {
     const logger = makeLogger();
     const repo = { findById: jest.fn().mockResolvedValue(makeUser()) };

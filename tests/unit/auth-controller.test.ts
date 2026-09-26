@@ -184,6 +184,29 @@ describe('AuthWebController - contrato HTTP', () => {
     expect(err.code).toBe('REVOCATION_FAILED');
   });
 
+  it('responde 503 no logout quando a revogação está indisponível (fail-closed)', async() => {
+    const service = {
+      revokeToken: jest.fn().mockResolvedValue({
+        success: false,
+        code: 'REVOCATION_UNAVAILABLE',
+        error: 'Revogação de tokens indisponível'
+      }),
+      revokeUserTokens: jest.fn().mockResolvedValue({
+        success: false,
+        code: 'REVOCATION_UNAVAILABLE'
+      })
+    };
+    req.headers.authorization = 'Bearer access-token';
+    req.body = { refreshToken: 'refresh-token' };
+
+    await buildController(service).logout(req, res, next);
+
+    const err = next.mock.calls[0][0];
+    expect(err.statusCode).toBe(503);
+    expect(err.code).toBe('REVOCATION_UNAVAILABLE');
+    expect(res.json).not.toHaveBeenCalled();
+  });
+
   it('obtém perfil autenticado', async() => {
     const service = {
       getUserProfile: jest.fn().mockResolvedValue({ success: true, user: { id: 'u-1', username: 'alice' } })

@@ -7,9 +7,10 @@ Projeto de portfólio em Node.js para demonstrar uma API de autenticação com a
 ## O que o projeto inclui
 
 - registro, autenticação e perfil de usuários
+- identidade única e case-insensitive: username é normalizado (`trim` + `lowercase`) em registro, login, atualização e consulta ao banco
 - JWT com access token, refresh token, revogação pontual e revogação por usuário (blacklist no Redis)
 - fluxo HTTP completo de renovação/revogação: `POST /refresh` e `POST /logout`
-- política única de username: 3 a 30 caracteres, apenas letras, números, `_` e `-` (fonte única em `shared/utils/usernamePolicy.js`)
+- política única de username: 3 a 30 caracteres, apenas letras, números, `_` e `-` (fonte única em `shared/utils/usernamePolicy.ts`)
 - validação de senha com política forte (12+ caracteres, complexidade, lista de senhas comuns)
 - rate limiting por IP e por login, com backend Redis e fallback em memória quando o Redis está indisponível
 - monitoramento auxiliar de segurança com limites de memória (auditoria e anomalias sem crescimento ilimitado)
@@ -35,11 +36,11 @@ Projeto de portfólio em Node.js para demonstrar uma API de autenticação com a
 
 ```text
 src/
-├── app.js                    # Bootstrap da aplicação (init Redis, rate limiter, injeção no JWT)
+├── app.ts                    # Bootstrap da aplicação (init Redis, rate limiter, injeção no JWT)
 ├── core/                     # ServiceContainer (DI), bootstrap
 ├── application/              # controllers, middleware e rotas
 │   ├── controllers/
-│   ├── middleware/           # validação, rate limit, auditoria, monitoramento
+│   ├── middleware/           # validação, normalização de entrada, rate limit, auditoria, monitoramento
 │   └── routes/
 ├── domain/                   # entidades, validações e serviço de domínio
 ├── infrastructure/           # adapters (mongo/redis), JWT, cache
@@ -47,7 +48,7 @@ src/
 └── shared/                   # utils (health check, métricas, password, username policy)
 ```
 
-Organização em arquitetura hexagonal: o domínio fica isolado, a aplicação orquestra casos de uso e a infraestrutura implementa as portas de cache, banco e JWT. A config Redis tem fonte única (`interfaces/config/redisConfig.js`), usada por `connection.js`, `appConfig` e `rateLimitConfig`.
+Organização em arquitetura hexagonal: o domínio fica isolado, a aplicação orquestra casos de uso e a infraestrutura implementa as portas de cache, banco e JWT. A config Redis tem fonte única (`interfaces/config/redisConfig.ts`), usada por `connection.ts`, `appConfig` e `rateLimitConfig`.
 
 ## Endpoints principais
 
@@ -70,6 +71,26 @@ As rotas são montadas na raiz da aplicação:
 Rotas de segurança (auditoria/monitoramento) ficam em `src/application/routes/securityRoutes.ts` (montadas em `/security/*`) e exigem o header `X-Security-Token`. Um guia prático de uso do dashboard de segurança está em [`docs/DASHBOARD_SEGURANCA_GUIA.md`](docs/DASHBOARD_SEGURANCA_GUIA.md), com exemplos em [`examples/`](examples).
 
 Falhas de login retornam `401 AUTHENTICATION_FAILED` com a mensagem `Credenciais inválidas`; falhas de registro retornam `400 REGISTRATION_FAILED` com a mensagem `Não foi possível criar a conta`, sem revelar se a conta existe.
+
+O username é a identidade da conta e é normalizado para minúsculas em todas as entradas (registro, login, atualização e consulta ao banco): `Alice`, `alice` e `  ALICE  ` são a mesma conta. A senha é um valor opaco e nunca é transformada (sem escaping, sem "sanitização"): o que o cliente envia é exatamente o que é validado e hasheado.
+
+## Política de revogação quando o Redis está indisponível
+
+A blacklist de tokens e a revogação por usuário vivem no Redis. O que acontece quando ele cai é uma decisão explícita, controlada por `SESSION_FAIL_OPEN`:
+
+| `SESSION_FAIL_OPEN` | Comportamento |
+| --- | --- |
+| `false` (padrão em produção) | **fail-closed**: verificação de token, `POST /refresh` e `POST /logout` respondem `503 REVOCATION_UNAVAILABLE` em vez de aceitar tokens sem controle de revogação |
+| `true` (padrão em dev/test) | **fail-open**: o serviço continua disponível e a revogação é degradada (com log explícito do risco) |
+
+Erros do próprio Redis (conexão perdida, `isReady: false`) seguem a mesma política, e a recuperação é automática quando o Redis volta. O rate limiting tem decisão própria: cai para o armazenamento em memória **por processo**, portanto não é global entre workers — trate-o como proteção de borda, não como controle distribuído.
+
+## Modelo de sessão
+
+- **Identidade do token:** cada JWT recebe um `jti` próprio (inclusive access e refresh, que não compartilham identificador). A blacklist é chaveada por `token_blacklist:jti:<jti>` — o token completo nunca é usado como chave de armazenamento. Tokens legados sem `jti` caem para `token_blacklist:sha256:<hash>` e também são consultados na chave antiga, durante a transição.
+- **Validade da entrada:** o TTL da blacklist é o menor entre o solicitado e o tempo de vida restante do token, ou seja, a entrada morre com o token.
+- **Rotação de refresh com consumo único:** `POST /refresh` grava o marcador `rotated` com `SET NX` **antes** de emitir o novo par. Duas requisições simultâneas com o mesmo refresh token resultam em uma `200` e uma `401` (`REFRESH_TOKEN_REUSED`); se o token já havia sido revogado por logout, a resposta é `REFRESH_TOKEN_INVALID`. Um refresh token vazado e reutilizado é, portanto, sempre rejeitado.
+- **Revogação por usuário:** `logout` também registra `user_tokens_revoked:<userId>`, que invalida todos os tokens emitidos antes do logout (inclusive os que nunca passaram pela blacklist).
 
 Exemplo do `/observability`:
 
@@ -128,7 +149,8 @@ Principais campos:
 - `PORT`, `NODE_ENV`
 - `URI_MONGODB`, `MONGODB_MAX_POOL_SIZE`
 - `REDIS_URL` (preferida: `redis://:senha@host:6379/0`) ou o fallback `REDIS_HOST`/`REDIS_PORT`/`REDIS_PASSWORD`/`REDIS_DB`
-- `JWT_SECRET`, `JWT_EXPIRES`, `JWT_REFRESH_EXPIRES`
+- `JWT_SECRET`, `JWT_REFRESH_SECRET` (obrigatório e **diferente** de `JWT_SECRET` em produção; sem fallback silencioso), `JWT_EXPIRES`, `JWT_REFRESH_EXPIRES`
+- `SESSION_FAIL_OPEN` (política de revogação sem Redis; padrão `false` em produção)
 - `ALLOWED_ORIGINS`
 - `METRICS_ENABLED`, `METRICS_ENDPOINT`, `METRICS_TOKEN` (em produção, configure um token)
 - `SECURITY_DASHBOARD_TOKEN` (obrigatório em produção; envia-se no header `X-Security-Token`)

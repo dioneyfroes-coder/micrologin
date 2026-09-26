@@ -1,5 +1,5 @@
 import { describe, it, expect, jest } from '@jest/globals';
-import { AuthService } from '../../src/domain/index.js';
+import { AuthService, User } from '../../src/domain/index.js';
 
 const makeLogger = () => ({
   info: jest.fn(),
@@ -7,8 +7,12 @@ const makeLogger = () => ({
   error: jest.fn()
 });
 
+/**
+ * Store em memória que usa a entidade real do domínio (User), de modo que as
+ * regras de negócio (normalização do username, validação) valem para o teste.
+ */
 const makeInMemoryStore = () => {
-  const users = new Map<string, { id: string; username: string; hashedPassword: string; createdAt: Date; updatedAt: Date }>();
+  const users = new Map<string, User>();
   const revoked = new Set<string>();
 
   const userRepository = {
@@ -16,90 +20,15 @@ const makeInMemoryStore = () => {
       Array.from(users.values()).some(u => u.username === username)
     ),
     findByUsername: jest.fn(async(username: string) => {
-      const raw = Array.from(users.values()).find(u => u.username === username);
-      return raw
-        ? {
-          id: raw.id,
-          get username() {
-            return raw.username;
-          },
-          get hashedPassword() {
-            return raw.hashedPassword;
-          },
-          updateData: (newUsername?: string, newHashedPassword?: string) => {
-            if (newUsername !== undefined && newUsername !== null) {
-              raw.username = newUsername;
-            }
-            if (newHashedPassword !== undefined && newHashedPassword !== null) {
-              raw.hashedPassword = newHashedPassword;
-            }
-            raw.updatedAt = new Date();
-          },
-          updatePassword: (hash: string) => {
-            raw.hashedPassword = hash;
-            raw.updatedAt = new Date();
-          },
-          toSafeObject: () => ({
-            id: raw.id,
-            username: raw.username,
-            createdAt: raw.createdAt,
-            updatedAt: raw.updatedAt
-          })
-        }
-        : null;
+      return Array.from(users.values()).find(u => u.username === username) ?? null;
     }),
-    findById: jest.fn(async(id: string) => {
-      const raw = users.get(id);
-      return raw
-        ? {
-          id: raw.id,
-          get username() {
-            return raw.username;
-          },
-          get hashedPassword() {
-            return raw.hashedPassword;
-          },
-          updateData: (newUsername?: string, newHashedPassword?: string) => {
-            if (newUsername !== undefined && newUsername !== null) {
-              raw.username = newUsername;
-            }
-            if (newHashedPassword !== undefined && newHashedPassword !== null) {
-              raw.hashedPassword = newHashedPassword;
-            }
-            raw.updatedAt = new Date();
-          },
-          updatePassword: (hash: string) => {
-            raw.hashedPassword = hash;
-            raw.updatedAt = new Date();
-          },
-          toSafeObject: () => ({
-            id: raw.id,
-            username: raw.username,
-            createdAt: raw.createdAt,
-            updatedAt: raw.updatedAt
-          })
-        }
-        : null;
-    }),
-    save: jest.fn(async(user: { id: string | null; username: string; hashedPassword: string; createdAt: Date; updatedAt: Date }) => {
-      const id = user.id ?? `u-${users.size + 1}`;
-      const raw = {
-        id,
-        username: user.username,
-        hashedPassword: user.hashedPassword,
-        createdAt: user.createdAt,
-        updatedAt: user.updatedAt
-      };
-      users.set(id, raw);
-      return {
-        ...raw,
-        toSafeObject: () => ({
-          id: raw.id,
-          username: raw.username,
-          createdAt: raw.createdAt,
-          updatedAt: raw.updatedAt
-        })
-      };
+    findById: jest.fn(async(id: string) => users.get(id) ?? null),
+    save: jest.fn(async(user: User) => {
+      if (!user.id) {
+        user.id = `u-${users.size + 1}`;
+      }
+      users.set(user.id, user);
+      return user;
     }),
     delete: jest.fn(async(id: string) => {
       users.delete(id);
@@ -217,5 +146,33 @@ describe('Integration - fluxo completo de autenticação', () => {
     const result = await service.revokeToken('some-refresh-token');
     expect(result.success).toBe(true);
     expect(store.revoked.has('some-refresh-token')).toBe(true);
+  });
+
+  it('trata username como identidade única, independente da caixa', async() => {
+    const store = makeInMemoryStore();
+    const logger = makeLogger();
+    const service = new AuthService(store.userRepository, store.crypto, store.tokenGenerator, logger);
+
+    // Registro com maiúsculas e espaços nas bordas
+    const registered = await service.registerUser('  Dave  ', 'StrongPass123!');
+    expect(registered.success).toBe(true);
+    expect(registered.user?.username).toBe('dave');
+
+    // Qualquer variação de caixa autentica
+    expect((await service.authenticateUser('dave', 'StrongPass123!')).success).toBe(true);
+    expect((await service.authenticateUser('DAVE', 'StrongPass123!')).success).toBe(true);
+    expect((await service.authenticateUser('  DaVe  ', 'StrongPass123!')).success).toBe(true);
+
+    // Duplicata com outra caixa é bloqueada
+    const duplicate = await service.registerUser('DAVE', 'StrongPass123!');
+    expect(duplicate.success).toBe(false);
+    expect(duplicate.error).toBe('Usuário já existe');
+
+    // Atualização de username também é normalizada
+    const userId = registered.user?.id as string;
+    const updated = await service.updateUserProfile(userId, 'DAVE2');
+    expect(updated.success).toBe(true);
+    expect(updated.user?.username).toBe('dave2');
+    expect((await service.authenticateUser('dave2', 'StrongPass123!')).success).toBe(true);
   });
 });

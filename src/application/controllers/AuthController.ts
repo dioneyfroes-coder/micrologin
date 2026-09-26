@@ -135,9 +135,10 @@ export class AuthWebController {
         return;
       }
 
-      // 401 para refresh inválido/expirado, 400 para demais falhas
+      // 401 para refresh inválido/expirado/reusado, 400 para demais falhas
       const statusCode = result.code === 'REFRESH_TOKEN_EXPIRED' ||
-                         result.code === 'REFRESH_TOKEN_INVALID' ? 401 : 400;
+                         result.code === 'REFRESH_TOKEN_INVALID' ||
+                         result.code === 'REFRESH_TOKEN_REUSED' ? 401 : 400;
       next(new HttpError(statusCode, result.code || 'REFRESH_TOKEN_INVALID', result.error || 'Falha ao renovar tokens'));
 
     } catch (error) {
@@ -157,23 +158,33 @@ export class AuthWebController {
       const refreshToken = req.body?.refreshToken;
 
       let revoked = false;
+      let revocationUnavailable = false;
+
+      const track = (result: { success: boolean; code?: string }) => {
+        revoked = revoked || result.success;
+        revocationUnavailable = revocationUnavailable || result.code === 'REVOCATION_UNAVAILABLE';
+      };
 
       // Revogar access token na blacklist
       if (accessToken) {
-        const result = await this.authService.revokeToken(accessToken);
-        revoked = revoked || result.success;
+        track(await this.authService.revokeToken(accessToken));
       }
 
       // Revogar refresh token na blacklist
       if (refreshToken) {
-        const result = await this.authService.revokeToken(refreshToken);
-        revoked = revoked || result.success;
+        track(await this.authService.revokeToken(refreshToken));
       }
 
       // Revogar todos os tokens do usuário (cobertura extra)
       if (req.user?.id) {
-        const result = await this.authService.revokeUserTokens(req.user.id);
-        revoked = revoked || result.success;
+        track(await this.authService.revokeUserTokens(req.user.id));
+      }
+
+      // Falha de infraestrutura na revogação (ex.: Redis fora em modo
+      // fail-closed) não é erro do cliente: a sessão NÃO foi encerrada.
+      if (revocationUnavailable) {
+        next(new HttpError(503, 'REVOCATION_UNAVAILABLE', 'Encerramento de sessão temporariamente indisponível'));
+        return;
       }
 
       if (!revoked) {

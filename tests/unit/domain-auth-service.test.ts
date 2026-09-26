@@ -77,6 +77,29 @@ describe('AuthService - registro', () => {
     expect(result.error).toBe('Não foi possível registrar o usuário');
     expect(logger.error).toHaveBeenCalled();
   });
+
+  it('consulta e persiste o username na forma canônica (minúsculas)', async() => {
+    const logger = makeLogger();
+    const userRepository = makeRepo({
+      exists: jest.fn().mockResolvedValue(false),
+      save: jest.fn().mockImplementation(async(user) => ({
+        ...user,
+        id: 'u-1',
+        toSafeObject: () => ({ id: 'u-1', username: user.username })
+      }))
+    });
+    const crypto = { hash: jest.fn().mockResolvedValue('hashed-password') };
+
+    const service = new AuthService(userRepository, crypto, {}, logger);
+    const result = await service.registerUser('  Alice  ', 'StrongPass123!');
+
+    expect(result.success).toBe(true);
+    expect(userRepository.exists).toHaveBeenCalledWith('alice');
+    expect(userRepository.save).toHaveBeenCalledWith(
+      expect.objectContaining({ username: 'alice' })
+    );
+    expect(result.user).toEqual({ id: 'u-1', username: 'alice' });
+  });
 });
 
 describe('AuthService - autenticação', () => {
@@ -137,12 +160,34 @@ describe('AuthService - autenticação', () => {
     const userRepository = makeRepo({
       findByUsername: jest.fn().mockRejectedValue(new Error('db down'))
     });
-    const service = new AuthService(userRepository, {}, {}, logger);
 
+    const service = new AuthService(userRepository, {}, {}, logger);
     const result = await service.authenticateUser('alice', 'StrongPass123!');
 
     expect(result.success).toBe(false);
     expect(result.error).toBe('Não foi possível autenticar o usuário');
+  });
+
+  it('busca o usuário pela forma canônica, independentemente da caixa enviada', async() => {
+    const logger = makeLogger();
+    const userRepository = makeRepo({
+      findByUsername: jest.fn().mockResolvedValue(new User('u-1', 'alice', 'hashed-password'))
+    });
+    const crypto = { compare: jest.fn().mockResolvedValue(true) };
+    const tokenGenerator = {
+      generateTokenPair: jest.fn().mockResolvedValue({
+        accessToken: 'at',
+        refreshToken: 'rt',
+        expiresIn: 900000,
+        type: 'Bearer'
+      })
+    };
+
+    const service = new AuthService(userRepository, crypto, tokenGenerator, logger);
+    const result = await service.authenticateUser('  ALICE  ', 'StrongPass123!');
+
+    expect(result.success).toBe(true);
+    expect(userRepository.findByUsername).toHaveBeenCalledWith('alice');
   });
 });
 

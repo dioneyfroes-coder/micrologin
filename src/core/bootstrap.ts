@@ -32,10 +32,12 @@ export function bootstrapServices() {
   container.register('jwtService', () => {
     return new JWTTokenService(
       securityConfig.jwt.secret as string,
-      process.env.JWT_REFRESH_SECRET || (securityConfig.jwt.secret as string),
+      securityConfig.jwt.refreshSecret,
       null,
       securityConfig.jwt.issuer,
-      securityConfig.jwt.audience
+      securityConfig.jwt.audience,
+      // Política de revogação: fail-closed em produção (Redis fora => nega)
+      { failOpen: securityConfig.session.failOpen }
     );
   });
 

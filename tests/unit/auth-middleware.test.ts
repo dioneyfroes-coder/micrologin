@@ -90,6 +90,27 @@ describe('AuthWebMiddleware - authenticate obrigatório', () => {
     expect(err.code).toBe('TOKEN_INVALID');
   });
 
+  it('responde 503 quando a revogação está indisponível (fail-closed)', async() => {
+    const middleware = makeMiddleware(
+      {
+        verifyAccessToken: jest.fn().mockRejectedValue(
+          Object.assign(new Error('Revogação de tokens indisponível'), { code: 'REVOCATION_UNAVAILABLE' })
+        )
+      },
+      { findById: jest.fn() },
+      { error: jest.fn() }
+    );
+
+    const req = { headers: { authorization: 'Bearer token' } };
+    const next = jest.fn();
+
+    await middleware.authenticate(req, {} as never, next);
+
+    const err = next.mock.calls[0][0];
+    expect(err.statusCode).toBe(503);
+    expect(err.code).toBe('REVOCATION_UNAVAILABLE');
+  });
+
   it('responde 401 quando o usuário não existe mais', async() => {
     const middleware = makeMiddleware(
       { verifyAccessToken: jest.fn().mockResolvedValue({ id: 'ghost', username: 'x' }) },

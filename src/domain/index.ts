@@ -7,7 +7,7 @@
  */
 
 import { PASSWORD_MIN_LENGTH } from '../shared/utils/passwordValidator.js';
-import { hasAllowedUsernameChars, isUsernameValid, USERNAME_MIN_LENGTH } from '../shared/utils/usernamePolicy.js';
+import { hasAllowedUsernameChars, isUsernameValid, normalizeUsername, USERNAME_MIN_LENGTH } from '../shared/utils/usernamePolicy.js';
 
 export type DomainErrorCode = 'INVALID_USERNAME' | 'INVALID_PASSWORD' | 'USER_ALREADY_EXISTS' | string;
 
@@ -106,7 +106,7 @@ export class User {
 
   constructor(id: string | null, username: string, hashedPassword: string, createdAt: Date = new Date(), updatedAt: Date = new Date()) {
     this.id = id;
-    this.username = username;
+    this.username = normalizeUsername(username);
     this.hashedPassword = hashedPassword;
     this.createdAt = createdAt;
     this.updatedAt = updatedAt;
@@ -132,11 +132,14 @@ export class User {
    * Atualiza dados do usuário seguindo regras de negócio
    */
   updateData(newUsername?: string, newHashedPassword?: string): void {
-    if (newUsername && newUsername !== this.username) {
-      if (!this.isValidUsername(newUsername)) {
+    if (newUsername) {
+      const normalizedUsername = normalizeUsername(newUsername);
+      if (!this.isValidUsername(normalizedUsername)) {
         throw new DomainError('INVALID_USERNAME', 'Username inválido');
       }
-      this.username = newUsername;
+      if (normalizedUsername !== this.username) {
+        this.username = normalizedUsername;
+      }
     }
 
     if (newHashedPassword) {
@@ -171,7 +174,7 @@ export class LoginCredentials {
   plainPassword: string;
 
   constructor(username: string, plainPassword: string) {
-    this.username = username;
+    this.username = normalizeUsername(username);
     this.plainPassword = plainPassword;
     this.validate();
   }
@@ -365,10 +368,13 @@ export class AuthService {
       }
 
       // Verificar se novo username já existe
-      if (newUsername && newUsername !== user.username) {
-        const exists = await this.userRepository.exists(newUsername);
-        if (exists) {
-          return { success: false, error: 'Username já existe' };
+      if (newUsername) {
+        const normalizedUsername = normalizeUsername(newUsername);
+        if (normalizedUsername !== user.username) {
+          const exists = await this.userRepository.exists(normalizedUsername);
+          if (exists) {
+            return { success: false, error: 'Username já existe' };
+          }
         }
       }
 
@@ -454,7 +460,11 @@ export class AuthService {
       return { success: revoked };
     } catch (error) {
       this.logger.error('Erro ao revogar token', error);
-      return { success: false, error: domainFailureMessage(error, 'Não foi possível revogar o token') };
+      return {
+        success: false,
+        error: domainFailureMessage(error, 'Não foi possível revogar o token'),
+        code: (error as { code?: string }).code
+      };
     }
   }
 
@@ -467,7 +477,11 @@ export class AuthService {
       return { success: revoked };
     } catch (error) {
       this.logger.error('Erro ao revogar tokens do usuário', error);
-      return { success: false, error: domainFailureMessage(error, 'Não foi possível revogar os tokens do usuário') };
+      return {
+        success: false,
+        error: domainFailureMessage(error, 'Não foi possível revogar os tokens do usuário'),
+        code: (error as { code?: string }).code
+      };
     }
   }
 }

@@ -72,9 +72,22 @@ export const databaseConfig = {
 /**
  * Configurações de segurança
  */
+
+// `isProduction` é derivado aqui (antes de `environmentConfig`) porque a
+// política de revogação depende do ambiente já na leitura das configs.
+const isProductionEnv = (process.env.NODE_ENV || 'development') === 'production';
+
+// Política de revogação quando o Redis (blacklist) está indisponível:
+//   false (padrão em produção) = fail-closed: nega operações que dependem de
+//                               revogação, preservando segurança sobre disponibilidade.
+//   true  (padrão em dev/test) = fail-open: mantém disponibilidade, aceitando
+//                               que tokens revogados não sejam barrados.
+const sessionFailOpenEnv = process.env.SESSION_FAIL_OPEN;
+
 export const securityConfig = {
   jwt: {
     secret: process.env.JWT_SECRET,
+    refreshSecret: process.env.JWT_REFRESH_SECRET,
     expiresIn: process.env.JWT_EXPIRES || '15m',
     refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES || '7d',
     issuer: process.env.JWT_ISSUER || 'auth-service',
@@ -82,6 +95,12 @@ export const securityConfig = {
   },
 
   dashboardToken: process.env.SECURITY_DASHBOARD_TOKEN,
+
+  session: {
+    failOpen: sessionFailOpenEnv === undefined
+      ? !isProductionEnv
+      : sessionFailOpenEnv === 'true'
+  },
 
   bcrypt: {
     saltRounds: parseEnvNumber(process.env.BCRYPT_SALT_ROUNDS, 12)
@@ -162,6 +181,20 @@ export function validateConfiguration(): boolean {
     errors.push('JWT_SECRET deve ter pelo menos 32 caracteres');
   }
 
+  if (environmentConfig.isProduction && !securityConfig.jwt.refreshSecret) {
+    errors.push('JWT_REFRESH_SECRET é obrigatório em produção');
+  }
+
+  if (securityConfig.jwt.refreshSecret && securityConfig.jwt.refreshSecret.length < 32) {
+    errors.push('JWT_REFRESH_SECRET deve ter pelo menos 32 caracteres');
+  }
+
+  if (environmentConfig.isProduction &&
+      securityConfig.jwt.refreshSecret &&
+      securityConfig.jwt.refreshSecret === securityConfig.jwt.secret) {
+    errors.push('JWT_REFRESH_SECRET deve ser diferente de JWT_SECRET');
+  }
+
   // Validações de cluster
   if (serverConfig.cluster.workers < 1) {
     errors.push('CLUSTER_WORKERS deve ser pelo menos 1');
@@ -217,8 +250,14 @@ export function getConfigSummary() {
     },
     security: {
       jwt: !!securityConfig.jwt.secret,
+      refreshJwt: !!securityConfig.jwt.refreshSecret,
       dashboardTokenConfigured: Boolean(securityConfig.dashboardToken),
       bcrypt: securityConfig.bcrypt.saltRounds
+    },
+    session: {
+      // false = fail-closed (recomendado em produção): sem Redis, operações
+      // que dependem de revogação são negadas em vez de aceitas sem controle.
+      failOpen: securityConfig.session.failOpen
     },
     features: environmentConfig.features
   };
