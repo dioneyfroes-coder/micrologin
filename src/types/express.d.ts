@@ -7,7 +7,6 @@ declare global {
         id: string;
         username: string;
       } | null;
-      validationDetails?: unknown;
     }
   }
 }

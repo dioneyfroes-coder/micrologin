@@ -64,6 +64,10 @@ class AuthService {
    * Configura segurança usando configurações centralizadas
    */
   setupSecurity() {
+    // `req.ip` e `req.protocol` dependem disso. Sem Trust Proxy explícito, o
+    // padrão é não confiar em X-Forwarded-For, porque o cabeçalho é do cliente.
+    this.app.set('trust proxy', serverConfig.proxy.trustProxy);
+
     setupSecurity(this.app);
 
     this.app.use(cors({

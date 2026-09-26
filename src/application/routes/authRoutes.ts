@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { resolve, bootstrapServices } from '../../core/bootstrap.js';
 import { validateLogin, validateRegister, validateUpdate, validateRefresh, validateChangePassword } from '../middleware/validation.js';
 import { prometheus } from '../../shared/utils/metrics.js';
-import { performHealthCheck } from '../../shared/utils/healthCheck.js';
+import { performHealthCheck, performLivenessCheck, performReadinessCheck } from '../../shared/utils/healthCheck.js';
 import { advancedRateLimit } from '../middleware/advancedRateLimit.js';
 import { requireMetricsToken } from '../middleware/metricsToken.js';
 import securityRoutes from './securityRoutes.js';
@@ -488,6 +488,28 @@ export function createAuthRoutes() {
    *                 error:
    *                   type: string
    */
+  /**
+   * Liveness: só responde se o processo está vivo. Não consulta Mongo nem Redis,
+   * para que uma queda de dependência não provoque restart em cascata.
+   */
+  router.get('/liveness', (_req, res) => {
+    res.status(200).json(performLivenessCheck());
+  });
+
+  /**
+   * Readiness: 200 só quando o serviço pode atender tráfego de negócio.
+   * Cache indisponível não tira o serviço de prontidão, porque a política de
+   * sessão é fail-open fora de produção.
+   */
+  router.get('/readiness', async(_req, res, next) => {
+    try {
+      const result = await performReadinessCheck();
+      res.status(result.ready ? 200 : 503).json(result);
+    } catch {
+      next(new HttpError(503, 'READINESS_CHECK_FAILED', 'Não foi possível verificar a prontidão do serviço'));
+    }
+  });
+
   router.get('/health', async(req, res, next) => {
     try {
       const result = await performHealthCheck();

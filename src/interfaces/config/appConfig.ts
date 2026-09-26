@@ -14,6 +14,34 @@ import { getRedisConfig } from './redisConfig.js';
 import { logger } from '../../shared/utils/logger.js';
 
 /**
+ * Converte `TRUST_PROXY` em algo que o Express aceite como `trust proxy`.
+ *
+ * Aceita:
+ *   - `false`/`0`/`off`/`no`  -> não confiar em nenhum proxy (padrão seguro)
+ *   - número inteiro         -> número de saltos de proxy confiáveis
+ *   - CIDR ou lista de CIDRs  -> faixa do proxy confiável
+ *   - qualquer outro valor    -> ligado (`true`), com aviso no log
+ */
+const parseTrustProxy = (raw: string | undefined): boolean | number | string | string[] => {
+  const value = (raw ?? 'false').trim().toLowerCase();
+
+  if (['false', '0', 'off', 'no', 'none', 'never', ''].includes(value)) {
+    return false;
+  }
+
+  if (/^\d+$/.test(value)) {
+    return parseEnvNumber(value, 0);
+  }
+
+  if (value === 'true' || ['on', 'yes', 'always', 'all'].includes(value)) {
+    logger.warn('⚠️ TRUST_PROXY ligado sem restrição: qualquer cliente pode forjar X-Forwarded-For e escapar do rate limit por IP.');
+    return true;
+  }
+
+  return raw!.split(',').map(entry => entry.trim()).filter(entry => entry.length > 0);
+};
+
+/**
  * Configurações de servidor e aplicação
  */
 export const serverConfig = {
@@ -48,6 +76,20 @@ export const serverConfig = {
   timeout: {
     server: parseEnvNumber(process.env.SERVER_TIMEOUT, 30000),
     gracefulShutdown: parseEnvNumber(process.env.GRACEFUL_SHUTDOWN_TIMEOUT, 5000)
+  },
+
+  // Confiança em cabeçalhos de proxy
+  proxy: {
+    /**
+     * `false` (padrão) é a postura segura: `X-Forwarded-For` é controlado por
+     * quem fala com o Node, então, sem proxy declarado, aceitar o cabeçalho
+     * deixaria qualquer cliente forjar `req.ip` e burlar o rate limit por IP.
+     *
+     * Atrás de proxy/load balancer, configure `TRUST_PROXY` com o número de
+     * saltos (`1`) ou com a faixa de CIDR do proxy. Nunca use `true` (= confiar
+     * em toda a cadeia) sem um proxy reverso que reescreva o cabeçalho.
+     */
+    trustProxy: parseTrustProxy(process.env.TRUST_PROXY)
   }
 };
 

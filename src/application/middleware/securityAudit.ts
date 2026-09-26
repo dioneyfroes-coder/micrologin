@@ -26,7 +26,12 @@ interface SecurityEvent {
 interface AuditStats {
   totalRequests: number;
   blockedRequests: number;
+  /** Total de tentativas de login (sucesso + falha). */
+  loginAttempts: number;
+  /** Apenas logins que falharam. */
   failedLogins: number;
+  /** Apenas logins que deram certo. */
+  successfulLogins: number;
   suspiciousActivities: number;
 }
 
@@ -45,7 +50,9 @@ export class SecurityAuditLogger {
     this.stats = {
       totalRequests: 0,
       blockedRequests: 0,
+      loginAttempts: 0,
       failedLogins: 0,
+      successfulLogins: 0,
       suspiciousActivities: 0
     };
   }
@@ -171,8 +178,14 @@ export class SecurityAuditLogger {
 
     switch (type) {
     case 'login_attempt':
+      // A métrica é semântica: `loginAttempts` soma os dois lados e cada
+      // resultado tem contador próprio. Um contador único que contasse todo
+      // login como "failed" produziria alerta errado em base de usuários grande.
+      this.stats.loginAttempts++;
       if (details.success === false) {
         this.stats.failedLogins++;
+      } else {
+        this.stats.successfulLogins++;
       }
       break;
     case 'ip_blocked':
@@ -370,6 +383,10 @@ export class SecurityAuditLogger {
 
     if (stats.blockedRequests > 100) {
       recommendations.push('Analise padrões de ataque para melhorar filtros');
+    }
+
+    if (stats.failedLogins > stats.successfulLogins) {
+      recommendations.push('Falhas de login superam sucessos: verifique ataque de credenciais ou problema de integração');
     }
 
     if (stats.failedLogins > 50) {

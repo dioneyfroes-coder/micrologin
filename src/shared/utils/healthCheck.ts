@@ -112,6 +112,60 @@ interface HealthCheckReport {
   error?: string;
 }
 
+interface LivenessReport {
+  status: 'alive';
+  timestamp: string;
+  uptime: number;
+  pid: number;
+}
+
+interface ReadinessReport {
+  status: 'ready' | 'not_ready';
+  ready: boolean;
+  degraded: boolean;
+  timestamp: string;
+  responseTime: string;
+  checks: Record<string, CheckResult>;
+}
+
+/**
+ * Liveness: o processo responde?
+ *
+ * Não toca em dependência externa de propósito. Se o liveness dependesse do
+ * Mongo, uma indisponibilidade do banco derrubaria processos perfeitamente
+ * capazes de reconectar, e o orquestrador reiniciaria todo mundo sem necessidade.
+ */
+export const performLivenessCheck = (): LivenessReport => ({
+  status: 'alive',
+  timestamp: new Date().toISOString(),
+  uptime: Math.round(process.uptime()),
+  pid: process.pid
+});
+
+/**
+ * Readiness: as dependências necessárias para atender tráfego estão de pé?
+ *
+ * Aqui o Mongo decide: sem banco o serviço não cumpre o contrato de nenhum
+ * endpoint de negócio. O Redis, por outro lado, é fail-open por padrão em
+ * dev/test, então cache indisponível é estado degradado, não "não pronto".
+ */
+export const performReadinessCheck = async(): Promise<ReadinessReport> => {
+  const startTime = Date.now();
+  const [mongodb, redis] = await Promise.all([checkMongoDB(), checkRedis()]);
+
+  const ready = mongodb.status === 'healthy';
+  const degraded = !ready || redis.status !== 'healthy';
+
+  return {
+    status: ready ? 'ready' : 'not_ready',
+    ready,
+    degraded,
+    timestamp: new Date().toISOString(),
+    responseTime: `${Date.now() - startTime}ms`,
+    checks: { mongodb, redis }
+  };
+};
+
 /**
  * Health check completo
  */

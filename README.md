@@ -64,7 +64,9 @@ As rotas são montadas na raiz da aplicação:
 | PUT    | `/update`      | Bearer                 | Atualiza apenas o username               |
 | PUT    | `/password`    | Bearer                 | Troca a senha (exige a atual) e encerra as sessões |
 | DELETE | `/delete`      | Bearer                 | Remove o usuário                          |
-| GET    | `/health`      | —                      | Health check                              |
+| GET    | `/health`      | —                      | Health check detalhado (Mongo, Redis, memória, uptime) |
+| GET    | `/liveness`    | —                      | Liveness: 200 se o processo responde. Não consulta dependência. |
+| GET    | `/readiness`   | —                      | Readiness: 200 com Mongo de pé, 503 sem. Redis degradado não tira de prontidão. |
 | GET    | `/metrics`     | `METRICS_TOKEN` (opcional) | Métricas Prometheus                   |
 | GET    | `/observability` | `METRICS_TOKEN` (opcional) | Snapshot JSON de observabilidade **por logs** (janela rolante de requisições: volumes, P50/P95/P99, taxas de erro, top rotas) + health + segurança + memória/uptime. Path próprio, sem coletor externo. |
 | GET    | `/security/*` | `SECURITY_DASHBOARD_TOKEN` | Dashboard, auditoria e diagnóstico de segurança |
@@ -141,6 +143,20 @@ curl -H "X-Security-Token: $SECURITY_DASHBOARD_TOKEN" http://localhost:3000/secu
 
 A fonte do snapshot é a mesma dos logs estruturados (`requestLogger` alimenta um agregador em memória em `src/application/observability/`): nada depende de coletor externo. Erros de parsing JSON de payload agora respondem **400 `INVALID_JSON`** (antes 500, inflando a taxa de 5xx).
 
+### Métricas de autenticação
+
+O `/metrics` expõe contadores com resultado explícito, em vez de um contador único que mistura sucesso e falha:
+
+```text
+auth_login_attempts_total{outcome="success|failure"}
+auth_token_refresh_total{outcome="success|invalid|reused|unavailable"}
+auth_password_changes_total{outcome="success|current_password_invalid|rejected|error"}
+```
+
+`reused` (refresh reaproveitado) é separado de `invalid` porque reuso é sinal de comprometimento, não erro de usuário. Qualquer valor fora da lista fechada vira `error`, para não criar cardinalidade infinita de rótulos. O mesmo cuidado vale para a auditoria: `loginAttempts` é sempre a soma de `successfulLogins` e `failedLogins`.
+
+O `X-Request-Id` enviado pelo cliente só é aceito se for um UUID válido (máx. 36 caracteres); caso contrário, o serviço descarta o valor, registra o descarte e gera o próprio id — o id de requisição é chave de correlação de alerta, não campo livre de cliente.
+
 A documentação Swagger fica disponível quando `SWAGGER_ENABLED=true`.
 
 ## Como rodar localmente
@@ -177,6 +193,7 @@ Principais campos:
 - `SESSION_FAIL_OPEN` (política de revogação sem Redis; padrão `false` em produção)
 - `ALLOWED_ORIGINS`
 - `METRICS_ENABLED`, `METRICS_ENDPOINT`, `METRICS_TOKEN` (em produção, configure um token)
+- `TRUST_PROXY` (padrão `false`: não confiar em `X-Forwarded-For`; atrás de proxy, use o número de saltos ou a faixa CIDR do proxy)
 - `SECURITY_DASHBOARD_TOKEN` (obrigatório em produção; envia-se no header `X-Security-Token`)
 - `RATE_LIMIT_*_POINTS` (pontos por janela)
 

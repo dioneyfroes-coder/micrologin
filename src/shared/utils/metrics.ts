@@ -41,6 +41,80 @@ const appStartTime = new prometheus.Gauge({
   registers: [prometheus.register] // ← IMPORTANTE: registrar explicitamente
 });
 
+/**
+ * Tentativas de autenticação, por resultado.
+ *
+ * `outcome` é o eixo: `success` e `failure` são grandezas distintas, e não um
+ * contador único ambíguo do tipo "logins" que misture sucesso e falha. Um alert
+ * sobre "muitos logins" sem separar os dois lados não sabe dizer se é ataque ou
+ * base de usuários.
+ */
+const authLoginAttempts = new prometheus.Counter({
+  name: 'auth_login_attempts_total',
+  help: 'Login attempts by outcome (success, failure)',
+  labelNames: ['outcome'],
+  registers: [prometheus.register]
+});
+
+/**
+ * Renovações de token por resultado. `reused` existe separado de `failure`
+ * porque reuso de refresh token é sinal de comprometimento, não erro de usuário.
+ */
+const authTokenRefreshes = new prometheus.Counter({
+  name: 'auth_token_refresh_total',
+  help: 'Token refresh attempts by outcome (success, invalid, reused, unavailable)',
+  labelNames: ['outcome'],
+  registers: [prometheus.register]
+});
+
+/**
+ * Trocas de senha por resultado.
+ */
+const authPasswordChanges = new prometheus.Counter({
+  name: 'auth_password_changes_total',
+  help: 'Password change attempts by outcome (success, current_password_invalid, rejected, error)',
+  labelNames: ['outcome'],
+  registers: [prometheus.register]
+});
+
+/**
+ * Registro de autenticação por resultado. Nomes fechados: qualquer valor fora
+ * da lista vira `error`, para não criar cardinalidade infinita de labels.
+ */
+export type AuthOutcome =
+  | 'success'
+  | 'failure'
+  | 'invalid'
+  | 'reused'
+  | 'unavailable'
+  | 'rejected'
+  | 'error';
+
+const AUTH_OUTCOMES: ReadonlySet<string> = new Set<AuthOutcome>([
+  'success',
+  'failure',
+  'invalid',
+  'reused',
+  'unavailable',
+  'rejected',
+  'error'
+]);
+
+const knownOutcome = (outcome: string): AuthOutcome =>
+  AUTH_OUTCOMES.has(outcome) ? (outcome as AuthOutcome) : 'error';
+
+export const recordLoginAttempt = (outcome: string): void => {
+  authLoginAttempts.labels(knownOutcome(outcome)).inc();
+};
+
+export const recordTokenRefresh = (outcome: string): void => {
+  authTokenRefreshes.labels(knownOutcome(outcome)).inc();
+};
+
+export const recordPasswordChange = (outcome: string): void => {
+  authPasswordChanges.labels(knownOutcome(outcome)).inc();
+};
+
 // Registrar o tempo de início
 appStartTime.set(Date.now() / 1000);
 
@@ -69,4 +143,4 @@ export const metricsMiddleware = (req: Request, res: Response, next: NextFunctio
   next();
 };
 
-export { httpRequestDuration, httpRequestTotal, prometheus };
+export { httpRequestDuration, httpRequestTotal, authLoginAttempts, authTokenRefreshes, authPasswordChanges, prometheus };

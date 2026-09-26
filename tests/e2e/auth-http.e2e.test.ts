@@ -75,6 +75,24 @@ const putJson = async(
 
 const bearer = (token: string): Record<string, string> => ({ Authorization: `Bearer ${token}` });
 
+/**
+ * GET por socket cru, sem validação de header no cliente. É o caminho que um
+ * cliente hostil usaria para mandar CRLF ou payload gigante no X-Request-Id.
+ */
+const rawGet = (path: string, requestId: string): Promise<string> => new Promise((resolve, reject) => {
+  const socket = net.createConnection({ host: '127.0.0.1', port: E2E_PORT }, () => {
+    socket.write(
+      `GET ${path} HTTP/1.1\r\nHost: 127.0.0.1:${E2E_PORT}\r\nConnection: close\r\n` +
+      `X-Request-Id: ${requestId}\r\n\r\n`
+    );
+  });
+
+  const chunks: Buffer[] = [];
+  socket.on('data', chunk => chunks.push(chunk as Buffer));
+  socket.once('error', reject);
+  socket.once('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+});
+
 describe('E2E HTTP - fluxo completo contra infra real (compose)', () => {
   let server: Server | null = null;
 
@@ -125,6 +143,46 @@ describe('E2E HTTP - fluxo completo contra infra real (compose)', () => {
     expect([200, 503]).toContain(res.status);
     expect(body.services?.mongodb?.status).toBe('healthy');
     expect(body.services?.redis?.status).toBe('healthy');
+  });
+
+  it('liveness e readiness respondem com semântica própria', async() => {
+    const liveness = await getJson('/liveness');
+    expect(liveness.status).toBe(200);
+    const livenessBody = await liveness.json() as { status: string; pid: number };
+    expect(livenessBody.status).toBe('alive');
+    expect(livenessBody.pid).toBe(process.pid);
+
+    // Com a infra real no ar, o serviço tem de estar pronto para tráfego.
+    const readiness = await getJson('/readiness');
+    expect(readiness.status).toBe(200);
+    const readinessBody = await readiness.json() as {
+      ready: boolean;
+      degraded: boolean;
+      checks: Record<string, { status: string }>;
+    };
+    expect(readinessBody.ready).toBe(true);
+    expect(readinessBody.degraded).toBe(false);
+    expect(readinessBody.checks.mongodb.status).toBe('healthy');
+    expect(readinessBody.checks.redis.status).toBe('healthy');
+  });
+
+  it('liveness não depende de dependency externa: responde mesmo com X-Forwarded-For forjado', async() => {
+    const forged = await getJson('/liveness', { 'X-Forwarded-For': '203.0.113.7' });
+    expect(forged.status).toBe(200);
+  });
+
+  it('descarta X-Request-Id externo que não é UUID', async() => {
+    // `fetch` recusa CRLF em header, então o caminho realista de um cliente
+    // hostil é socket cru: são esses bytes que chegam ao Express.
+    const raw = await rawGet('/health', 'forjado\r\nX-Injected: 1');
+    expect(raw).not.toContain('X-Injected: 1');
+    expect(raw).toMatch(/x-request-id: [0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i);
+
+    const oversized = await rawGet('/health', 'a'.repeat(2000));
+    expect(oversized).toMatch(/x-request-id: [0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i);
+
+    const trusted = await getJson('/health', { 'X-Request-Id': '3f2504e0-4f89-41d3-9a0c-0305e82c3301' });
+    expect(trusted.headers.get('x-request-id')).toBe('3f2504e0-4f89-41d3-9a0c-0305e82c3301');
   });
 
   it('protege o dashboard de segurança com token administrativo', async() => {

@@ -7,7 +7,14 @@ const [requestLoggerImport, metricsImport] = await (async() => {
 })();
 
 const { requestLogger } = requestLoggerImport;
-const { metricsMiddleware, httpRequestTotal, httpRequestDuration } = metricsImport;
+const {
+  metricsMiddleware,
+  httpRequestTotal,
+  httpRequestDuration,
+  recordLoginAttempt,
+  recordTokenRefresh,
+  recordPasswordChange
+} = metricsImport;
 const { requestLogAggregator } = await import('../../src/application/observability/requestLogAggregator.js');
 
 describe('requestLogger - middleware de log de requisições', () => {
@@ -97,5 +104,48 @@ describe('metricsMiddleware - métricas Prometheus', () => {
     expect(warnSpy).toHaveBeenCalled();
 
     warnSpy.mockRestore();
+  });
+});
+
+describe('métricas de autenticação - semântica por resultado', () => {
+  it('separa sucesso e falha em rótulos distintos', async() => {
+    recordLoginAttempt('success');
+    recordLoginAttempt('failure');
+    recordLoginAttempt('failure');
+
+    const samples = await metricsImport.prometheus.register.getMetricsAsJSON();
+    const login = samples.find(sample => sample.name === 'auth_login_attempts_total');
+
+    expect(login).toBeDefined();
+    const byOutcome = Object.fromEntries(
+      (login?.values ?? []).map(value => [value.labels.outcome, value.value])
+    );
+    expect(byOutcome.success).toBeGreaterThanOrEqual(1);
+    expect(byOutcome.failure).toBeGreaterThanOrEqual(2);
+  });
+
+  it('não mistura reuso de refresh com falha comum de usuário', async() => {
+    recordTokenRefresh('reused');
+    recordTokenRefresh('invalid');
+
+    const samples = await metricsImport.prometheus.register.getMetricsAsJSON();
+    const refresh = samples.find(sample => sample.name === 'auth_token_refresh_total');
+    const outcomes = (refresh?.values ?? []).map(value => value.labels.outcome);
+
+    expect(outcomes).toContain('reused');
+    expect(outcomes).toContain('invalid');
+  });
+
+  it('normaliza outcome desconhecido em error, sem criar label nova', async() => {
+    recordPasswordChange('senha_com_aspas_e_linha_nova');
+
+    const samples = await metricsImport.prometheus.register.getMetricsAsJSON();
+    const changes = samples.find(sample => sample.name === 'auth_password_changes_total');
+    const outcomes = (changes?.values ?? []).map(value => value.labels.outcome);
+
+    expect(outcomes).toContain('error');
+    expect(outcomes.every(outcome => [
+      'success', 'current_password_invalid', 'rejected', 'error'
+    ].includes(outcome))).toBe(true);
   });
 });

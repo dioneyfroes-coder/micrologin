@@ -14,7 +14,9 @@ describe('SecurityAuditLogger - auditoria de segurança', () => {
 
     const stats = audit.getSecurityStats();
     expect(stats.totalRequests).toBe(2);
+    expect(stats.loginAttempts).toBe(2);
     expect(stats.failedLogins).toBe(1);
+    expect(stats.successfulLogins).toBe(1);
     expect(stats.recentEvents).toBe(2);
     expect(audit.getRecentEvents()[1].details.reason).toBe('Senha incorreta');
     expect(warnSpy).toHaveBeenCalled();
@@ -22,6 +24,38 @@ describe('SecurityAuditLogger - auditoria de segurança', () => {
 
     successSpy.mockRestore();
     warnSpy.mockRestore();
+  });
+
+  it('contabiliza sucesso e falha em contadores separados, nunca somados', () => {
+    const successSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const audit = makeLogger();
+
+    for (let i = 0; i < 3; i++) {
+      audit.logLoginAttempt('alice', '1.2.3.4', 'agent', true);
+    }
+    audit.logLoginAttempt('alice', '1.2.3.4', 'agent', false, 'Senha incorreta');
+
+    const stats = audit.getSecurityStats();
+    expect(stats.loginAttempts).toBe(4);
+    expect(stats.successfulLogins).toBe(3);
+    expect(stats.failedLogins).toBe(1);
+    expect(stats.loginAttempts).toBe(stats.successfulLogins + stats.failedLogins);
+
+    successSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it('login bem-sucedido nunca alimenta o contador de falhas', () => {
+    const successSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    const audit = makeLogger();
+
+    audit.logLoginAttempt('alice', '1.2.3.4', 'agent', true);
+
+    expect(audit.getSecurityStats().failedLogins).toBe(0);
+    expect(audit.getSecurityStats().successfulLogins).toBe(1);
+
+    successSpy.mockRestore();
   });
 
   it('registra bloqueio de IP como warning e atualiza blockedRequests', () => {

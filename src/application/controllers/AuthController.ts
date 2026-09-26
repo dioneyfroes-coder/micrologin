@@ -9,6 +9,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { validationResult } from 'express-validator';
 import { securityAuditLogger } from '../middleware/securityAudit.js';
 import { HttpError } from '../../shared/utils/errorHandler.js';
+import { recordLoginAttempt, recordPasswordChange, recordTokenRefresh } from '../../shared/utils/metrics.js';
 import type { AuthService } from '../../domain/index.js';
 
 export class AuthWebController {
@@ -44,6 +45,7 @@ export class AuthWebController {
         result.success,
         result.error ?? undefined
       );
+      recordLoginAttempt(result.success ? 'success' : 'failure');
 
       if (result.success && result.user && result.token) {
         res.json({
@@ -120,6 +122,7 @@ export class AuthWebController {
 
       // Delegar para o CORE (realiza rotação e revoga o refresh antigo)
       const result = await this.authService.refreshUserTokens(refreshToken);
+      recordTokenRefresh(result.success ? 'success' : (result.code || 'failure'));
 
       if (result.success && result.token) {
         res.json({
@@ -291,6 +294,7 @@ export class AuthWebController {
         result.success,
         result.success ? undefined : result.error
       );
+      recordPasswordChange(result.success ? 'success' : (result.code || 'rejected'));
 
       if (result.success) {
         res.json({

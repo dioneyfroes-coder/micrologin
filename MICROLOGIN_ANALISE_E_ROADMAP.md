@@ -1131,17 +1131,39 @@ output encoding  → contexto de saída (a API responde JSON; não há renderiza
 
 ## 4.3 Eliminar `inputValidation.ts` se ele não for o mecanismo oficial
 
-Hoje existe uma segunda infraestrutura de validação além de `validation.ts`.
+**Status: concluído.** `express-validator` é o mecanismo oficial: é o que as rotas
+usam de fato, é coerente com a resposta JSON da API e mantém as políticas de
+identidade e senha em fonte única (`usernamePolicy.ts` e `passwordPolicy.ts`).
 
-Decida qual é a oficial.
-
-Se `express-validator` continuar sendo usada:
+Mapa de uso antes de remover:
 
 ```text
-remover InputValidator morto
+inputValidation.ts  →  importado apenas por tests/unit/input-validation.test.ts
+validation.ts       →  importado pelas rotas de autenticação
 ```
 
-ou migrar todo o projeto conscientemente para Joi.
+Ou seja, o módulo Joi era código morto que ainda arrastava uma dependência
+inteira. Removidos:
+
+```text
+src/application/middleware/inputValidation.ts
+tests/unit/input-validation.test.ts
+joi (package.json / package-lock.json)
+```
+
+O que **não** foi portado, de propósito:
+
+- **limites de payload por contexto (1KB login, 2KB registro).** O limite
+  global de `express.json({ limit: '100kb' })` já existe, e as rotas de
+  autenticação recebem corpos pequenos por construção. Um limite por contexto
+  aqui só criaria dois lugares para divergir.
+- **allowlist de caracteres de senha.** Uma allowlist fixa de caracteres
+  restringiria senhas legítimas e contradiz a decisão de tratar senha como
+  valor opaco.
+- **validação de e-mail.** Não existe campo de e-mail na API.
+
+Efeito colateral positivo: `Request.validationDetails`, que existia só para o
+middleware Joi, saiu de `src/types/express.d.ts`.
 
 ---
 
@@ -1149,25 +1171,71 @@ ou migrar todo o projeto conscientemente para Joi.
 
 ## 5.1 Corrigir contadores de login
 
-Substituir `failedLogins` ambíguo por métricas semanticamente corretas.
+**Status: concluído.** `AuditStats` agora tem os três contadores com semântica
+própria, e `loginAttempts` é a soma verificada dos outros dois:
+
+```text
+loginAttempts     → todo login, sucesso ou falha
+successfulLogins  → só os que deram certo
+failedLogins      → só os que falharam
+```
+
+E o agregado deixou de ser apenas interno: `metrics.ts` expõe
+
+```text
+auth_login_attempts_total{outcome}
+auth_token_refresh_total{outcome}
+auth_password_changes_total{outcome}
+```
+
+`reused` (refresh reaproveitado) é separado de `invalid` (usuário mandou token
+ruim) porque os dois significam coisas diferentes para o alerta. Valores fora da
+lista fechada viram `error`, para o rótulo não virar cardinalidade infinita.
+
+Testes: `tests/unit/security-audit.test.ts` e `tests/unit/metrics-middleware.test.ts`.
 
 ## 5.2 Separar health endpoints
 
-Criar:
+**Status: concluído.**
 
 ```text
-/liveness
-/readiness
-/health
+/liveness   → 200 se o processo responde. Não toca em Mongo nem Redis.
+/readiness  → 200 se o Mongo responde, 503 se não. Redis degradado não tira de prontidão.
+/health     → relatório detalhado (Mongo, Redis, memória, uptime).
 ```
+
+O `/liveness` não consulta dependência de propósito: se consultasse, uma queda
+do banco derrubaria processos perfeitamente capazes de reconectar, e o
+orquestrador reiniciaria tudo sem necessidade.
 
 ## 5.3 Definir `trust proxy`
 
-Adicionar configuração explícita para ambientes atrás de proxy.
+**Status: concluído.** `TRUST_PROXY` com padrão **não confiável**:
+
+```text
+ausente / false / 0 / off / no  → false (padrão seguro)
+número inteiro                  → quantidade de saltos de proxy
+lista de CIDR                   → faixa do proxy confiável
+true / on / always              → true, com aviso no log
+```
+
+Sem isso, `X-Forwarded-For` é controlado por quem fala com o Node, e `req.ip`
+vira uma variável que o cliente escolhe - o que derruba o rate limit por IP.
+
+Testes: `tests/unit/trust-proxy-config.test.ts`.
 
 ## 5.4 Reduzir confiança em `X-Request-Id` externo
 
-Validar UUID, tamanho e charset.
+**Status: concluído.** O `X-Request-Id` de entrada só é reutilizado se for um
+UUID (versão 1-8, variante correta) com no máximo 36 caracteres. Qualquer outra
+coisa - string arbitrária, JSON, CRLF para injetar cabeçalho, payload de 2KB - é
+descartada, com log, e o serviço gera o próprio id.
+
+O `id` de requisição é chave de correlação de alerta, então aceitar valor de
+cliente sem filtro é dar ao atacante controle sobre o log store.
+
+Testes: `tests/unit/request-id.test.ts` e um caso E2E que manda os bytes crus
+por socket, que é o caminho que um cliente hostil usaria.
 
 ---
 
