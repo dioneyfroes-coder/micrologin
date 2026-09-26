@@ -72,8 +72,11 @@ USER nodeuser
 
 EXPOSE 3000
 
+# Readiness, não /health: o relatório completo responde 503 quando a memória
+# passa do limiar, o que marcaria o container como unhealthy sem que ele tenha
+# deixado de conseguir atender tráfego.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:3000/health || exit 1
+    CMD curl -f http://localhost:3000/readiness || exit 1
 
 LABEL maintainer="Auth Team <auth@company.com>"
 LABEL description="Authentication Microservice"

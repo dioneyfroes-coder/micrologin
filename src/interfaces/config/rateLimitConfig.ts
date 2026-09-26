@@ -85,9 +85,17 @@ export const rateLimitConfig = {
     }
   },
 
+  // Endpoints de operação não passam por rate limit. Um probe que recebe 429
+  // é um probe que mente: o orquestrador marcaria o container como unhealthy
+  // (ou o deploy reverteria uma versão boa) por causa de limite de capacidade,
+  // não de defeito. `/liveness` e `/readiness` entram aqui junto de `/health`
+  // pelos mesmos motivos - são consultados por máquina, não por usuário.
   exemptPaths: [
     '/health',
+    '/liveness',
+    '/readiness',
     '/metrics',
+    '/observability',
     '/api-docs',
     '/favicon.ico'
   ],

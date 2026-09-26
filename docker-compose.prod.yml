@@ -9,26 +9,33 @@
 # (Atlas, ElastiCache etc.) — configure as URLs no .env.prod.
 #
 # Uso:
-#   docker compose --env-file .env.prod -f docker-compose.prod.yml build
-#   docker compose --env-file .env.prod -f docker-compose.prod.yml up -d
+#   IMAGE_REF=ghcr.io/dioneyfroes-coder/micrologin@sha256:... \
+#     docker compose --env-file .env.prod -f docker-compose.prod.yml up -d
 #
-# Para escalar horizontalmente:
-#   docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --scale auth-service=3
+# O caminho oficial é scripts/remote-deploy.sh, que resolve a imagem, faz
+# readiness, smoke test e rollback automático.
+#
+# Escala horizontal NÃO é suportada por este arquivo: `ports` com binding fixo
+# reserva a porta no host, e uma segunda réplica não consegue reservá-la. Isso
+# exige remover o binding fixo e deixar o proxy distribuir (Fase 7 do roadmap).
 #
 # Todas as variáveis da aplicação são injetadas via env_file (.env.prod),
 # consumidas diretamente por src/interfaces/config/*.ts.
 
 services:
   auth-service:
-    image: ${REGISTRY:-auth-service}/${IMAGE_NAME:-auth-service}:${VERSION:-latest}
+    # IMAGE_REF é a referência imutável que o CI resolve (digest ou tag por
+    # SHA) scripts/remote-deploy.sh. O fallback com REGISTRY/IMAGE_NAME/VERSION
+    # existe para uso manual em desenvolvimento.
+    image: ${IMAGE_REF:-${REGISTRY:-auth-service}/${IMAGE_NAME:-auth-service}:${VERSION:-latest}}
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: auth-service-prod
     env_file:
       - .env.prod
     environment:
-      # Mesma tag imutável usada no image (scripts/deploy.sh exporta VERSION=sha-data)
+      # Versão imutável em execução, para /observability e para identificar o
+      # deploy em log (scripts/remote-deploy.sh exporta VERSION=sha256:...)
       VERSION: ${VERSION:-latest}
       # O container expõe a porta interna 3000; APP_PORT é o binding do host
       PORT: 3000
@@ -42,8 +49,11 @@ services:
     # Limites de recursos (aplicados pelo Docker, mesmo fora de swarm)
     cpus: 2.0
     mem_limit: 512m
+    # Readiness, e não /health: o health check completo responde 503 quando a
+    # memória passa do limiar, o que marcaria o container como unhealthy sem
+    # que ele tenha deixado de conseguir atender tráfego.
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:3000/readiness"]
       interval: 30s
       timeout: 10s
       retries: 3

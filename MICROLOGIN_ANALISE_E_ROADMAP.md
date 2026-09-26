@@ -1196,6 +1196,14 @@ Testes: `tests/unit/security-audit.test.ts` e `tests/unit/metrics-middleware.tes
 
 ## 5.2 Separar health endpoints
 
+> Achado posterior (Fase 6): os probes estavam sujeitos ao rate limit global
+> de IP, porque só `/health` estava em `exemptPaths`. Com o limite estrito, o
+> próprio `/liveness` respondia 429 - o orquestrador marcaria um container
+> saudável como unhealthy, e o deploy reverteria uma versão boa. `/liveness`,
+> `/readiness` e `/observability` entraram em `exemptPaths`: endpoint de
+> operação é consultado por máquina, e um probe limitado por taxa é um probe
+> que mente.
+
 **Status: concluído.**
 
 ```text
@@ -1263,16 +1271,70 @@ auth-service
 
 ### Implementar de verdade
 
-- [ ] SSH/deploy para servidor.
-- [ ] Pull da imagem por SHA.
-- [ ] Backup da versão atual.
-- [ ] `docker compose up -d`.
-- [ ] readiness check.
-- [ ] smoke test real.
-- [ ] rollback automático se smoke falhar.
-- [ ] registro da versão implantada.
+**Status: concluído.** O deploy real existe e foi exercitado, não descrito.
 
-Até isso existir, o CI deve chamar o estágio de deployment de `template` ou `simulation`.
+- [x] SSH/deploy para servidor - job `deploy` do CI, por matriz (staging/produção).
+- [x] Pull da imagem por digest - a referência vem do output `digest` do build
+      (`ghcr.io/...@sha256:...`), nunca de `latest`.
+- [x] Backup da versão em vigor - a anterior recebe tag `*-backup-<ts>` e é
+      anotada em `/var/lib/micrologin/backups/previous-image`.
+- [x] `docker compose up -d` - via `IMAGE_REF`, para o compose usar a
+      referência imutável e não remontar `repo:sha256:...`.
+- [x] readiness check - espera `/readiness` responder 200.
+- [x] smoke test real - `scripts/smoke-test.sh`: liveness, readiness, registro,
+      login, `/profile`, rotação de refresh, rejeição de reuso e logout.
+- [x] rollback automático - dispara em readiness ou smoke falhando, e **refaz o
+      smoke na versão restaurada** antes de dizer que voltou.
+- [x] registro da versão implantada - `/var/lib/micrologin/deployed-version`
+      (JSON com digest, status, anterior, autor, commit e host), publicado no
+      resumo do job.
+- [x] lock por host - `flock` impede dois deploys simultâneos se atropelarem.
+
+O que o CI parou de fingir:
+
+```text
+antes:  job "deploy" imprimia "✅ Deployment completed" sem deployar nada
+        needs.build.outputs.image-url não existe (docker/build-push-action
+        não tem esse output), então a "imagem" do deploy era string vazia
+        Trivy escaneava ...:${{ github.sha }}, tag que o metadata-action
+        não publica (a tag é sha-<40 chars>)
+
+agora:  job "deploy" só roda em workflow_dispatch, exige secrets de servidor
+        e falha se não estiverem configurados; a referência da imagem vem
+        do digest real e é a mesma que o Trivy escaneia
+```
+
+### Comportamento do rollback
+
+| Situação | Ação | Status registrado | Exit |
+| --- | --- | --- | --- |
+| Smoke e readiness OK | versão nova no ar | `deployed` | 0 |
+| Readiness não vem | reverte | `rolled-back` | 1 |
+| Smoke falha (a versão não autentica) | reverte | `rolled-back` | 1 |
+| Versão anterior também está quebrada | não há para onde voltar | `rolled-back-but-broken` | 1 |
+| Rate limit bloqueia o smoke (429) | **mantém** a versão nova | `deployed-inconclusive` | 1 |
+| Pull da imagem falha | não mexe no que está no ar | `failed-pull` | 1 |
+| Sem versão anterior no primeiro deploy | sobe, sem para onde voltar | `deployed` | 0 |
+
+O caso `deployed-inconclusive` é uma decisão explícita: um 429 é o serviço
+funcionando, e reverter uma versão boa por causa de limite de capacidade
+transformaria um problema de taxa em uma indisponibilidade. O pipeline fica
+vermelho para um humano decidir.
+
+### Segredos necessários (por ambiente)
+
+```text
+{PROD|STAGING}_DEPLOY_HOST        host do servidor
+{PROD|STAGING}_DEPLOY_USER        usuário SSH
+{PROD|STAGING}_DEPLOY_SSH_KEY     chave privada (formato PEM)
+{PROD|STAGING}_DEPLOY_KNOWN_HOSTS chave pública do host (evita TOFU cego)
+{PROD|STAGING}_DEPLOY_SSH_PORT    opcional, default 22
+{PROD|STAGING}_DEPLOY_ENV_FILE    ex.: /opt/micrologin/.env.prod
+{PROD|STAGING}_DEPLOY_COMPOSE_FILE ex.: /opt/micrologin/docker-compose.prod.yml
+{PROD|STAGING}_DEPLOY_BASE_URL    URL pública, usada no smoke test
+{PROD|STAGING}_REGISTRY_USERNAME  opcional, só se a imagem do GHCR for privada
+{PROD|STAGING}_REGISTRY_TOKEN     idem
+```
 
 ---
 
@@ -1327,6 +1389,14 @@ Adicionar testes de segurança e concorrência, não apenas happy path.
 - [ ] refresh reusado;
 - [ ] logout revoga access token;
 - [ ] logout revoga refresh token;
+
+> Achado do smoke test de deploy (Fase 6): `POST /logout` só revoga o access
+> token quando ele é **apresentado** no header, e `revokeUserTokens` só roda
+> quando há `req.user` (ou seja, quando o access token chegou autenticado).
+> Um logout enviado só com o refresh token deixa o access token válido até
+> expirar, o que contraria o README ("revoga access token, refresh token e
+> tokens do usuário"). Decidir o contrato: ou o logout exige o bearer, ou o
+> refresh token apresentado identifica o usuário e revoga a sessão inteira.
 - [ ] revoke-all;
 - [ ] expiração real do token.
 

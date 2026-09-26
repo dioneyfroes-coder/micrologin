@@ -218,15 +218,69 @@ O workflow [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml) executa:
 1. **code-quality**: ESLint, `npm audit` e `audit-ci` — **falham o pipeline** quando encontram erros reais (sem `continue-on-error`)
 2. **tests**: unitários rápidos, integração e upload de cobertura para Codecov
 3. **build**: build e push da imagem multi-plataforma (amd64/arm64) para GHCR
-4. **security**: scan de vulnerabilidades com Trivy
-5. **deploy**: jobs de staging e produção existem como template; o deploy real e o blue-green ainda não estão implementados
+4. **security**: scan de vulnerabilidades com Trivy, na mesma referência de imagem que será implantada (o digest)
+5. **deploy**: deploy real por SSH, apenas em `workflow_dispatch` (ver abaixo). Sem servidor configurado, o job falha com mensagem explícita em vez de reportar sucesso
+
+### Deployment
+
+O deploy é um script que roda **no servidor**, não no CI. O CI resolve a imagem
+imutável, envia os scripts e chama o deploy por SSH:
+
+```bash
+# o que o CI executa no servidor
+~/.deploy/remote-deploy.sh \
+  --image ghcr.io/dioneyfroes-coder/micrologin@sha256:<digest> \
+  --env-file /opt/micrologin/.env.prod \
+  --compose-file /opt/micrologin/docker-compose.prod.yml \
+  --base-url https://api.exemplo.com
+```
+
+O que ele faz, nesta ordem:
+
+```text
+flock                      → um deploy por vez neste host
+registro de versão         → o que está no ar agora (/var/lib/micrologin/deployed-version)
+backup da versão em vigor  → tag *-backup-<timestamp>
+docker pull <digest>       → imagem imutável, nunca latest
+docker compose up -d       → via IMAGE_REF
+espera /readiness          → 200 em até DEPLOY_READY_TIMEOUT (default 120s)
+smoke test funcional       → registro, login, perfil, refresh, reuso, logout
+registro da versão nova
+```
+
+Se o readiness não vier ou o smoke falhar, o script volta para a versão
+anterior **e refaz o smoke nela** antes de dizer que voltou. Um 429 do rate
+limit é tratado como inconclusivo: a versão nova fica no ar e o pipeline
+acende vermelho para alguém decidir, porque reverter um deploy bom por limite
+de capacidade trocaria um problema de taxa por uma indisponibilidade.
+
+O smoke test ([`scripts/smoke-test.sh`](scripts/smoke-test.sh)) exercita o
+serviço de verdade, porque um health check 200 numa instância que não
+autentica ninguém é um deploy verde e inútil:
+
+```bash
+scripts/smoke-test.sh https://api.exemplo.com
+```
+
+Secrets por ambiente (staging e produção), todos com prefixo
+`{STAGING|PRODUCTION}_`: `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`,
+`DEPLOY_KNOWN_HOSTS`, `DEPLOY_ENV_FILE`, `DEPLOY_COMPOSE_FILE`,
+`DEPLOY_BASE_URL` e, se a imagem do GHCR for privada, `REGISTRY_USERNAME` e
+`REGISTRY_TOKEN`. `DEPLOY_SSH_PORT` é opcional (default 22).
+
+Para rodar o mesmo deploy localmente, sem CI:
+
+```bash
+scripts/remote-deploy.sh --image <imagem> --env-file .env.prod \
+  --compose-file docker-compose.prod.yml --base-url http://localhost:3000
+```
 
 ### Política de branches (main-only)
 
 - apenas a branch `main` existe; **sem** `develop` ou `feature/*`
 - no GitHub, a proteção da `main` (PR + code review + checks de CI) é uma recomendação de operação e depende da configuração externa; ela não está aplicada pelo repositório
 - branches de trabalho são **efêmeras**: criadas para um PR pequeno e apagadas após o merge em `main`
-- o CI dispara em push/PR para `main`; os jobs de deploy também disparam no push à `main`, mas hoje são placeholders
+- o CI dispara em push/PR para `main`; o **deploy só roda em `workflow_dispatch`**, porque não há servidor configurado neste repositório — um job de deploy que roda sozinho e imprime sucesso sem deployar é pior do que nenhum job
 
 ## Observações importantes
 

@@ -135,8 +135,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: tests
     outputs:
+      # `image-url` nunca existiu como output do docker/build-push-action, então
+      # o job de deploy recebia string vazia e imprimia um "deploy" sem imagem.
+      # A referência imutável é montada aqui, a partir do digest real.
       image-digest: ${{ steps.build.outputs.digest }}
-      image-url: ${{ steps.build.outputs.image-url }}
+      image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
     
     steps:
       - name: 📥 Checkout code
@@ -205,7 +208,10 @@ jobs:
       - name: 🔍 Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          # A mesma referência que será implantada: o metadata-action publica a
+          # tag `sha-<40 chars>`, então `:${{ github.sha }}` apontava para uma
+          # imagem inexistente e o scan não cobria o que ia para produção.
+          image-ref: ${{ needs.build.outputs.image-ref }}
           format: 'sarif'
           output: 'trivy-results.sarif'
 
@@ -216,71 +222,147 @@ jobs:
           sarif_file: 'trivy-results.sarif'
 
   # ========================
-  # DEPLOY STAGING
+  # DEPLOY (real, via SSH)
   # ========================
-  deploy-staging:
-    name: 🚀 Deploy to Staging
+  # O que este job faz de verdade:
+  #   1. monta a referência imutável da imagem (digest vindo do build);
+  #   2. copia os scripts de deploy para o servidor;
+  #   3. roda scripts/remote-deploy.sh no servidor, que faz pull por digest,
+  #      backup da versão em vigor, `docker compose up -d`, espera /readiness,
+  #      roda smoke test funcional e reverte sozinho se algo falhar;
+  #   4. publica a versão implantada no resumo do job.
+  #
+  # Só roda em `workflow_dispatch`: não existe servidor configurado neste
+  # repositório, e um job que "deploya" com `echo` mentindo sobre o que fez é
+  # pior do que nenhum job. Os secrets necessários estão em README (seção
+  # Deployment).
+  deploy:
+    name: 🚀 Deploy (${{ matrix.environment }})
     runs-on: ubuntu-latest
     needs: [build, security]
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'staging')
-    environment: staging
-    
+    if: github.event_name == 'workflow_dispatch'
+    environment: ${{ matrix.environment }}
+    strategy:
+      # Uma vez por ambiente: dois deploys simultâneos no mesmo host se atropelam.
+      max-parallel: 1
+      matrix:
+        include:
+          - environment: staging
+            secret_prefix: STAGING
+          - environment: production
+            secret_prefix: PRODUCTION
+    concurrency:
+      group: deploy-${{ matrix.environment }}
+      cancel-in-progress: false
+
     steps:
       - name: 📥 Checkout code
         uses: actions/checkout@v4
 
-      - name: 🚀 Deploy to staging
+      - name: 🪪 Fail fast se o ambiente não estiver configurado
+        env:
+          DEPLOY_HOST: ${{ secrets[format('{0}_DEPLOY_HOST', matrix.secret_prefix)] }}
         run: |
-          echo "🚀 Deploying to staging environment..."
-          echo "Image: ${{ needs.build.outputs.image-url }}"
-          # Aqui você adicionaria os comandos específicos do seu ambiente
-          # Exemplos:
-          # - kubectl apply -f k8s/staging/
-          # - docker-compose up -d
-          # - aws ecs update-service
-          echo "✅ Deployment to staging completed"
+          if [ -z "$DEPLOY_HOST" ]; then
+            echo "::error::Servidor de deploy não configurado para ${{ matrix.environment }}."
+            echo "Defina o secret ${{ matrix.secret_prefix }}_DEPLOY_HOST (e os demais da seção Deployment do README)."
+            exit 1
+          fi
 
-      - name: 🧪 Run smoke tests
+      - name: 🔑 Configurar chave SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets[format('{0}_DEPLOY_SSH_KEY', matrix.secret_prefix)] }}
+          SSH_KNOWN_HOSTS: ${{ secrets[format('{0}_DEPLOY_KNOWN_HOSTS', matrix.secret_prefix)] }}
         run: |
-          echo "🧪 Running smoke tests on staging..."
-          # Adicionar smoke tests específicos
-          sleep 30 # Aguardar startup
-          # curl -f https://staging.your-domain.com/health
-          echo "✅ Smoke tests passed"
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          if [ -n "$SSH_KNOWN_HOSTS" ]; then
+            # Chave do host conferida: o deploy não aceita falar com um host
+            # que não esteja registrado.
+            printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          else
+            echo "::warning::${{ matrix.secret_prefix }}_DEPLOY_KNOWN_HOSTS não definido: a chave do host será aceita na primeira conexão (TOFU)."
+            printf '%s\n' '*' > ~/.ssh/known_hosts
+          fi
 
-  # ========================
-  # DEPLOY PRODUCTION
-  # ========================
-  deploy-production:
-    name: 🏭 Deploy to Production
-    runs-on: ubuntu-latest
-    needs: [build, security]
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production')
-    environment: production
-    
-    steps:
-      - name: 📥 Checkout code
-        uses: actions/checkout@v4
-
-      - name: 🔄 Blue-Green Deployment
+      - name: 🔑 Autenticar no registry (quando a imagem é privada)
+        env:
+          REGISTRY_USERNAME: ${{ secrets[format('{0}_REGISTRY_USERNAME', matrix.secret_prefix)] }}
+          REGISTRY_TOKEN: ${{ secrets[format('{0}_REGISTRY_TOKEN', matrix.secret_prefix)] }}
         run: |
-          echo "🔄 Starting blue-green deployment to production..."
-          echo "Image: ${{ needs.build.outputs.image-url }}"
-          # Implementar blue-green deployment
-          echo "✅ Production deployment completed"
+          if [ -n "$REGISTRY_USERNAME" ] && [ -n "$REGISTRY_TOKEN" ]; then
+            printf '%s' "$REGISTRY_TOKEN" | docker login "${{ env.REGISTRY }}" \
+              --username "$REGISTRY_USERNAME" --password-stdin
+            echo "::notice::Login no registry realizado."
+          else
+            echo "::notice::Sem credenciais de registry: a imagem precisa ser pública."
+          fi
 
-      - name: 🧪 Run production health checks
+      - name: 📤 Enviar scripts de deploy para o servidor
+        env:
+          DEPLOY_HOST: ${{ secrets[format('{0}_DEPLOY_HOST', matrix.secret_prefix)] }}
+          DEPLOY_USER: ${{ secrets[format('{0}_DEPLOY_USER', matrix.secret_prefix)] }}
+          DEPLOY_SSH_PORT: ${{ secrets[format('{0}_DEPLOY_SSH_PORT', matrix.secret_prefix)] }}
+          DEPLOY_SCRIPT_DIR: ${{ secrets[format('{0}_DEPLOY_SCRIPT_DIR', matrix.secret_prefix)] }}
         run: |
-          echo "🧪 Running production health checks..."
-          # Adicionar health checks específicos
-          sleep 60 # Aguardar startup completo
-          echo "✅ Production health checks passed"
+          PORT="${DEPLOY_SSH_PORT:-22}"
+          REMOTE="${DEPLOY_USER}@${DEPLOY_HOST}"
+          mkdir -p ~/.deploy
+          scp -i ~/.ssh/deploy_key -P "$PORT" \
+            scripts/remote-deploy.sh scripts/smoke-test.sh "$REMOTE:~/.deploy/"
+          ssh -i ~/.ssh/deploy_key -p "$PORT" "$REMOTE" \
+            "chmod +x ~/.deploy/remote-deploy.sh ~/.deploy/smoke-test.sh && echo 'scripts recebidos em ~/.deploy (dir configurada: ${DEPLOY_SCRIPT_DIR:-~/.deploy})'"
 
-      - name: 📊 Update deployment metrics
+      - name: 🚀 Implantar a versão no servidor
+        env:
+          DEPLOY_HOST: ${{ secrets[format('{0}_DEPLOY_HOST', matrix.secret_prefix)] }}
+          DEPLOY_USER: ${{ secrets[format('{0}_DEPLOY_USER', matrix.secret_prefix)] }}
+          DEPLOY_SSH_PORT: ${{ secrets[format('{0}_DEPLOY_SSH_PORT', matrix.secret_prefix)] }}
+          DEPLOY_ENV_FILE: ${{ secrets[format('{0}_DEPLOY_ENV_FILE', matrix.secret_prefix)] }}
+          DEPLOY_COMPOSE_FILE: ${{ secrets[format('{0}_DEPLOY_COMPOSE_FILE', matrix.secret_prefix)] }}
+          DEPLOY_BASE_URL: ${{ secrets[format('{0}_DEPLOY_BASE_URL', matrix.secret_prefix)] }}
         run: |
-          echo "📊 Updating deployment metrics..."
-          # Enviar métricas para observabilidade
-          echo "✅ Metrics updated"
+          PORT="${DEPLOY_SSH_PORT:-22}"
+          REMOTE="${DEPLOY_USER}@${DEPLOY_HOST}"
+          for name in DEPLOY_ENV_FILE DEPLOY_COMPOSE_FILE DEPLOY_BASE_URL; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Secret ${{ matrix.secret_prefix }}_${name} não configurado."
+              exit 1
+            fi
+          done
+
+          # O script sai != 0 quando o smoke falha (e reverte), quando o
+          # readiness não vem, ou quando o resultado é inconclusivo. Nesse
+          # caso o job fica vermelho - sem `|| echo "deploy concluído"`.
+          ssh -i ~/.ssh/deploy_key -p "$PORT" "$REMOTE" bash -s -- \
+            "${{ needs.build.outputs.image-ref }}" \
+            "$DEPLOY_ENV_FILE" "$DEPLOY_COMPOSE_FILE" "$DEPLOY_BASE_URL" \
+            "${{ github.sha }}" "${{ github.actor }}" <<'REMOTE_SCRIPT'
+          set -euo pipefail
+          IMAGE_REF="$1"; ENV_FILE="$2"; COMPOSE_FILE="$3"; BASE_URL="$4"; COMMIT="$5"; ACTOR="$6"
+          DEPLOY_COMMIT="$COMMIT" DEPLOYED_BY="$ACTOR" \
+            ~/.deploy/remote-deploy.sh \
+              --image "$IMAGE_REF" \
+              --env-file "$ENV_FILE" \
+              --compose-file "$COMPOSE_FILE" \
+              --base-url "$BASE_URL"
+          REMOTE_SCRIPT
+
+      - name: 📋 Publicar a versão implantada
+        env:
+          DEPLOY_HOST: ${{ secrets[format('{0}_DEPLOY_HOST', matrix.secret_prefix)] }}
+          DEPLOY_USER: ${{ secrets[format('{0}_DEPLOY_USER', matrix.secret_prefix)] }}
+          DEPLOY_SSH_PORT: ${{ secrets[format('{0}_DEPLOY_SSH_PORT', matrix.secret_prefix)] }}
+        run: |
+          PORT="${DEPLOY_SSH_PORT:-22}"
+          VERSION_JSON=$(ssh -i ~/.ssh/deploy_key -p "$PORT" \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            'cat /var/lib/micrologin/deployed-version 2>/dev/null || echo "{}"')
+          echo "### Deploy ${{ matrix.environment }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          echo "$VERSION_JSON" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   # ========================
   # NOTIFICAÇÕES
@@ -288,7 +370,7 @@ jobs:
   notify:
     name: 📢 Notifications
     runs-on: ubuntu-latest
-    needs: [deploy-staging, deploy-production]
+    needs: [build, deploy]
     if: always()
     
     steps:

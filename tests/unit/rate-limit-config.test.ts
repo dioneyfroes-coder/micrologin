@@ -28,7 +28,12 @@ describe('rateLimitConfig - configuração centralizada', () => {
     expect(config.environment).toBe('production');
     expect(config.ip.points).toBe(100);
     expect(config.login.points).toBe(5);
-    expect(config.exemptPaths).toEqual(expect.arrayContaining(['/health', '/metrics']));
+    expect(config.exemptPaths).toEqual(expect.arrayContaining([
+      '/health',
+      '/liveness',
+      '/readiness',
+      '/metrics'
+    ]));
   });
 
   it('usa a configuração de desenvolvimento quando NODE_ENV=development', async() => {
