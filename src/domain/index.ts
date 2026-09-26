@@ -6,7 +6,7 @@
  * Comunica-se com o mundo exterior através de PORTS (interfaces).
  */
 
-import { PASSWORD_MIN_LENGTH } from '../shared/utils/passwordValidator.js';
+import { PASSWORD_HISTORY_LIMIT, PASSWORD_MIN_LENGTH, isCommonPassword, validatePasswordStrength, wasPasswordUsedBefore } from '../shared/utils/passwordPolicy.js';
 import { hasAllowedUsernameChars, isUsernameValid, normalizeUsername, USERNAME_MIN_LENGTH } from '../shared/utils/usernamePolicy.js';
 
 export type DomainErrorCode = 'INVALID_USERNAME' | 'INVALID_PASSWORD' | 'USER_ALREADY_EXISTS' | string;
@@ -101,13 +101,26 @@ export class User {
   id: string | null;
   username: string;
   hashedPassword: string;
+  /** Hashes das últimas senhas, do mais antigo ao mais recente (limite: PASSWORD_HISTORY_LIMIT). */
+  passwordHistory: string[];
+  passwordChangedAt: Date;
   createdAt: Date;
   updatedAt: Date;
 
-  constructor(id: string | null, username: string, hashedPassword: string, createdAt: Date = new Date(), updatedAt: Date = new Date()) {
+  constructor(
+    id: string | null,
+    username: string,
+    hashedPassword: string,
+    createdAt: Date = new Date(),
+    updatedAt: Date = new Date(),
+    passwordHistory: string[] = [],
+    passwordChangedAt: Date = createdAt
+  ) {
     this.id = id;
     this.username = normalizeUsername(username);
     this.hashedPassword = hashedPassword;
+    this.passwordHistory = [...passwordHistory];
+    this.passwordChangedAt = passwordChangedAt;
     this.createdAt = createdAt;
     this.updatedAt = updatedAt;
   }
@@ -129,24 +142,39 @@ export class User {
   }
 
   /**
-   * Atualiza dados do usuário seguindo regras de negócio
+   * Atualiza o username. Senha NUNCA muda por aqui: troca de senha exige a
+   * senha atual (step-up) e é um caso de uso próprio, com histórico e
+   * invalidação de sessões.
    */
-  updateData(newUsername?: string, newHashedPassword?: string): void {
-    if (newUsername) {
-      const normalizedUsername = normalizeUsername(newUsername);
-      if (!this.isValidUsername(normalizedUsername)) {
-        throw new DomainError('INVALID_USERNAME', 'Username inválido');
-      }
-      if (normalizedUsername !== this.username) {
-        this.username = normalizedUsername;
-      }
+  updateUsername(newUsername: string): void {
+    const normalizedUsername = normalizeUsername(newUsername);
+    if (!this.isValidUsername(normalizedUsername)) {
+      throw new DomainError('INVALID_USERNAME', 'Username inválido');
     }
-
-    if (newHashedPassword) {
-      this.hashedPassword = newHashedPassword;
+    if (normalizedUsername !== this.username) {
+      this.username = normalizedUsername;
     }
-
     this.updatedAt = new Date();
+  }
+
+  /**
+   * Troca a senha aplicando a política de histórico.
+   *
+   * O hash anterior entra no histórico (limitado a PASSWORD_HISTORY_LIMIT, FIFO:
+   * o mais antigo sai) e `passwordChangedAt` passa a marcar a troca. Os hashes
+   * nunca saem da entidade por `toSafeObject`.
+   *
+   * @param newHashedPassword - Hash da nova senha
+   */
+  changePassword(newHashedPassword: string): void {
+    if (!newHashedPassword) {
+      throw new DomainError('INVALID_PASSWORD', 'Senha é obrigatória');
+    }
+
+    this.passwordHistory = [...this.passwordHistory, this.hashedPassword].slice(-PASSWORD_HISTORY_LIMIT);
+    this.hashedPassword = newHashedPassword;
+    this.passwordChangedAt = new Date();
+    this.updatedAt = this.passwordChangedAt;
   }
 
   isValidUsername(username: string): boolean {
@@ -358,9 +386,13 @@ export class AuthService {
   }
 
   /**
-   * Caso de uso: Atualizar perfil do usuário
+   * Caso de uso: Atualizar perfil do usuário (apenas username)
+   *
+   * A senha NÃO é alterada aqui. Trocar senha exige a senha atual e tem
+   * consequences próprias (histórico e encerramento de sessões) - ver
+   * `changePassword`.
    */
-  async updateUserProfile(userId: string, newUsername?: string, newPassword?: string): Promise<ServiceResult> {
+  async updateUserProfile(userId: string, newUsername?: string): Promise<ServiceResult> {
     try {
       const user = await this.userRepository.findById(userId);
       if (!user) {
@@ -378,17 +410,10 @@ export class AuthService {
         }
       }
 
-      // Hash da nova senha se fornecida
-      let newHashedPassword: string | null = null;
-      if (newPassword) {
-        if (newPassword.length < PASSWORD_MIN_LENGTH) {
-          return { success: false, error: `Senha deve ter pelo menos ${PASSWORD_MIN_LENGTH} caracteres` };
-        }
-        newHashedPassword = await this.crypto.hash(newPassword);
-      }
-
       // Aplicar regras de negócio através da entidade
-      user.updateData(newUsername, newHashedPassword || undefined);
+      if (newUsername) {
+        user.updateUsername(newUsername);
+      }
 
       // Persistir
       const updatedUser = await this.userRepository.save(user);
@@ -403,6 +428,74 @@ export class AuthService {
     } catch (error) {
       this.logger.error('Erro ao atualizar perfil', error);
       return { success: false, error: domainFailureMessage(error, 'Não foi possível atualizar o perfil') };
+    }
+  }
+
+  /**
+   * Caso de uso: Trocar a senha do usuário
+   *
+   * Exige a senha atual (step-up): um access token vazado não basta para
+   * tomar a conta permanentemente.
+   *
+   * Regras aplicadas:
+   * - a senha atual precisa conferir;
+   * - a nova senha precisa passar na política (tamanho, bytes, composição);
+   * - a nova senha não pode ser igual à atual nem a nenhuma das últimas
+   *   `PASSWORD_HISTORY_LIMIT` senhas;
+   * - o hash anterior entra no histórico e `passwordChangedAt` é atualizado;
+   * - **todas as sessões do usuário são encerradas** (decisão de projeto,
+   *   ver README): um token comprometido deixa de valer no mesmo instante.
+   *
+   * @param userId - Usuário autenticado
+   * @param currentPassword - Senha atual
+   * @param newPassword - Nova senha
+   */
+  async changePassword(userId: string, currentPassword: string, newPassword: string): Promise<ServiceResult> {
+    try {
+      const user = await this.userRepository.findById(userId);
+      if (!user) {
+        return { success: false, error: 'Usuário não encontrado', code: 'USER_NOT_FOUND' };
+      }
+
+      const currentMatches = await this.crypto.compare(currentPassword, user.hashedPassword);
+      if (!currentMatches) {
+        this.logger.warn('Troca de senha com senha atual incorreta', { userId });
+        return { success: false, error: 'Senha atual incorreta', code: 'CURRENT_PASSWORD_INVALID' };
+      }
+
+      const policy = validatePasswordStrength(newPassword);
+      if (!policy.isValid) {
+        return { success: false, error: policy.errors.join('; '), code: 'INVALID_PASSWORD' };
+      }
+
+      if (isCommonPassword(newPassword)) {
+        return { success: false, error: 'Senha é muito comum. Escolha uma senha mais complexa.', code: 'PASSWORD_TOO_COMMON' };
+      }
+
+      // Reuso da senha atual ou de qualquer senha do histórico
+      const reusedCurrent = await this.crypto.compare(newPassword, user.hashedPassword);
+      const reusedHistory = await wasPasswordUsedBefore(newPassword, user.passwordHistory, this.crypto.compare);
+      if (reusedCurrent || reusedHistory) {
+        return { success: false, error: 'A nova senha não pode ser uma senha já utilizada', code: 'PASSWORD_REUSED' };
+      }
+
+      const newHashedPassword = await this.crypto.hash(newPassword);
+      user.changePassword(newHashedPassword);
+      const savedUser = await this.userRepository.save(user);
+
+      // Encerrar todas as sessões: a senha trocada invalida o que já foi emitido
+      await this.tokenGenerator.revokeUserTokens(userId);
+
+      this.logger.info('Senha alterada; sessões do usuário revogadas', { userId: savedUser.id });
+
+      return {
+        success: true,
+        user: savedUser.toSafeObject()
+      };
+
+    } catch (error) {
+      this.logger.error('Erro ao trocar senha', error);
+      return { success: false, error: domainFailureMessage(error, 'Não foi possível alterar a senha') };
     }
   }
 

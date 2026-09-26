@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { resolve, bootstrapServices } from '../../core/bootstrap.js';
-import { validateLogin, validateRegister, validateUpdate, validateRefresh } from '../middleware/validation.js';
+import { validateLogin, validateRegister, validateUpdate, validateRefresh, validateChangePassword } from '../middleware/validation.js';
 import { prometheus } from '../../shared/utils/metrics.js';
 import { performHealthCheck } from '../../shared/utils/healthCheck.js';
 import { advancedRateLimit } from '../middleware/advancedRateLimit.js';
@@ -98,10 +98,21 @@ import type { AuthWebMiddleware } from '../middleware/AuthMiddleware.js';
  *           maxLength: 30
  *           pattern: "^[A-Za-z0-9_-]+$"
  *           description: Novo nome de usuário (opcional)
- *         password:
+ *     ChangePasswordRequest:
+ *       type: object
+ *       required:
+ *         - currentPassword
+ *         - newPassword
+ *       properties:
+ *         currentPassword:
+ *           type: string
+ *           maxLength: 72
+ *           description: Senha atual (exigida: step-up, um access token sozinho não troca a senha)
+ *         newPassword:
  *           type: string
  *           minLength: 12
- *           description: Nova senha (opcional)
+ *           maxLength: 72
+ *           description: Nova senha (política de senha forte; não pode constar no histórico)
  *     StandardResponse:
  *       type: object
  *       properties:
@@ -348,6 +359,46 @@ export function createAuthRoutes() {
    *               $ref: '#/components/schemas/ErrorResponse'
    */
   router.put('/update', authMiddleware.authenticate, validateUpdate, authController.updateProfile);
+
+  /**
+   * @swagger
+   * /password:
+   *   put:
+   *     summary: Trocar a senha do usuário autenticado
+   *     description: >
+   *       Exige a senha atual (step-up), recusa reutilização de senhas recentes
+   *       e encerra todas as sessões do usuário (os tokens emitidos antes da
+   *       troca deixam de valer).
+   *     tags: [Perfil]
+   *     security:
+   *       - BearerAuth: []
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             $ref: '#/components/schemas/ChangePasswordRequest'
+   *     responses:
+   *       200:
+   *         description: Senha alterada; sessões anteriores encerradas
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/StandardResponse'
+   *       400:
+   *         description: Nova senha fraca, comum ou já utilizada
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/ErrorResponse'
+   *       401:
+   *         description: Token inválido ou senha atual incorreta
+   *         content:
+   *           application/json:
+   *             schema:
+   *               $ref: '#/components/schemas/ErrorResponse'
+   */
+  router.put('/password', authMiddleware.authenticate, validateChangePassword, authController.changePassword);
 
   /**
    * @swagger

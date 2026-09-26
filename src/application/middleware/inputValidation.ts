@@ -7,7 +7,7 @@
 
 import Joi from 'joi';
 import type { NextFunction, Request, Response } from 'express';
-import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH, validatePasswordStrength } from '../../shared/utils/passwordValidator.js';
+import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH, validatePasswordStrength } from '../../shared/utils/passwordPolicy.js';
 import { hasAllowedUsernameChars, USERNAME_MIN_LENGTH, USERNAME_MAX_LENGTH } from '../../shared/utils/usernamePolicy.js';
 import { HttpError } from '../../shared/utils/errorHandler.js';
 

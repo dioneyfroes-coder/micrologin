@@ -47,7 +47,7 @@ describe('AuthService - perfil do usuário', () => {
     };
 
     const service = new AuthService(repo, {}, {}, logger);
-    const result = await service.updateUserProfile('u-1', 'alice2', null);
+    const result = await service.updateUserProfile('u-1', 'alice2');
 
     expect(result.success).toBe(true);
     expect(result.user?.username).toBe('alice2');
@@ -62,7 +62,7 @@ describe('AuthService - perfil do usuário', () => {
     };
 
     const service = new AuthService(repo, {}, {}, logger);
-    const result = await service.updateUserProfile('u-1', 'alice2', null);
+    const result = await service.updateUserProfile('u-1', 'alice2');
 
     expect(result.success).toBe(false);
     expect(result.error).toBe('Username já existe');
@@ -98,27 +98,17 @@ describe('AuthService - perfil do usuário', () => {
     };
 
     const service = new AuthService(repo, {}, {}, logger);
-    const result = await service.updateUserProfile('u-1', 'ALICE', null);
+    const result = await service.updateUserProfile('u-1', 'ALICE');
 
     expect(result.success).toBe(true);
     expect(repo.exists).not.toHaveBeenCalled();
     expect(result.user?.username).toBe('alice');
   });
 
-  it('rejeita nova senha mais curta que o mínimo', async() => {
-    const logger = makeLogger();
-    const repo = { findById: jest.fn().mockResolvedValue(makeUser()) };
-
-    const service = new AuthService(repo, {}, {}, logger);
-    const result = await service.updateUserProfile('u-1', null, 'short');
-
-    expect(result.success).toBe(false);
-    expect(result.error).toContain('pelo menos 12 caracteres');
-  });
-
-  it('faz hash da nova senha ao atualizar o perfil', async() => {
+  it('não altera senha pela atualização de perfil', async() => {
     const logger = makeLogger();
     const user = makeUser();
+    const originalHash = user.hashedPassword;
     const repo = {
       findById: jest.fn().mockResolvedValue(user),
       save: jest.fn().mockImplementation(async(u) => ({
@@ -129,10 +119,12 @@ describe('AuthService - perfil do usuário', () => {
     const crypto = { hash: jest.fn().mockResolvedValue('new-hash') };
 
     const service = new AuthService(repo, crypto, {}, logger);
-    const result = await service.updateUserProfile('u-1', null, 'NewStrongPass123!');
+    const result = await service.updateUserProfile('u-1');
 
     expect(result.success).toBe(true);
-    expect(crypto.hash).toHaveBeenCalledWith('NewStrongPass123!');
+    // A troca de senha é um caso de uso separado, com step-up e histórico
+    expect(crypto.hash).not.toHaveBeenCalled();
+    expect(user.hashedPassword).toBe(originalHash);
   });
 
   it('deleta usuário com sucesso', async() => {
@@ -214,5 +206,128 @@ describe('AuthService - refresh e revogação', () => {
 
     expect(result.success).toBe(true);
     expect(tokenGenerator.revokeUserTokens).toHaveBeenCalledWith('u-1');
+  });
+});
+
+describe('AuthService - troca de senha (step-up + histórico + sessões)', () => {
+  const OLD_PASSWORD = 'OldStrongPass123!';
+  const NEW_PASSWORD = 'NewStrongPass456!';
+
+  const makeService = (options: {
+    user?: User | null;
+    currentMatches?: boolean;
+    historyMatch?: boolean;
+  } = {}) => {
+    const {
+      user = makeUser(),
+      currentMatches = true,
+      historyMatch = false
+    } = options;
+
+    const logger = makeLogger();
+    const repo = {
+      findById: jest.fn().mockResolvedValue(user),
+      save: jest.fn().mockImplementation(async(u: User) => u)
+    };
+    // compare: senha atual confere, senha nova não confere com o histórico
+    const crypto = {
+      hash: jest.fn().mockResolvedValue('new-hash'),
+      compare: jest.fn(async(plain: string) => (
+        plain === OLD_PASSWORD ? currentMatches : historyMatch
+      ))
+    };
+    const tokens = { revokeUserTokens: jest.fn().mockResolvedValue(true) };
+
+    return { service: new AuthService(repo, crypto, tokens, logger), repo, crypto, tokens, user };
+  };
+
+  it('exige a senha atual (step-up)', async() => {
+    const { service } = makeService({ currentMatches: false });
+
+    const result = await service.changePassword('u-1', 'senha-errada', NEW_PASSWORD);
+
+    expect(result.success).toBe(false);
+    expect(result.code).toBe('CURRENT_PASSWORD_INVALID');
+  });
+
+  it('falha quando o usuário não existe', async() => {
+    const { service } = makeService({ user: null });
+
+    const result = await service.changePassword('missing', OLD_PASSWORD, NEW_PASSWORD);
+
+    expect(result.success).toBe(false);
+    expect(result.code).toBe('USER_NOT_FOUND');
+  });
+
+  it('troca a senha, guarda o hash anterior e marca a data da troca', async() => {
+    const { service, repo, crypto, user } = makeService();
+
+    const result = await service.changePassword('u-1', OLD_PASSWORD, NEW_PASSWORD);
+
+    expect(result.success).toBe(true);
+    expect(crypto.hash).toHaveBeenCalledWith(NEW_PASSWORD);
+    expect(repo.save).toHaveBeenCalledTimes(1);
+    expect(user.hashedPassword).toBe('new-hash');
+    expect(user.passwordHistory).toEqual(['hashed-password']);
+    expect(user.passwordChangedAt.getTime()).toBeGreaterThan(new Date('2024-01-01').getTime());
+  });
+
+  it('recusa senha fora da política', async() => {
+    const { service, crypto, tokens } = makeService();
+
+    const result = await service.changePassword('u-1', OLD_PASSWORD, 'fraca');
+
+    expect(result.success).toBe(false);
+    expect(result.code).toBe('INVALID_PASSWORD');
+    expect(crypto.hash).not.toHaveBeenCalled();
+    expect(tokens.revokeUserTokens).not.toHaveBeenCalled();
+  });
+
+  it('recusa senha comum', async() => {
+    const { service } = makeService();
+
+    const result = await service.changePassword('u-1', OLD_PASSWORD, 'Mudar@Senha123');
+
+    expect(result.success).toBe(false);
+    expect(result.code).toBe('PASSWORD_TOO_COMMON');
+  });
+
+  it('recusa reutilização da própria senha atual', async() => {
+    const { service, tokens } = makeService({ historyMatch: true });
+
+    const result = await service.changePassword('u-1', OLD_PASSWORD, OLD_PASSWORD);
+
+    expect(result.success).toBe(false);
+    expect(result.code).toBe('PASSWORD_REUSED');
+    expect(tokens.revokeUserTokens).not.toHaveBeenCalled();
+  });
+
+  it('recusa reutilização de senha que está no histórico', async() => {
+    const user = new User('u-1', 'alice', 'hashed-password', new Date('2024-01-01'), new Date('2024-01-01'), ['hash-antigo']);
+    const { service } = makeService({ user, historyMatch: true });
+
+    const result = await service.changePassword('u-1', OLD_PASSWORD, NEW_PASSWORD);
+
+    expect(result.success).toBe(false);
+    expect(result.code).toBe('PASSWORD_REUSED');
+  });
+
+  it('encerra todas as sessões do usuário após a troca', async() => {
+    const { service, tokens } = makeService();
+
+    await service.changePassword('u-1', OLD_PASSWORD, NEW_PASSWORD);
+
+    // Um access token vazado deixa de valer no mesmo instante da troca
+    expect(tokens.revokeUserTokens).toHaveBeenCalledWith('u-1');
+  });
+
+  it('não devolve hash nem histórico de senha na resposta', async() => {
+    const { service } = makeService();
+
+    const result = await service.changePassword('u-1', OLD_PASSWORD, NEW_PASSWORD);
+
+    expect(result.user).toBeDefined();
+    expect(result.user).not.toHaveProperty('hashedPassword');
+    expect(result.user).not.toHaveProperty('passwordHistory');
   });
 });

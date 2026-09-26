@@ -241,14 +241,10 @@ export class AuthWebController {
       }
 
       const userId = req.user!.id;
-      const { user: newUsername, password: newPassword } = req.body;
+      const { user: newUsername } = req.body;
 
       // Delegar para o CORE
-      const result = await this.authService.updateUserProfile(
-        userId,
-        newUsername,
-        newPassword
-      );
+      const result = await this.authService.updateUserProfile(userId, newUsername);
 
       if (result.success) {
         res.json({
@@ -261,6 +257,51 @@ export class AuthWebController {
       } else {
         next(new HttpError(400, 'PROFILE_UPDATE_FAILED', result.error || 'Falha ao atualizar perfil'));
       }
+
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  /**
+   * PUT /password - Endpoint para trocar a senha
+   *
+   * Exige a senha atual (step-up) e encerra todas as sessões do usuário: os
+   * tokens emitidos antes da troca deixam de valer.
+   */
+  changePassword = async(req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        next(new HttpError(400, 'VALIDATION_ERROR', 'Dados inválidos', errors.array()));
+        return;
+      }
+
+      const userId = req.user!.id;
+      const { currentPassword, newPassword } = req.body as {
+        currentPassword: string;
+        newPassword: string;
+      };
+
+      const result = await this.authService.changePassword(userId, currentPassword, newPassword);
+
+      securityAuditLogger.logPasswordChange(
+        userId,
+        req.ip || 'unknown',
+        result.success,
+        result.success ? undefined : result.error
+      );
+
+      if (result.success) {
+        res.json({
+          success: true,
+          message: 'Senha alterada com sucesso. Faça login novamente: as sessões anteriores foram encerradas.'
+        });
+        return;
+      }
+
+      const statusCode = result.code === 'CURRENT_PASSWORD_INVALID' ? 401 : 400;
+      next(new HttpError(statusCode, result.code || 'PASSWORD_CHANGE_FAILED', result.error || 'Falha ao alterar a senha'));
 
     } catch (error) {
       next(error);

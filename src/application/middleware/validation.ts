@@ -1,5 +1,5 @@
 import { body } from 'express-validator';
-import { validatePasswordStrength, isCommonPassword } from '../../shared/utils/passwordValidator.js';
+import { validatePasswordStrength, isCommonPassword, PASSWORD_MAX_LENGTH } from '../../shared/utils/passwordPolicy.js';
 import { hasAllowedUsernameChars, normalizeUsernameField, USERNAME_MIN_LENGTH, USERNAME_MAX_LENGTH, USERNAME_CHARS_MESSAGE } from '../../shared/utils/usernamePolicy.js';
 
 /**
@@ -57,7 +57,10 @@ export const validateRegister = [
 ];
 
 /**
- * Validações para atualização (campos opcionais)
+ * Validações para atualização de perfil (apenas username)
+ *
+ * A senha NÃO é atualizada por aqui: troca de senha exige a senha atual e tem
+ * caso de uso próprio (`PUT /password`).
  */
 export const validateUpdate = [
   body('user')
@@ -73,21 +76,51 @@ export const validateUpdate = [
       return true;
     }),
 
+  // Rejeita tentativa de trocar a senha por este endpoint: o caminho correto
+  // é PUT /password, que exige a senha atual.
   body('password')
     .optional()
+    .custom(() => {
+      throw new Error('Use PUT /password para alterar a senha.');
+    })
+];
+
+/**
+ * Validações para troca de senha (PUT /password)
+ *
+ * `currentPassword` é o step-up: um access token sozinho não troca a senha.
+ * Nenhuma das duas senhas é normalizada.
+ */
+export const validateChangePassword = [
+  body('currentPassword')
     .isString()
+    .withMessage('Senha atual é obrigatória.')
+    .bail()
     .notEmpty()
-    .withMessage('Senha não pode ser vazia.')
-    .custom((password: string) => {
-      const validation = validatePasswordStrength(password);
+    .withMessage('Senha atual é obrigatória.')
+    .bail()
+    .isLength({ max: PASSWORD_MAX_LENGTH })
+    .withMessage(`Senha atual não pode exceder ${PASSWORD_MAX_LENGTH} caracteres.`)
+    .bail(),
+
+  body('newPassword')
+    .isString()
+    .withMessage('Nova senha é obrigatória.')
+    .bail()
+    .notEmpty()
+    .withMessage('Nova senha é obrigatória.')
+    .bail()
+    .custom((newPassword: string, { req }) => {
+      const validation = validatePasswordStrength(newPassword);
       if (!validation.isValid) {
         throw new Error(validation.errors.join('; '));
       }
-      return true;
-    })
-    .custom((password: string) => {
-      if (isCommonPassword(password)) {
+      if (isCommonPassword(newPassword)) {
         throw new Error('Senha é muito comum. Escolha uma senha mais complexa.');
+      }
+      const currentPassword = (req.body as { currentPassword?: string }).currentPassword;
+      if (currentPassword && currentPassword === newPassword) {
+        throw new Error('A nova senha deve ser diferente da senha atual.');
       }
       return true;
     })

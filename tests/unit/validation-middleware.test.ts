@@ -1,6 +1,6 @@
 import { describe, it, expect } from '@jest/globals';
 import expressValidator from 'express-validator';
-import { validateLogin, validateRegister, validateUpdate, validateRefresh } from '../../src/application/middleware/validation.js';
+import { validateLogin, validateRegister, validateUpdate, validateRefresh, validateChangePassword } from '../../src/application/middleware/validation.js';
 
 const { validationResult } = expressValidator;
 
@@ -77,9 +77,62 @@ describe('validation middleware - update', () => {
     expect(result.isEmpty()).toBe(false);
   });
 
-  it('valida senha quando fornecida', async() => {
-    const result = await runChain(validateUpdate, { password: 'fraca' });
+  it('recusa troca de senha por este endpoint', async() => {
+    // A senha só muda em PUT /password, que exige a senha atual
+    const result = await runChain(validateUpdate, { password: 'NewStrongPass456!' });
     expect(result.isEmpty()).toBe(false);
+    expect(errorsOf(result)).toEqual(expect.arrayContaining([expect.stringContaining('PUT /password')]));
+  });
+});
+
+describe('validation middleware - troca de senha', () => {
+  const valid = { currentPassword: 'OldStrongPass123!', newPassword: 'NewStrongPass456!' };
+
+  it('aceita payload válido', async() => {
+    const result = await runChain(validateChangePassword, valid);
+    expect(result.isEmpty()).toBe(true);
+  });
+
+  it('exige a senha atual (step-up)', async() => {
+    const result = await runChain(validateChangePassword, { newPassword: valid.newPassword });
+    expect(result.isEmpty()).toBe(false);
+    expect(errorsOf(result)).toEqual(expect.arrayContaining([expect.stringContaining('atual é obrigatória')]));
+  });
+
+  it('exige a nova senha', async() => {
+    const result = await runChain(validateChangePassword, { currentPassword: valid.currentPassword });
+    expect(result.isEmpty()).toBe(false);
+  });
+
+  it('aplica a política de senha na nova senha', async() => {
+    const result = await runChain(validateChangePassword, { currentPassword: valid.currentPassword, newPassword: 'fraca' });
+    expect(result.isEmpty()).toBe(false);
+  });
+
+  it('recusa senha comum', async() => {
+    const result = await runChain(validateChangePassword, { currentPassword: valid.currentPassword, newPassword: 'Mudar@Senha123' });
+    expect(result.isEmpty()).toBe(false);
+    expect(errorsOf(result)).toEqual(expect.arrayContaining([expect.stringContaining('muito comum')]));
+  });
+
+  it('recusa nova senha igual à atual', async() => {
+    const result = await runChain(validateChangePassword, {
+      currentPassword: 'MesmaPass123!',
+      newPassword: 'MesmaPass123!'
+    });
+    expect(result.isEmpty()).toBe(false);
+    expect(errorsOf(result)).toEqual(expect.arrayContaining([expect.stringContaining('diferente da senha atual')]));
+  });
+
+  it('preserva as senhas sem normalizar', async() => {
+    const { result, body } = await runChainWithBody(validateChangePassword, {
+      currentPassword: '  OldPass123!  ',
+      newPassword: 'Nova Pass 123!'
+    });
+
+    expect(result.isEmpty()).toBe(true);
+    expect(body.currentPassword).toBe('  OldPass123!  ');
+    expect(body.newPassword).toBe('Nova Pass 123!');
   });
 });
 

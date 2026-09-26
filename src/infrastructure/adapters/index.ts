@@ -25,18 +25,14 @@ export class MongoUserAdapter implements UserRepository {
 
   async findById(id: string): Promise<User | null> {
     try {
-      const userData = await this.UserModel.findById(id);
+      // O histórico de senhas tem select:false no schema; aqui ele é necessário
+      // para a troca de senha (checagem de reuso).
+      const userData = await this.UserModel.findById(id).select('+passwordHistory');
       if (!userData) {
         return null;
       }
 
-      return new User(
-        userData._id.toString(),
-        userData.user,
-        userData.password,
-        userData.createdAt,
-        userData.updatedAt
-      );
+      return this.toDomain(userData);
     } catch (error) {
       throw new Error(`Erro ao buscar usuário por ID: ${(error as Error).message}`);
     }
@@ -46,21 +42,39 @@ export class MongoUserAdapter implements UserRepository {
     try {
       // Consulta sempre pela forma canônica (minúsculas), igual ao que o
       // schema grava (lowercase: true). Sem isso, `Alice` não encontraria `alice`.
+      // O login não precisa do histórico de senhas: não é carregado aqui.
       const userData = await this.UserModel.findOne({ user: normalizeUsername(username) });
       if (!userData) {
         return null;
       }
 
-      return new User(
-        userData._id.toString(),
-        userData.user,
-        userData.password,
-        userData.createdAt,
-        userData.updatedAt
-      );
+      return this.toDomain(userData);
     } catch (error) {
       throw new Error(`Erro ao buscar usuário por username: ${(error as Error).message}`);
     }
+  }
+
+  /**
+   * Mapeia documento do Mongo para a entidade de domínio.
+   */
+  private toDomain(userData: {
+    _id: { toString(): string };
+    user: string;
+    password: string;
+    passwordHistory?: string[];
+    passwordChangedAt?: Date;
+    createdAt: Date;
+    updatedAt: Date;
+  }): User {
+    return new User(
+      userData._id.toString(),
+      userData.user,
+      userData.password,
+      userData.createdAt,
+      userData.updatedAt,
+      userData.passwordHistory ?? [],
+      userData.passwordChangedAt ?? userData.createdAt
+    );
   }
 
   async save(user: User): Promise<User> {
@@ -72,38 +86,30 @@ export class MongoUserAdapter implements UserRepository {
           {
             user: user.username,
             password: user.hashedPassword,
+            passwordHistory: user.passwordHistory,
+            passwordChangedAt: user.passwordChangedAt,
             updatedAt: user.updatedAt
           },
           { new: true }
-        );
+        ).select('+passwordHistory');
 
         if (!userData) {
           throw new Error('Usuário não encontrado para atualização');
         }
 
-        return new User(
-          userData._id.toString(),
-          userData.user,
-          userData.password,
-          userData.createdAt,
-          userData.updatedAt
-        );
+        return this.toDomain(userData);
       } else {
         // Create
         const userData = await this.UserModel.create({
           user: user.username,
           password: user.hashedPassword,
+          passwordHistory: [],
+          passwordChangedAt: new Date(),
           createdAt: user.createdAt,
           updatedAt: user.updatedAt
         });
 
-        return new User(
-          userData._id.toString(),
-          userData.user,
-          userData.password,
-          userData.createdAt,
-          userData.updatedAt
-        );
+        return this.toDomain(userData);
       }
     } catch (error) {
       throw new Error(`Erro ao salvar usuário: ${(error as Error).message}`);

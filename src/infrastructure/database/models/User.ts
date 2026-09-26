@@ -9,7 +9,6 @@ export interface IUser {
   user: string;
   password: string;
   passwordChangedAt: Date;
-  passwordExpired: boolean;
   passwordHistory: string[];
   createdAt: Date;
   updatedAt: Date;
@@ -32,24 +31,22 @@ const UserSchema = new Schema<IUser>(
     password: {
       type: String,
       required: true,
-      minlength: [12, 'Senha deve ter pelo menos 12 caracteres (política de segurança)']
+      minlength: [12, 'Senha deve ter pelo menos 12 caracteres (política de segurança)'],
+      // Limite do bcrypt: acima de 72 bytes o restante seria ignorado pelo hash
+      maxlength: [72, 'Senha não pode exceder 72 caracteres (limite do bcrypt)']
     },
     // Rastreamento de alteração de senha
     passwordChangedAt: {
       type: Date,
       default: Date.now
     },
-    // Flag para indicar expiração de senha
-    passwordExpired: {
-      type: Boolean,
-      default: false
-    },
-    // Histórico de senhas anteriores para prevenir reutilização
-    // (em produção, considere usar um serviço separado)
+    // Histórico de senhas anteriores para prevenir reutilização.
+    // Mantido no próprio documento (limitado pela política) para não precisar
+    // de uma segunda coleção; nunca é devolvido em respostas HTTP.
     passwordHistory: {
       type: [String],
       default: [],
-      select: false // Não retorna por padrão
+      select: false // Só é carregado quando a operação realmente precisa
     }
   },
   {

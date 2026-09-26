@@ -240,8 +240,73 @@ describe('AuthWebController - contrato HTTP', () => {
 
     await buildController(service).updateProfile(req, res, next);
 
-    expect(service.updateUserProfile).toHaveBeenCalledWith('u-1', 'alice2', undefined);
+    expect(service.updateUserProfile).toHaveBeenCalledWith('u-1', 'alice2');
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+  });
+
+  it('não encaminha senha pela atualização de perfil', async() => {
+    const service = {
+      updateUserProfile: jest.fn().mockResolvedValue({ success: true, user: { id: 'u-1', username: 'alice' } })
+    };
+    req.user = { id: 'u-1', username: 'alice' };
+    req.body = { user: 'alice', password: 'NovaPass123!' };
+
+    await buildController(service).updateProfile(req, res, next);
+
+    // A senha é ignorada: só PUT /password troca a senha, e exige a atual
+    expect(service.updateUserProfile).toHaveBeenCalledWith('u-1', 'alice');
+  });
+
+  it('troca a senha com sucesso e avisa sobre as sessões encerradas', async() => {
+    const service = {
+      changePassword: jest.fn().mockResolvedValue({ success: true })
+    };
+    req.user = { id: 'u-1', username: 'alice' };
+    req.body = { currentPassword: 'OldPass123!', newPassword: 'NovaPass123!' };
+
+    await buildController(service).changePassword(req, res, next);
+
+    expect(service.changePassword).toHaveBeenCalledWith('u-1', 'OldPass123!', 'NovaPass123!');
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      success: true,
+      message: expect.stringContaining('sessões anteriores foram encerradas')
+    }));
+  });
+
+  it('responde 401 quando a senha atual está errada', async() => {
+    const service = {
+      changePassword: jest.fn().mockResolvedValue({
+        success: false,
+        code: 'CURRENT_PASSWORD_INVALID',
+        error: 'Senha atual incorreta'
+      })
+    };
+    req.user = { id: 'u-1', username: 'alice' };
+    req.body = { currentPassword: 'Errada123!', newPassword: 'NovaPass123!' };
+
+    await buildController(service).changePassword(req, res, next);
+
+    const err = next.mock.calls[0][0];
+    expect(err.statusCode).toBe(401);
+    expect(err.code).toBe('CURRENT_PASSWORD_INVALID');
+  });
+
+  it('responde 400 quando a nova senha é fraca ou reusada', async() => {
+    const service = {
+      changePassword: jest.fn().mockResolvedValue({
+        success: false,
+        code: 'PASSWORD_REUSED',
+        error: 'A nova senha não pode ser uma senha já utilizada'
+      })
+    };
+    req.user = { id: 'u-1', username: 'alice' };
+    req.body = { currentPassword: 'OldPass123!', newPassword: 'OldPass123!' };
+
+    await buildController(service).changePassword(req, res, next);
+
+    const err = next.mock.calls[0][0];
+    expect(err.statusCode).toBe(400);
+    expect(err.code).toBe('PASSWORD_REUSED');
   });
 
   it('deleta o perfil com sucesso', async() => {

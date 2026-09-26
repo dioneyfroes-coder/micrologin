@@ -90,6 +90,21 @@ export class SecurityAuditLogger {
   }
 
   /**
+   * Registra tentativa de troca de senha.
+   * A troca de senha é um evento de segurança relevante: é o mecanismo de
+   * resposta a suspeita de comprometimento e o que encerra as sessões.
+   */
+  logPasswordChange(userId: string, ip: string, success = true, reason?: string): void {
+    this.logSecurityEvent('password_change', {
+      userId,
+      ip,
+      success,
+      ...(reason ? { reason } : {}),
+      timestamp: Date.now()
+    }, success ? 'info' : 'warning');
+  }
+
+  /**
    * Registra bloqueio de IP
    */
   logIPBlock(ip: string, reason: string, duration: number): void {

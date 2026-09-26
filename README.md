@@ -11,7 +11,7 @@ Projeto de portfólio em Node.js para demonstrar uma API de autenticação com a
 - JWT com access token, refresh token, revogação pontual e revogação por usuário (blacklist no Redis)
 - fluxo HTTP completo de renovação/revogação: `POST /refresh` e `POST /logout`
 - política única de username: 3 a 30 caracteres, apenas letras, números, `_` e `-` (fonte única em `shared/utils/usernamePolicy.ts`)
-- validação de senha com política forte (12+ caracteres, complexidade, lista de senhas comuns)
+- política de senha forte em fonte única (12+ caracteres, máximo de 72 bytes = limite do bcrypt, composição, lista de senhas comuns) e troca de senha com step-up, histórico de 5 hashes e encerramento das sessões
 - rate limiting por IP e por login, com backend Redis e fallback em memória quando o Redis está indisponível
 - monitoramento auxiliar de segurança com limites de memória (auditoria e anomalias sem crescimento ilimitado)
 - health check e métricas Prometheus (endpoint de métricas protegível via `METRICS_TOKEN`)
@@ -61,7 +61,8 @@ As rotas são montadas na raiz da aplicação:
 | POST   | `/refresh`     | —                      | Renova o par de tokens via refresh token |
 | POST   | `/logout`      | opcional (Bearer)      | Revoga access token, refresh token e tokens do usuário |
 | GET    | `/profile`     | Bearer                 | Obtém perfil do usuário                   |
-| PUT    | `/update`      | Bearer                 | Atualiza username/senha                   |
+| PUT    | `/update`      | Bearer                 | Atualiza apenas o username               |
+| PUT    | `/password`    | Bearer                 | Troca a senha (exige a atual) e encerra as sessões |
 | DELETE | `/delete`      | Bearer                 | Remove o usuário                          |
 | GET    | `/health`      | —                      | Health check                              |
 | GET    | `/metrics`     | `METRICS_TOKEN` (opcional) | Métricas Prometheus                   |
@@ -90,7 +91,30 @@ Erros do próprio Redis (conexão perdida, `isReady: false`) seguem a mesma pol�
 - **Identidade do token:** cada JWT recebe um `jti` próprio (inclusive access e refresh, que não compartilham identificador). A blacklist é chaveada por `token_blacklist:jti:<jti>` — o token completo nunca é usado como chave de armazenamento. Tokens legados sem `jti` caem para `token_blacklist:sha256:<hash>` e também são consultados na chave antiga, durante a transição.
 - **Validade da entrada:** o TTL da blacklist é o menor entre o solicitado e o tempo de vida restante do token, ou seja, a entrada morre com o token.
 - **Rotação de refresh com consumo único:** `POST /refresh` grava o marcador `rotated` com `SET NX` **antes** de emitir o novo par. Duas requisições simultâneas com o mesmo refresh token resultam em uma `200` e uma `401` (`REFRESH_TOKEN_REUSED`); se o token já havia sido revogado por logout, a resposta é `REFRESH_TOKEN_INVALID`. Um refresh token vazado e reutilizado é, portanto, sempre rejeitado.
-- **Revogação por usuário:** `logout` também registra `user_tokens_revoked:<userId>`, que invalida todos os tokens emitidos antes do logout (inclusive os que nunca passaram pela blacklist).
+- **Revogação por usuário (versão de sessão):** o token carrega a claim `sv` e o Redis guarda `user_session_version:<userId>`, incrementado a cada revogação em massa. Token com versão anterior à atual é rejeitado. Contador, não relógio: comparação por timestamp rejeitaria tokens emitidos no mesmo segundo da revogação — que é justamente o caso de quem acabou de trocar a senha. Tokens emitidos antes dessa versão (sem `sv`) ainda usam a regra por timestamp em `user_tokens_revoked:<userId>`, que expira sozinha.
+
+## Política de senha e troca de senha
+
+A política está em um único objeto (`PASSWORD_POLICY`, em `src/shared/utils/passwordPolicy.ts`):
+
+| Regra | Valor | Por quê |
+| --- | --- | --- |
+| Mínimo | 12 caracteres | acima do mínimo de 8 da NIST, já que há exigência de composição |
+| Máximo | **72 bytes** | bcrypt ignora o que passa de 72 bytes — aceitar mais prometeria uma proteção que o hash não entrega |
+| Composição | maiúscula, minúscula, número, símbolo | camada extra à checagem de senha comum |
+| Senhas comuns | 27 entradas, sem diferenciar caixa | cobre o caso offline, sem rede no caminho de registro |
+| Expiração | nunca | rotação forçada empurra para padrões piores (NIST SP 800-63B) |
+| Histórico | 5 hashes (FIFO) | impede reuso sem guardar um arquivo de credenciais |
+
+Senha é valor opaco: nenhum limite, escape ou normalização é aplicado ao valor que vai para o bcrypt.
+
+`PUT /password` exige a **senha atual** (step-up) — um access token vazado não basta para tomar a conta permanentemente. Ao trocar:
+
+1. a senha anterior vai para o histórico e `passwordChangedAt` é atualizado;
+2. reuso da senha atual ou de qualquer uma das últimas 5 é recusado (`PASSWORD_REUSED`);
+3. **todas as sessões são encerradas**: os tokens emitidos antes da troca deixam de valer e é preciso fazer login de novo.
+
+`PUT /update` atualiza somente o username; enviar `password` nesse endpoint é recusado com `400`.
 
 Exemplo do `/observability`:
 

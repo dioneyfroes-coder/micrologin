@@ -63,6 +63,16 @@ const postJson = async(
 const getJson = async(path: string, headers: Record<string, string> = {}): Promise<Response> =>
   fetch(`${BASE_URL}${path}`, { headers });
 
+const putJson = async(
+  path: string,
+  body: unknown,
+  headers: Record<string, string> = {}
+): Promise<Response> => fetch(`${BASE_URL}${path}`, {
+  method: 'PUT',
+  headers: { 'Content-Type': 'application/json', ...headers },
+  body: JSON.stringify(body)
+});
+
 const bearer = (token: string): Record<string, string> => ({ Authorization: `Bearer ${token}` });
 
 describe('E2E HTTP - fluxo completo contra infra real (compose)', () => {
@@ -249,6 +259,85 @@ describe('E2E HTTP - fluxo completo contra infra real (compose)', () => {
     const res = await getJson('/profile');
     expect(res.status).toBe(401);
   });
+
+  it('troca de senha: exige a atual, recusa reuso e encerra as sessões', async() => {
+    const unique = `pwd_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const oldPassword = 'OldStrongPass123!';
+    const newPassword = 'NewStrongPass456!';
+
+    await postJson('/register', { user: unique, password: oldPassword });
+    const loginRes = await postJson('/login', { user: unique, password: oldPassword });
+    expect(loginRes.status).toBe(200);
+    const loginBody = await loginRes.json() as {
+      data?: { accessToken?: string; refreshToken?: string };
+    };
+    const accessToken = loginBody.data?.accessToken as string;
+    const refreshToken = loginBody.data?.refreshToken as string;
+
+    // 1. Senha atual errada é recusada (401) e nada muda
+    const wrongCurrent = await putJson('/password',
+      { currentPassword: 'Errada123!', newPassword }, bearer(accessToken));
+    expect(wrongCurrent.status).toBe(401);
+    expect((await postJson('/login', { user: unique, password: oldPassword })).status).toBe(200);
+
+    // 2. Reutilizar a senha atual é recusado
+    const samePassword = await putJson('/password',
+      { currentPassword: oldPassword, newPassword: oldPassword }, bearer(accessToken));
+    expect(samePassword.status).toBe(400);
+
+    // 3. Senha fraca é recusada
+    const weak = await putJson('/password',
+      { currentPassword: oldPassword, newPassword: 'fraca' }, bearer(accessToken));
+    expect(weak.status).toBe(400);
+
+    // 4. Troca válida
+    const changeRes = await putJson('/password',
+      { currentPassword: oldPassword, newPassword }, bearer(accessToken));
+    expect(changeRes.status).toBe(200);
+
+    // 5. As sessões existentes foram encerradas
+    expect((await getJson('/profile', bearer(accessToken))).status).toBe(401);
+    expect((await postJson('/refresh', { refreshToken })).status).toBe(401);
+
+    // 6. A senha antiga não autentica mais; a nova autentica
+    expect((await postJson('/login', { user: unique, password: oldPassword })).status).toBe(401);
+    const newLogin = await postJson('/login', { user: unique, password: newPassword });
+    expect(newLogin.status).toBe(200);
+
+    // 7. A senha antiga não pode ser "reutilizada" (histórico)
+    const newLoginBody = await newLogin.json() as { data?: { accessToken?: string } };
+    const reuseOld = await putJson('/password',
+      { currentPassword: newPassword, newPassword: oldPassword }, bearer(newLoginBody.data?.accessToken as string));
+    expect(reuseOld.status).toBe(400);
+    expect((await reuseOld.json() as { code?: string }).code).toBe('PASSWORD_REUSED');
+
+    // 8. A senha antiga continua barrada
+    expect((await postJson('/login', { user: unique, password: oldPassword })).status).toBe(401);
+  }, 40000);
+
+  it('recusa troca de senha sem autenticação e por /update', async() => {
+    const unique = `pwd2_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const oldPassword = 'OldStrongPass123!';
+
+    await postJson('/register', { user: unique, password: oldPassword });
+    const loginRes = await postJson('/login', { user: unique, password: oldPassword });
+    const loginBody = await loginRes.json() as { data?: { accessToken?: string } };
+
+    // Sem token
+    const anonymous = await putJson('/password', {
+      currentPassword: oldPassword,
+      newPassword: 'NewStrongPass456!'
+    });
+    expect(anonymous.status).toBe(401);
+
+    // /update não troca senha
+    const viaUpdate = await putJson('/update', { password: 'NewStrongPass456!' },
+      bearer(loginBody.data?.accessToken as string));
+    expect(viaUpdate.status).toBe(400);
+
+    // A senha original continua valendo
+    expect((await postJson('/login', { user: unique, password: oldPassword })).status).toBe(200);
+  }, 40000);
 
   it('refresh concorrente: uma requisição rotaciona, a outra é rejeitada', async() => {
     const unique = `race_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;

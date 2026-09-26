@@ -32,7 +32,7 @@ describe('User - entidade de domínio', () => {
 
   it('atualiza o username respeitando a política', () => {
     const user = new User('u-1', 'alice', HASH, new Date(2024, 0, 1), new Date(2024, 0, 1));
-    user.updateData('alice2');
+    user.updateUsername('alice2');
     expect(user.username).toBe('alice2');
     expect(user.updatedAt.getTime()).toBeGreaterThanOrEqual(new Date(2024, 0, 1).getTime());
   });
@@ -41,26 +41,54 @@ describe('User - entidade de domínio', () => {
     expect(new User(null, '  Alice  ', HASH).username).toBe('alice');
 
     const user = new User('u-1', 'alice', HASH);
-    user.updateData('  BOB_2026  ');
+    user.updateUsername('  BOB_2026  ');
     expect(user.username).toBe('bob_2026');
   });
 
   it('trata mudança apenas de caixa como o mesmo username', () => {
     const user = new User('u-1', 'alice', HASH);
-    user.updateData('ALICE');
+    user.updateUsername('ALICE');
     expect(user.username).toBe('alice');
   });
 
   it('lança DomainError ao atualizar com username inválido', () => {
     const user = new User('u-1', 'alice', HASH);
-    expect(() => user.updateData('bad name')).toThrow(DomainError);
-    expect(() => user.updateData('bad name')).toThrow('Username inválido');
+    expect(() => user.updateUsername('bad name')).toThrow(DomainError);
+    expect(() => user.updateUsername('bad name')).toThrow('Username inválido');
   });
 
-  it('atualiza o hash da senha', () => {
+  it('troca de senha guardando o hash anterior no histórico', () => {
     const user = new User('u-1', 'alice', HASH);
-    user.updateData(undefined, 'new-hash');
+    const before = user.passwordChangedAt;
+
+    user.changePassword('new-hash');
+
     expect(user.hashedPassword).toBe('new-hash');
+    expect(user.passwordHistory).toEqual([HASH]);
+    expect(user.passwordChangedAt.getTime()).toBeGreaterThanOrEqual(before.getTime());
+  });
+
+  it('limita o histórico às últimas senhas (FIFO)', () => {
+    const user = new User('u-1', 'alice', 'hash-5', new Date(), new Date(), ['hash-0', 'hash-1', 'hash-2', 'hash-3', 'hash-4']);
+
+    user.changePassword('hash-6');
+
+    // Entra o hash atual e sai o mais antigo
+    expect(user.passwordHistory).toEqual(['hash-1', 'hash-2', 'hash-3', 'hash-4', 'hash-5']);
+    expect(user.passwordHistory).toHaveLength(5);
+  });
+
+  it('recusa troca de senha vazia', () => {
+    const user = new User('u-1', 'alice', HASH);
+    expect(() => user.changePassword('')).toThrow(DomainError);
+    expect(user.hashedPassword).toBe(HASH);
+  });
+
+  it('não expõe histórico de senhas no objeto seguro', () => {
+    const user = new User('u-1', 'alice', HASH, new Date(), new Date(), ['hash-antigo']);
+
+    expect(Object.keys(user.toSafeObject())).not.toContain('passwordHistory');
+    expect(user.toSafeObject()).not.toHaveProperty('hashedPassword');
   });
 
   it('expõe objeto seguro sem a senha', () => {

@@ -1024,7 +1024,12 @@ Promise.all([
 
 ## 2.3 Session version / token version
 
-**Status: superado pelo que já existe.** O projeto já invalida por usuário via `user_tokens_revoked:<userId>` (timestamp), e a rotação agora garante consumo único por refresh token. A versão de sessão continua sendo a evolução natural para eliminar a necessidade de entradas individuais, mas não é necessária para o escopo atual.
+**Status: concluído (na Fase 3, ver 3.3).** O token carrega `sv` (versão de
+sessão) e o Redis guarda `user_session_version:<userId>`, incrementado a cada
+revogação em massa. Substituiu a comparação por `iat` contra timestamp, que
+produzia tokens mortos quando o login acontecia no mesmo segundo da revogação.
+O timestamp (`user_tokens_revoked:<userId>`) foi mantido apenas para tokens
+antigos, que não têm a claim.
 
 ---
 
@@ -1032,48 +1037,64 @@ Promise.all([
 
 ## 3.1 Escolher uma política real de senha
 
-Definir de forma objetiva:
+**Status: concluído.** A política vive em um único objeto, `PASSWORD_POLICY`
+(`src/shared/utils/passwordPolicy.ts`), lido pelo middleware HTTP, pelo domínio e
+pelos testes. Nenhuma camada redefine comprimento ou composição.
 
-- tamanho mínimo;
-- máximo;
-- composição;
-- senhas comuns;
-- histórico;
-- expiração, caso realmente necessária.
+| Decisão | Valor | Motivo |
+| --- | --- | --- |
+| Mínimo | 12 caracteres | acima do mínimo de 8 da NIST, já que há composição |
+| **Máximo** | **72 bytes** | bcrypt ignora o que passa de 72 bytes: aceitar mais prometeria uma proteção que o hash não entrega (verificado: duas senhas com o mesmo prefixo de 72 bytes comparam como iguais) |
+| Composição | maiúscula, minúscula, número, símbolo | camada extra à checagem de senha comum; a NIST desaconselha composição, mas aqui o comprimento é exigido junto |
+| Senhas comuns | 27 entradas, comparação sem caixa e por substring | cobre o caso offline sem colocar rede no caminho de registro |
+| **Expiração** | **nunca** | rotação forçada empurra o usuário para padrões piores (NIST SP 800-63B); a troca é evento |
+| Histórico | 5 hashes (FIFO) | impede reuso sem transformar o documento em arquivo de credenciais |
+
+Senha continua sendo valor opaco: limite é aplicado sem tocar no valor que vai
+para o bcrypt (e o limite é contado em **bytes**, para que caractere multibyte não
+"pague" por um limite que o algoritmo não honra).
 
 ## 3.2 Integrar histórico
 
-Na alteração:
+**Status: concluído.** `passwordHistory` e `passwordChangedAt` existiam no schema
+Mongo e em lugar nenhum do código — estado morto. Agora:
 
-```text
-old hash → passwordHistory
-new hash → password
-passwordChangedAt → now
-```
-
-Limitar histórico, por exemplo, aos últimos N hashes.
+- a entidade `User` carrega `passwordHistory` e tem `changePassword(newHash)`,
+  que empurra o hash anterior (limitado a 5, FIFO) e marca a data da troca;
+- `User.updateData(username, hash)` virou `User.updateUsername(username)`: **a
+  senha não muda mais pela atualização de perfil**;
+- novo caso de uso `AuthService.changePassword(userId, current, next)`, que
+  recusa reutilização da senha atual e de qualquer uma das últimas 5;
+- o adapter carrega o histórico com `select('+passwordHistory')` (o campo é
+  `select: false` no schema) e o persiste no `save`;
+- o hash nunca aparece em `toSafeObject`.
 
 ## 3.3 Invalidar sessões após troca de senha
 
-Trocar senha deve decidir explicitamente se:
+**Status: concluído — decisão: encerrar todas as sessões.**
 
-```text
-sessões antigas continuam
-```
+Trocar a senha chama `revokeUserTokens(userId)`: qualquer access ou refresh token
+emitido antes da troca deixa de valer. Um token vazado não sobrevive à resposta
+de quem suspected comprometimento, e o usuário precisa apenas fazer login de
+novo.
 
-ou
+O caminho HTTP é `PUT /password`, que **exige a senha atual** (step-up): um access
+token vazado não basta para tomar a conta de forma permanente. Tentar trocar a
+senha por `PUT /update` é recusado com 400.
 
-```text
-todas as sessões são encerradas
-```
-
-Para um auth service próprio, documentar e testar essa decisão.
+**Bug encontrado pelos testes E2E e corrigido:** a revogação por usuário usava
+`iat` (segundos) contra um timestamp em milissegundos. Um login feito no mesmo
+segundo da revogação — exatamente o caso de quem acabou de trocar a senha — recebia
+um token já morto. Substituído por **versão de sessão** (Fase 2.3): a claim `sv`
+no token e um contador `user_session_version:<userId>` no Redis, incrementado a
+cada revogação em massa. Sem dependência de relógio. Tokens antigos (sem `sv`)
+continuam usando a regra por timestamp, que expira sozinha.
 
 ## 3.4 Remover `passwordExpired` se não for usado
 
-Não deixar estado morto no modelo.
-
----
+**Status: concluído.** `passwordExpired` não era lido nem escrito em lugar
+nenhum; a decisão de não expirar senha agora está explícita em
+`PASSWORD_POLICY.expires = false` e documentada acima.
 
 # Fase 4 — limpar a camada HTTP
 

@@ -25,6 +25,8 @@ interface JwtIssuedPayload {
   iat?: number;
   exp?: number;
   jti?: string;
+  /** Versão de sessão do usuário no momento da emissão. */
+  sv?: number;
 }
 
 /**
@@ -35,6 +37,7 @@ interface JwtIssuedPayload {
 const BLACKLIST_PREFIX = 'token_blacklist:';
 const BLACKLIST_ROTATED_VALUE = 'rotated';
 const BLACKLIST_REVOKED_VALUE = 'revoked';
+const USER_SESSION_VERSION_PREFIX = 'user_session_version:';
 
 /**
  * Política de revogação quando o armazenamento (Redis) não está disponível.
@@ -207,6 +210,42 @@ export class JWTTokenService implements TokenService {
   }
 
   /**
+   * Versão de sessão atual do usuário (0 quando nunca houve revogação em massa).
+   *
+   * A versão é um contador, não um relógio: comparação por timestamp tem
+   * granularidade de segundo e rejeitaria tokens emitidos no mesmo segundo da
+   * revogação - o que acontece sempre que o usuário troca a senha e faz login
+   * de imediato. O token morreria no instante em que nasceu.
+   */
+  private async currentSessionVersion(userId: string): Promise<number | null> {
+    if (!this.redisClient) {
+      return null;
+    }
+
+    try {
+      const stored = await this.redisClient.get(`${USER_SESSION_VERSION_PREFIX}${userId}`);
+      if (stored === null) {
+        return 0;
+      }
+      const parsed = parseInt(stored as string, 10);
+      return Number.isNaN(parsed) ? 0 : parsed;
+    } catch (error) {
+      this.handleRevocationError('ler versão de sessão', error);
+      return null;
+    }
+  }
+
+  /**
+   * Carrega a versão de sessão para embutir no token. Devolve `null` quando não
+   * há como lê-la: o token sai sem a claim e a verificação cai para a comparação
+   * por timestamp, em vez de nascer com uma versão falsificada.
+   */
+  private async sessionVersionClaim(userId: string): Promise<{ sv?: number }> {
+    const version = await this.currentSessionVersion(userId);
+    return version === null ? {} : { sv: version };
+  }
+
+  /**
    * Gera um par de tokens (access + refresh)
    * @param payload - Dados do usuário (id, username, etc)
    * @param options - Opções adicionais
@@ -227,11 +266,16 @@ export class JWTTokenService implements TokenService {
         subject: payload.id
       };
 
+      // A claim `sv` amarra o token à versão de sessão do usuário: logout em
+      // massa (ou troca de senha) incrementa a versão e derruba todos os
+      // tokens emitidos antes, sem depender da precisão do relógio.
+      const sessionClaim = await this.sessionVersionClaim(payload.id);
+
       // ✅ Access Token (curta vida)
       // `jti` único por token: é a chave de revogação e o que torna dois
       // tokens emitidos no mesmo segundo (iat em segundos) distintos.
       const accessToken = jwt.sign(
-        { ...payload, token_type: 'access' },
+        { ...payload, ...sessionClaim, token_type: 'access' },
         this.secret,
         {
           ...signOptions,
@@ -243,7 +287,7 @@ export class JWTTokenService implements TokenService {
       // ✅ Refresh Token (longa vida) - jti PRÓPRIO, para revogar apenas o
       // refresh sem derrubar o access emitido na mesma operação.
       const refreshToken = jwt.sign(
-        { id: payload.id, username: payload.username, token_type: 'refresh' },
+        { id: payload.id, username: payload.username, ...sessionClaim, token_type: 'refresh' },
         this.refreshSecret,
         {
           ...signOptions,
@@ -262,6 +306,11 @@ export class JWTTokenService implements TokenService {
         type: 'Bearer'
       };
     } catch (error) {
+      // REVOCATION_UNAVAILABLE precisa chegar ao error handler com o código
+      // intacto: ele decide entre 503 e 400.
+      if ((error as Error & { code?: string }).code === REVOCATION_UNAVAILABLE_CODE) {
+        throw error;
+      }
       throw new Error(`Erro ao gerar tokens: ${(error as Error).message}`);
     }
   }
@@ -275,7 +324,8 @@ export class JWTTokenService implements TokenService {
    */
   async generateAccessToken(payload: { id: string; username: string }, expiresIn = '15m'): Promise<string> {
     try {
-      return jwt.sign({ ...payload, token_type: 'access' }, this.secret, {
+      const sessionClaim = await this.sessionVersionClaim(payload.id);
+      return jwt.sign({ ...payload, ...sessionClaim, token_type: 'access' }, this.secret, {
         expiresIn: expiresIn as SignOptions['expiresIn'],
         issuer: this.issuer,
         audience: this.audience,
@@ -283,6 +333,9 @@ export class JWTTokenService implements TokenService {
         jwtid: randomUUID()
       });
     } catch (error) {
+      if ((error as Error & { code?: string }).code === REVOCATION_UNAVAILABLE_CODE) {
+        throw error;
+      }
       throw new Error(`Erro ao gerar access token: ${(error as Error).message}`);
     }
   }
@@ -312,7 +365,7 @@ export class JWTTokenService implements TokenService {
       }) as JwtIssuedPayload;
 
       // Verificar revogação em nível de usuário (ex: logout/logout-all)
-      if (await this.isUserRevoked(payload.id, payload.iat)) {
+      if (await this.isUserRevoked(payload)) {
         const tokenError = new Error('Token foi revogado');
         (tokenError as Error & { code?: string }).code = 'TOKEN_INVALID';
         throw tokenError;
@@ -356,7 +409,7 @@ export class JWTTokenService implements TokenService {
       }) as JwtIssuedPayload;
 
       // Verificar revogação em nível de usuário (ex: logout/logout-all)
-      if (await this.isUserRevoked(payload.id, payload.iat)) {
+      if (await this.isUserRevoked(payload)) {
         const tokenError = new Error('Refresh token foi revogado');
         (tokenError as Error & { code?: string }).code = 'REFRESH_TOKEN_INVALID';
         throw tokenError;
@@ -379,22 +432,41 @@ export class JWTTokenService implements TokenService {
   }
 
   /**
-   * Verifica se o usuário teve todos os tokens revogados após a emissão do token
-   * @param userId - ID do usuário
-   * @param issuedAtSec - Timestamp de emissão do token (iat, em segundos)
-   * @returns True se o token foi emitido antes da revogação
+   * Verifica se o token foi invalidado em nível de usuário
+   *
+   * Duas regras, na ordem de preferência:
+   *
+   * 1. **Versão de sessão** (`sv`): comparo contra o contador atual. Sem
+   *    problema de precisão de relógio, e é o caminho dos tokens emitidos hoje.
+   * 2. **Timestamp** (`user_tokens_revoked`), para tokens emitidos antes da
+   *    existência da claim. Grain de segundo: Conservative por natureza, porque
+   *    o token perde o mesmo segundo em que a revogação aconteceu.
+   *
+   * @param payload - Payload decodificado do token
+   * @returns true se o token foi invalidado
    */
-  async isUserRevoked(userId: string, issuedAtSec?: number): Promise<boolean> {
-    if (!this.redisClient || !userId || !issuedAtSec) {
+  async isUserRevoked(payload: JwtIssuedPayload): Promise<boolean> {
+    const userId = payload.id;
+    if (!this.redisClient || !userId) {
       return false;
     }
 
     try {
+      if (typeof payload.sv === 'number') {
+        const current = await this.redisClient.get(`${USER_SESSION_VERSION_PREFIX}${userId}`);
+        const version = current === null ? 0 : parseInt(current as string, 10);
+        return payload.sv < (Number.isNaN(version) ? 0 : version);
+      }
+
+      if (!payload.iat) {
+        return false;
+      }
+
       const revokedAt = await this.redisClient.get(`user_tokens_revoked:${userId}`);
       if (!revokedAt) {
         return false;
       }
-      return issuedAtSec * 1000 < parseInt(revokedAt as string, 10);
+      return payload.iat * 1000 < parseInt(revokedAt as string, 10);
     } catch (error) {
       return this.handleRevocationError('verificar revogação do usuário', error);
     }
@@ -506,6 +578,10 @@ export class JWTTokenService implements TokenService {
 
   /**
    * Revoga todos os tokens de um usuário
+   *
+   * Incrementa a versão de sessão (caminho usado pelos tokens atuais) e
+   * mantém o timestamp (para tokens antigos, sem a claim `sv`).
+   *
    * @param userId - ID do usuário
    * @param expiresIn - Tempo de validade da revogação (ms)
    * @returns Sucesso da operação
@@ -519,9 +595,12 @@ export class JWTTokenService implements TokenService {
     }
 
     try {
-      const key = `user_tokens_revoked:${userId}`;
-      const ttlSeconds = Math.ceil(expiresIn / 1000);
-      await this.redisClient.setEx(key, ttlSeconds, Date.now().toString());
+      const ttlSeconds = this.toTtlSeconds(expiresIn);
+      const versionKey = `${USER_SESSION_VERSION_PREFIX}${userId}`;
+
+      await this.redisClient.incr(versionKey);
+      await this.redisClient.expire(versionKey, ttlSeconds);
+      await this.redisClient.setEx(`user_tokens_revoked:${userId}`, ttlSeconds, Date.now().toString());
       return true;
     } catch (error) {
       return this.handleRevocationError('revogar tokens do usuário', error);

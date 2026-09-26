@@ -18,6 +18,12 @@ const makeRedisClient = () => {
       store.set(key, value);
       return 'OK';
     }),
+    incr: jest.fn(async(key: string) => {
+      const next = parseInt(store.get(key) ?? '0', 10) + 1;
+      store.set(key, String(next));
+      return next;
+    }),
+    expire: jest.fn(async() => true),
     get: jest.fn(async(key: string) => store.get(key) ?? null)
   };
 };
@@ -27,6 +33,12 @@ const makeBrokenRedisClient = () => ({
     throw new Error('connection lost');
   }),
   set: jest.fn(async() => {
+    throw new Error('connection lost');
+  }),
+  incr: jest.fn(async() => {
+    throw new Error('connection lost');
+  }),
+  expire: jest.fn(async() => {
     throw new Error('connection lost');
   }),
   get: jest.fn(async() => {
@@ -394,8 +406,19 @@ describe('JWTTokenService - política de revogação (fail-closed vs fail-open)'
     });
   });
 
-  it('fail-closed: nega quando o armazenamento responde com erro', async() => {
+  it('fail-closed: nega emissão quando o armazenamento responde com erro', async() => {
     const service = failClosed(makeBrokenRedisClient());
+
+    // Sem controle de revogação não há como amarrar o token a uma versão de
+    // sessão: emitir aqui devolveria um token que a própria API rejeitaria em
+    // seguida. Falhar na emissão é mais honesto que entregar sessão morta.
+    await expect(service.generateTokenPair({ id: 'user-24', username: 'rita' })).rejects.toMatchObject({
+      code: 'REVOCATION_UNAVAILABLE'
+    });
+  });
+
+  it('fail-closed: nega verificação e revogação quando o armazenamento responde com erro', async() => {
+    const service = failClosed(null);
     const { accessToken } = await service.generateTokenPair({ id: 'user-24', username: 'rita' });
 
     await expect(service.verifyAccessToken(accessToken)).rejects.toMatchObject({
@@ -449,5 +472,92 @@ describe('JWTTokenService - política de revogação (fail-closed vs fail-open)'
     service.setRedisClient(redis as never);
     const decoded = await service.verifyAccessToken(accessToken);
     expect(decoded.id).toBe('user-28');
+  });
+});
+
+describe('JWTTokenService - versão de sessão', () => {
+  it('embute a versão de sessão no token emitido', async() => {
+    const redis = makeRedisClient();
+    const service = new JWTTokenService(SECRET, SECRET, redis as never);
+
+    const pair = await service.generateTokenPair({ id: 'user-50', username: 'nina' });
+    const access = service.decodeToken(pair.accessToken) as { sv?: number };
+
+    expect(access.sv).toBe(0);
+  });
+
+  it('login após revogação em massa recebe a nova versão e funciona', async() => {
+    const redis = makeRedisClient();
+    const service = new JWTTokenService(SECRET, SECRET, redis as never);
+
+    const before = await service.generateTokenPair({ id: 'user-51', username: 'olivia' });
+    await service.revokeUserTokens('user-51');
+
+    // Token emitido depois da revogação: válido mesmo no mesmo segundo
+    const after = await service.generateTokenPair({ id: 'user-51', username: 'olivia' });
+
+    await expect(service.verifyAccessToken(before.accessToken)).rejects.toThrow('Token foi revogado');
+    const decoded = await service.verifyAccessToken(after.accessToken);
+    expect(decoded.id).toBe('user-51');
+    expect((service.decodeToken(after.accessToken) as { sv?: number }).sv).toBe(1);
+  });
+
+  it('tokens emitidos antes de cada revogação são derrubados', async() => {
+    const redis = makeRedisClient();
+    const service = new JWTTokenService(SECRET, SECRET, redis as never);
+
+    const first = await service.generateTokenPair({ id: 'user-52', username: 'pedro' });
+    await service.revokeUserTokens('user-52');
+    const second = await service.generateTokenPair({ id: 'user-52', username: 'pedro' });
+    await service.revokeUserTokens('user-52');
+
+    await expect(service.verifyAccessToken(first.accessToken)).rejects.toThrow('Token foi revogado');
+    await expect(service.verifyAccessToken(second.accessToken)).rejects.toThrow('Token foi revogado');
+    expect(redis.incr).toHaveBeenCalledTimes(2);
+  });
+
+  it('refresh também é invalidado por logout em massa', async() => {
+    const redis = makeRedisClient();
+    const service = new JWTTokenService(SECRET, SECRET, redis as never);
+    const pair = await service.generateTokenPair({ id: 'user-53', username: 'rita' }, { refreshExpiresIn: '1h' });
+
+    await service.revokeUserTokens('user-53');
+
+    await expect(service.verifyRefreshToken(pair.refreshToken)).rejects.toThrow('Refresh token foi revogado');
+  });
+
+  it('token legado sem a claim sv cai na regra por timestamp', async() => {
+    const redis = makeRedisClient();
+    const service = new JWTTokenService(SECRET, SECRET, redis as never);
+
+    const legacy = jwt.sign({ id: 'user-54', username: 'sergio', token_type: 'access' }, SECRET, {
+      expiresIn: '1h',
+      issuer: 'auth-service',
+      audience: 'api-users'
+    });
+
+    const decoded = await service.verifyAccessToken(legacy);
+    expect(decoded.id).toBe('user-54');
+
+    await service.revokeUserTokens('user-54');
+    await expect(service.verifyAccessToken(legacy)).rejects.toThrow('Token foi revogado');
+  });
+
+  it('fail-open: emite sem versão quando o armazenamento falha na leitura', async() => {
+    const service = new JWTTokenService(
+      SECRET,
+      SECRET,
+      makeBrokenRedisClient() as never,
+      'auth-service',
+      'api-users',
+      { failOpen: true }
+    );
+
+    const pair = await service.generateTokenPair({ id: 'user-55', username: 'ugo' });
+
+    // Sem `sv` falsificado: o token cai na regra por timestamp
+    expect(service.decodeToken(pair.accessToken)).not.toHaveProperty('sv');
+    const decoded = await service.verifyAccessToken(pair.accessToken);
+    expect(decoded.id).toBe('user-55');
   });
 });

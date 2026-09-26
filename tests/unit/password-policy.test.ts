@@ -5,8 +5,11 @@ import {
   isCommonPassword,
   wasPasswordUsedBefore,
   PASSWORD_MIN_LENGTH,
-  PASSWORD_MAX_LENGTH
-} from '../../src/shared/utils/passwordValidator.js';
+  PASSWORD_MAX_LENGTH,
+  PASSWORD_HISTORY_LIMIT,
+  PASSWORD_POLICY,
+  passwordByteLength
+} from '../../src/shared/utils/passwordPolicy.js';
 
 describe('validatePasswordStrength - política de senha forte', () => {
   it('aceita senha que atende todos os requisitos', () => {
@@ -27,10 +30,31 @@ describe('validatePasswordStrength - política de senha forte', () => {
     expect(result.errors).toContain(`Senha deve ter pelo menos ${PASSWORD_MIN_LENGTH} caracteres`);
   });
 
-  it('rejeita senha longa demais (prevenção de DoS)', () => {
+  it('rejeita senha que passa do limite de bytes do bcrypt', () => {
+    // O que excede 72 bytes seria simplesmente ignorado pelo hash: aceitar
+    // seria prometer uma proteção que o algoritmo não entrega.
     const long = `A1!${'a'.repeat(PASSWORD_MAX_LENGTH)}`;
     const result = validatePasswordStrength(long);
-    expect(result.errors).toContain(`Senha não pode ter mais de ${PASSWORD_MAX_LENGTH} caracteres`);
+    expect(result.isValid).toBe(false);
+    expect(result.errors).toContain(`Senha não pode exceder ${PASSWORD_MAX_LENGTH} caracteres (limite do bcrypt)`);
+  });
+
+  it('conta o limite em BYTES, não em caracteres', () => {
+    // 28 caracteres multibyte = 76 bytes: passa em contagem de caracteres,
+    // mas estouraria o que o bcrypt realmente processa.
+    const multibyte = `Aa1!${'€'.repeat(24)}`;
+    expect(multibyte.length).toBeLessThanOrEqual(PASSWORD_MAX_LENGTH);
+    expect(passwordByteLength(multibyte)).toBeGreaterThan(PASSWORD_MAX_LENGTH);
+
+    const result = validatePasswordStrength(multibyte);
+    expect(result.isValid).toBe(false);
+    expect(result.errors.join(' ')).toContain('bcrypt');
+  });
+
+  it('aceita senha exatamente no limite de bytes', () => {
+    const atLimit = `Aa1!${'a'.repeat(PASSWORD_MAX_LENGTH - 4)}`;
+    expect(passwordByteLength(atLimit)).toBe(PASSWORD_MAX_LENGTH);
+    expect(validatePasswordStrength(atLimit).isValid).toBe(true);
   });
 
   it('exige letra maiúscula', () => {
@@ -82,6 +106,22 @@ describe('isCommonPassword - lista de senhas comuns', () => {
   });
 });
 
+describe('PASSWORD_POLICY - decisões explícitas', () => {
+  it('declara a política em um único objeto', () => {
+    expect(PASSWORD_POLICY.minLength).toBe(PASSWORD_MIN_LENGTH);
+    expect(PASSWORD_POLICY.maxLengthBytes).toBe(PASSWORD_MAX_LENGTH);
+    expect(PASSWORD_POLICY.historyLimit).toBe(PASSWORD_HISTORY_LIMIT);
+  });
+
+  it('não expira senha por prazo (decisão de projeto)', () => {
+    expect(PASSWORD_POLICY.expires).toBe(false);
+  });
+
+  it('limita o máximo ao limite do bcrypt', () => {
+    expect(PASSWORD_POLICY.maxLengthBytes).toBe(72);
+  });
+});
+
 describe('wasPasswordUsedBefore - histórico de senhas', () => {
   const bcryptCompareTrue = async() => true;
   const bcryptCompareFalse = async() => false;
@@ -108,6 +148,16 @@ describe('wasPasswordUsedBefore - histórico de senhas', () => {
       bcryptCompareFalse
     );
     expect(result).toBe(false);
+  });
+
+  it('avalia apenas as últimas senhas do histórico', async() => {
+    const compare = jest.fn().mockResolvedValue(false);
+    const history = Array.from({ length: 10 }, (_, i) => `hash-${i}`);
+
+    await wasPasswordUsedBefore('StrongPass123!', history, compare);
+
+    // O histórico é limitado: comparar com 10 hashes seria trabalho inútil
+    expect(compare).toHaveBeenCalledTimes(PASSWORD_HISTORY_LIMIT);
   });
 
   it('ignora erros de comparação e continua avaliando o histórico', async() => {

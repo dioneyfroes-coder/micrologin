@@ -7,13 +7,16 @@ const [{ MongoUserAdapter, BcryptAdapter, ConsoleLoggerAdapter, AdapterFactory }
       compare: jest.fn()
     };
 
+    // `select()` é encadeável em Mongoose e devolve a própria query
+    const chainable = (result: unknown) => ({ select: jest.fn(() => result) });
     const modelMock = {
       findById: jest.fn(),
       findOne: jest.fn(),
       create: jest.fn(),
       findByIdAndUpdate: jest.fn(),
       findByIdAndDelete: jest.fn(),
-      countDocuments: jest.fn()
+      countDocuments: jest.fn(),
+      chainable
     };
 
     await jest.unstable_mockModule('bcrypt', () => ({ default: bcryptMock }));
@@ -32,10 +35,12 @@ const [{ MongoUserAdapter, BcryptAdapter, ConsoleLoggerAdapter, AdapterFactory }
 const bcrypt = bcryptModule.default;
 const { getUserModel } = models;
 
-const makeDoc = (id: string, user: string, password: string) => ({
+const makeDoc = (id: string, user: string, password: string, passwordHistory: string[] = []) => ({
   _id: { toString: () => id },
   user,
   password,
+  passwordHistory,
+  passwordChangedAt: new Date(),
   createdAt: new Date(),
   updatedAt: new Date()
 });
@@ -91,17 +96,29 @@ describe('MongoUserAdapter - implementação do UserRepositoryPort', () => {
   });
 
   it('mapeia documento encontrado para um User de domínio', async() => {
-    modelMock.findById.mockResolvedValue(makeDoc('abc123', 'alice', 'hashed'));
+    modelMock.findById.mockReturnValue(modelMock.chainable(makeDoc('abc123', 'alice', 'hashed')));
 
     const user = await adapter.findById('abc123');
 
     expect(user?.id).toBe('abc123');
     expect(user?.username).toBe('alice');
     expect(user?.hashedPassword).toBe('hashed');
+    expect(user?.passwordHistory).toEqual([]);
+  });
+
+  it('carrega o histórico de senhas (select: false no schema)', async() => {
+    modelMock.findById.mockReturnValue(
+      modelMock.chainable(makeDoc('abc123', 'alice', 'hashed', ['hash-antigo']))
+    );
+
+    const user = await adapter.findById('abc123');
+
+    expect(user?.passwordHistory).toEqual(['hash-antigo']);
+    expect(modelMock.findById).toHaveBeenCalledWith('abc123');
   });
 
   it('retorna null quando não há usuário com o ID', async() => {
-    modelMock.findById.mockResolvedValue(null);
+    modelMock.findById.mockReturnValue(modelMock.chainable(null));
 
     const user = await adapter.findById('missing');
 
@@ -119,20 +136,16 @@ describe('MongoUserAdapter - implementação do UserRepositoryPort', () => {
   it('cria um novo usuário quando não há id', async() => {
     modelMock.create.mockResolvedValue(makeDoc('new1', 'bob', 'hashed'));
 
-    const saved = await adapter.save({
-      id: null,
-      username: 'bob',
-      hashedPassword: 'hashed',
-      createdAt: new Date(),
-      updatedAt: new Date()
-    });
+    const saved = await adapter.save(new domain.User(null, 'bob', 'hashed'));
 
     expect(saved.id).toBe('new1');
     expect(modelMock.create).toHaveBeenCalledWith(expect.objectContaining({ user: 'bob' }));
   });
 
   it('atualiza o documento quando há id', async() => {
-    modelMock.findByIdAndUpdate.mockResolvedValue(makeDoc('abc123', 'alice2', 'hashed2'));
+    modelMock.findByIdAndUpdate.mockReturnValue(
+      modelMock.chainable(makeDoc('abc123', 'alice2', 'hashed2'))
+    );
 
     const user = new domain.User('abc123', 'alice2', 'hashed2');
     const saved = await adapter.save(user);
@@ -140,9 +153,29 @@ describe('MongoUserAdapter - implementação do UserRepositoryPort', () => {
     expect(saved.username).toBe('alice2');
     expect(modelMock.findByIdAndUpdate).toHaveBeenCalledWith(
       'abc123',
-      expect.objectContaining({ user: 'alice2' }),
+      expect.objectContaining({
+        user: 'alice2',
+        passwordHistory: [],
+        passwordChangedAt: expect.any(Date)
+      }),
       { new: true }
     );
+  });
+
+  it('persiste o histórico de senhas ao trocar a senha', async() => {
+    modelMock.findByIdAndUpdate.mockReturnValue(
+      modelMock.chainable(makeDoc('abc123', 'alice', 'hash-novo', ['hash-antigo']))
+    );
+
+    const user = new domain.User('abc123', 'alice', 'hash-novo', new Date(), new Date(), ['hash-antigo']);
+    const saved = await adapter.save(user);
+
+    expect(modelMock.findByIdAndUpdate).toHaveBeenCalledWith(
+      'abc123',
+      expect.objectContaining({ passwordHistory: ['hash-antigo'] }),
+      { new: true }
+    );
+    expect(saved.passwordHistory).toEqual(['hash-antigo']);
   });
 
   it('deleta usuário por id', async() => {
