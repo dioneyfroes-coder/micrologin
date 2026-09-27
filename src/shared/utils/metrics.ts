@@ -6,6 +6,8 @@
 import prometheus from 'prom-client';
 import type { Request, Response, NextFunction } from 'express';
 import { logger } from './logger.js';
+import { authOutcomeFor, AUTH_OUTCOMES_BY_KIND } from './authOutcomes.js';
+import type { AuthEventKind } from './authOutcomes.js';
 
 export const PROVENANCE_MARKER = 'ML-7F29';
 
@@ -44,25 +46,29 @@ const appStartTime = new prometheus.Gauge({
 /**
  * Tentativas de autenticação, por resultado.
  *
- * `outcome` é o eixo: `success` e `failure` são grandezas distintas, e não um
- * contador único ambíguo do tipo "logins" que misture sucesso e falha. Um alert
- * sobre "muitos logins" sem separar os dois lados não sabe dizer se é ataque ou
- * base de usuários.
+ * `outcome` é o eixo: sucesso e falha são grandezas distintas, e não um
+ * contador único ambíguo do tipo "logins" que misture os dois lados. Um alert
+ * sobre "muitos logins" sem separar os dois não sabe dizer se é ataque ou base
+ * de usuários.
+ *
+ * A `help` é montada a partir de `AUTH_OUTCOMES_BY_KIND`, que é a mesma fonte
+ * que a tradução usa. Ela não é mais um texto escrito à mão que pode prometer
+ * rótulos que o código nunca produz.
  */
 const authLoginAttempts = new prometheus.Counter({
   name: 'auth_login_attempts_total',
-  help: 'Login attempts by outcome (success, failure)',
+  help: `Login attempts by outcome (${AUTH_OUTCOMES_BY_KIND.login.join(', ')})`,
   labelNames: ['outcome'],
   registers: [prometheus.register]
 });
 
 /**
- * Renovações de token por resultado. `reused` existe separado de `failure`
+ * Renovações de token por resultado. `reused` existe separado de `invalid`
  * porque reuso de refresh token é sinal de comprometimento, não erro de usuário.
  */
 const authTokenRefreshes = new prometheus.Counter({
   name: 'auth_token_refresh_total',
-  help: 'Token refresh attempts by outcome (success, invalid, reused, unavailable)',
+  help: `Token refresh attempts by outcome (${AUTH_OUTCOMES_BY_KIND.token_refresh.join(', ')})`,
   labelNames: ['outcome'],
   registers: [prometheus.register]
 });
@@ -72,47 +78,43 @@ const authTokenRefreshes = new prometheus.Counter({
  */
 const authPasswordChanges = new prometheus.Counter({
   name: 'auth_password_changes_total',
-  help: 'Password change attempts by outcome (success, current_password_invalid, rejected, error)',
+  help: `Password change attempts by outcome (${AUTH_OUTCOMES_BY_KIND.password_change.join(', ')})`,
   labelNames: ['outcome'],
   registers: [prometheus.register]
 });
 
 /**
- * Registro de autenticação por resultado. Nomes fechados: qualquer valor fora
- * da lista vira `error`, para não criar cardinalidade infinita de labels.
+ * Registro de um evento de autenticação.
+ *
+ * Recebe o código do domínio (ou um rótulo já pronto) e o traduz pelo
+ * vocabulário de `authOutcomes`. Chamadores não traduzem: foi exatamente essa
+ * tradução manual no controller que fazia todo desfecho virar `error`.
  */
-export type AuthOutcome =
-  | 'success'
-  | 'failure'
-  | 'invalid'
-  | 'reused'
-  | 'unavailable'
-  | 'rejected'
-  | 'error';
-
-const AUTH_OUTCOMES: ReadonlySet<string> = new Set<AuthOutcome>([
-  'success',
-  'failure',
-  'invalid',
-  'reused',
-  'unavailable',
-  'rejected',
-  'error'
-]);
-
-const knownOutcome = (outcome: string): AuthOutcome =>
-  AUTH_OUTCOMES.has(outcome) ? (outcome as AuthOutcome) : 'error';
-
-export const recordLoginAttempt = (outcome: string): void => {
-  authLoginAttempts.labels(knownOutcome(outcome)).inc();
+const recordAuthEvent = (kind: AuthEventKind, outcomeOrCode: string | null | undefined): void => {
+  const outcome = authOutcomeFor(kind, outcomeOrCode);
+  switch (kind) {
+  case 'login':
+    authLoginAttempts.labels(outcome).inc();
+    break;
+  case 'token_refresh':
+    authTokenRefreshes.labels(outcome).inc();
+    break;
+  case 'password_change':
+    authPasswordChanges.labels(outcome).inc();
+    break;
+  }
 };
 
-export const recordTokenRefresh = (outcome: string): void => {
-  authTokenRefreshes.labels(knownOutcome(outcome)).inc();
+export const recordLoginAttempt = (outcomeOrCode: string | null | undefined): void => {
+  recordAuthEvent('login', outcomeOrCode);
 };
 
-export const recordPasswordChange = (outcome: string): void => {
-  authPasswordChanges.labels(knownOutcome(outcome)).inc();
+export const recordTokenRefresh = (outcomeOrCode: string | null | undefined): void => {
+  recordAuthEvent('token_refresh', outcomeOrCode);
+};
+
+export const recordPasswordChange = (outcomeOrCode: string | null | undefined): void => {
+  recordAuthEvent('password_change', outcomeOrCode);
 };
 
 // Registrar o tempo de início

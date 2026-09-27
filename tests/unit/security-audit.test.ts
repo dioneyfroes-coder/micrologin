@@ -9,8 +9,8 @@ describe('SecurityAuditLogger - auditoria de segurança', () => {
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
     const audit = makeLogger();
 
-    audit.logLoginAttempt('alice', '1.2.3.4', 'agent', true);
-    audit.logLoginAttempt('alice', '1.2.3.4', 'agent', false, 'Senha incorreta');
+    audit.logLoginAttempt('alice', '1.2.3.4', 'agent', 'success');
+    audit.logLoginAttempt('alice', '1.2.3.4', 'agent', 'failure', 'Senha incorreta');
 
     const stats = audit.getSecurityStats();
     expect(stats.totalRequests).toBe(2);
@@ -19,6 +19,10 @@ describe('SecurityAuditLogger - auditoria de segurança', () => {
     expect(stats.successfulLogins).toBe(1);
     expect(stats.recentEvents).toBe(2);
     expect(audit.getRecentEvents()[1].details.reason).toBe('Senha incorreta');
+    // O rótulo viaja no evento, para nenhum consumidor reinterpretar o
+    // resultado a partir de um booleano paralelo.
+    expect(audit.getRecentEvents()[0].details.outcome).toBe('success');
+    expect(audit.getRecentEvents()[1].details.outcome).toBe('failure');
     expect(warnSpy).toHaveBeenCalled();
     expect(successSpy).not.toHaveBeenCalled();
 
@@ -32,9 +36,9 @@ describe('SecurityAuditLogger - auditoria de segurança', () => {
     const audit = makeLogger();
 
     for (let i = 0; i < 3; i++) {
-      audit.logLoginAttempt('alice', '1.2.3.4', 'agent', true);
+      audit.logLoginAttempt('alice', '1.2.3.4', 'agent', 'success');
     }
-    audit.logLoginAttempt('alice', '1.2.3.4', 'agent', false, 'Senha incorreta');
+    audit.logLoginAttempt('alice', '1.2.3.4', 'agent', 'failure', 'Senha incorreta');
 
     const stats = audit.getSecurityStats();
     expect(stats.loginAttempts).toBe(4);
@@ -50,7 +54,7 @@ describe('SecurityAuditLogger - auditoria de segurança', () => {
     const successSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
     const audit = makeLogger();
 
-    audit.logLoginAttempt('alice', '1.2.3.4', 'agent', true);
+    audit.logLoginAttempt('alice', '1.2.3.4', 'agent', 'success');
 
     expect(audit.getSecurityStats().failedLogins).toBe(0);
     expect(audit.getSecurityStats().successfulLogins).toBe(1);
@@ -135,12 +139,5 @@ describe('SecurityAuditLogger - auditoria de segurança', () => {
     const audit = makeLogger();
     const ids = new Set([audit.generateEventId(), audit.generateEventId(), audit.generateEventId()]);
     expect(ids.size).toBe(3);
-  });
-
-  it('mapeia severidade para emoji', () => {
-    const audit = makeLogger();
-    expect(audit.getEmojiForSeverity('error')).toBe('🚨');
-    expect(audit.getEmojiForSeverity('warning')).toBe('⚠️');
-    expect(audit.getEmojiForSeverity('info')).toBe('ℹ️');
   });
 });

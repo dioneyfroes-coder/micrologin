@@ -9,7 +9,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { validationResult } from 'express-validator';
 import { securityAuditLogger } from '../middleware/securityAudit.js';
 import { HttpError } from '../../shared/utils/errorHandler.js';
-import { recordLoginAttempt, recordPasswordChange, recordTokenRefresh } from '../../shared/utils/metrics.js';
+import { recordTokenRefresh } from '../../shared/utils/metrics.js';
 import type { AuthService } from '../../domain/index.js';
 import { REVOCATION_UNAVAILABLE_CODE } from '../../domain/index.js';
 
@@ -38,15 +38,17 @@ export class AuthWebController {
       // Delegar para o CORE
       const result = await this.authService.authenticateUser(username, password);
 
-      // Registrar tentativa de login no sistema de auditoria
+      // Um registro só: a auditoria e a métrica saem do mesmo desfecho,
+      // traduzido uma vez dentro do audit logger.
       securityAuditLogger.logLoginAttempt(
         username,
         req.ip || 'unknown',
         req.get('User-Agent') || 'unknown',
-        result.success,
+        // `AuthResult` não carrega código: falha de login é uma coisa só, por
+        // design, para não enumerar contas.
+        result.success ? 'success' : 'failure',
         result.error ?? undefined
       );
-      recordLoginAttempt(result.success ? 'success' : 'failure');
 
       if (result.success && result.user && result.token) {
         res.json({
@@ -123,7 +125,10 @@ export class AuthWebController {
 
       // Delegar para o CORE (realiza rotação e revoga o refresh antigo)
       const result = await this.authService.refreshUserTokens(refreshToken);
-      recordTokenRefresh(result.success ? 'success' : (result.code || 'failure'));
+      // O código do domínio (`REFRESH_TOKEN_REUSED`, `REVOCATION_UNAVAILABLE`,
+      // ...) é traduzido em rótulo pelo vocabulário único. Passar o código
+      // cru era o que fazia todo desfecho virar `error`.
+      recordTokenRefresh(result.success ? 'success' : result.code);
 
       if (result.success && result.token) {
         res.json({
@@ -276,13 +281,13 @@ export class AuthWebController {
 
       const result = await this.authService.changePassword(userId, currentPassword, newPassword);
 
+      // Idem no login: um registro, um desfecho.
       securityAuditLogger.logPasswordChange(
         userId,
         req.ip || 'unknown',
-        result.success,
+        result.success ? 'success' : result.code,
         result.success ? undefined : result.error
       );
-      recordPasswordChange(result.success ? 'success' : (result.code || 'rejected'));
 
       if (result.success) {
         res.json({

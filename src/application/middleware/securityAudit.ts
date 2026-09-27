@@ -4,8 +4,15 @@
  */
 
 import { logger } from '../../shared/utils/logger.js';
+import { authOutcomeFor, isSuccessOutcome } from '../../shared/utils/authOutcomes.js';
+import type { AuthEventKind, AuthOutcome } from '../../shared/utils/authOutcomes.js';
+import {
+  recordLoginAttempt,
+  recordPasswordChange
+} from '../../shared/utils/metrics.js';
 
 type Severity = 'info' | 'warning' | 'error';
+
 
 interface AuditEventDetails {
   ip?: string;
@@ -83,32 +90,48 @@ export class SecurityAuditLogger {
   }
 
   /**
-   * Registra tentativa de login
+   * Registra tentativa de login, e alimenta a métrica correspondente.
+   *
+   * `outcomeOrCode` é o código do domínio (ou `'success'`). A tradução é feita
+   * uma vez aqui; a auditoria e o Prometheus recebem o mesmo rótulo.
    */
-  logLoginAttempt(username: string, ip: string, userAgent: string, success = true, reason?: string): void {
-    this.logSecurityEvent('login_attempt', {
-      username,
-      ip,
-      userAgent,
-      success,
-      ...(reason ? { reason } : {}),
-      timestamp: Date.now()
-    }, success ? 'info' : 'warning');
+  logLoginAttempt(username: string, ip: string, userAgent: string, outcomeOrCode: string | null | undefined, reason?: string): void {
+    const outcome = this.recordAuth('login', 'login_attempt', outcomeOrCode, { username, ip, userAgent }, reason);
+    recordLoginAttempt(outcome);
   }
 
   /**
    * Registra tentativa de troca de senha.
+   *
    * A troca de senha é um evento de segurança relevante: é o mecanismo de
    * resposta a suspeita de comprometimento e o que encerra as sessões.
    */
-  logPasswordChange(userId: string, ip: string, success = true, reason?: string): void {
-    this.logSecurityEvent('password_change', {
-      userId,
-      ip,
-      success,
+  logPasswordChange(userId: string, ip: string, outcomeOrCode: string | null | undefined, reason?: string): void {
+    const outcome = this.recordAuth('password_change', 'password_change', outcomeOrCode, { userId, ip }, reason);
+    recordPasswordChange(outcome);
+  }
+
+  /**
+   * Ponto único de registro de um evento de autenticação.
+   *
+   * O rótulo viaja no próprio evento, então `updateStats` e `checkAlerts` leem
+   * `outcome` em vez de reinterpretrar um booleano guardado nos detalhes.
+   */
+  private recordAuth(
+    kind: AuthEventKind,
+    type: string,
+    outcomeOrCode: string | null | undefined,
+    context: { username?: string; userId?: string; ip: string; userAgent?: string },
+    reason?: string
+  ): AuthOutcome {
+    const outcome = authOutcomeFor(kind, outcomeOrCode);
+    this.logSecurityEvent(type, {
+      ...context,
+      outcome,
       ...(reason ? { reason } : {}),
       timestamp: Date.now()
-    }, success ? 'info' : 'warning');
+    }, isSuccessOutcome(outcome) ? 'info' : 'warning');
+    return outcome;
   }
 
   /**
@@ -177,17 +200,19 @@ export class SecurityAuditLogger {
     this.stats.totalRequests++;
 
     switch (type) {
-    case 'login_attempt':
+    case 'login_attempt': {
       // A métrica é semântica: `loginAttempts` soma os dois lados e cada
       // resultado tem contador próprio. Um contador único que contasse todo
       // login como "failed" produziria alerta errado em base de usuários grande.
       this.stats.loginAttempts++;
-      if (details.success === false) {
-        this.stats.failedLogins++;
-      } else {
+      const outcome = details.outcome as AuthOutcome | undefined;
+      if (outcome && isSuccessOutcome(outcome)) {
         this.stats.successfulLogins++;
+      } else {
+        this.stats.failedLogins++;
       }
       break;
+    }
     case 'ip_blocked':
     case 'rate_limit_violation':
     case 'security_attack':
@@ -222,7 +247,9 @@ export class SecurityAuditLogger {
   checkAlerts(type: string): void {
     const recentEvents = this.getRecentEvents(300000); // 5 minutos
     const typeEvents = recentEvents.filter(event =>
-      event.type === type && (type !== 'login_attempt' || event.details.success === false)
+      // Alerta de login olha só para as falhas: successes não são sinal de
+      // ataque, e somá-los faria o alerta disparar numa base de usuários grande.
+      event.type === type && (type !== 'login_attempt' || !isSuccessOutcome(event.details.outcome as AuthOutcome))
     );
 
     if (type === 'login_attempt' && typeEvents.length >= this.alertThresholds.failedLogins) {
@@ -295,18 +322,6 @@ export class SecurityAuditLogger {
       return 'LOW';
     }
     return 'MINIMAL';
-  }
-
-  /**
-   * Retorna emoji para severidade
-   */
-  getEmojiForSeverity(severity: Severity): string {
-    switch (severity) {
-    case 'error': return '🚨';
-    case 'warning': return '⚠️';
-    case 'info': return 'ℹ️';
-    default: return '📝';
-    }
   }
 
   /**

@@ -125,15 +125,86 @@ describe('métricas de autenticação - semântica por resultado', () => {
   });
 
   it('não mistura reuso de refresh com falha comum de usuário', async() => {
-    recordTokenRefresh('reused');
-    recordTokenRefresh('invalid');
+    // O controller passa o CÓDIGO do domínio, não o rótulo pronto. Era esse o
+    // caminho real, e como o código não estava no conjunto de labels, os dois
+    // desfechos viravam `error` e este teste, alimentado com os rótulos, passava
+    // sem exercitar nada do que a aplicação faz.
+    recordTokenRefresh('REFRESH_TOKEN_REUSED');
+    recordTokenRefresh('REFRESH_TOKEN_INVALID');
+
+    const samples = await metricsImport.prometheus.register.getMetricsAsJSON();
+    const refresh = samples.find(sample => sample.name === 'auth_token_refresh_total');
+    const byOutcome = Object.fromEntries(
+      (refresh?.values ?? []).map(value => [value.labels.outcome, value.value])
+    );
+
+    expect(byOutcome.reused).toBeGreaterThanOrEqual(1);
+    expect(byOutcome.invalid).toBeGreaterThanOrEqual(1);
+    expect(byOutcome.error).toBeUndefined();
+  });
+
+  it('separa revogação indisponível de token ruim', async() => {
+    // Redis fora em fail-closed: a sessão NÃO foi encerrada. Colapsar isso em
+    // `invalid` faria uma indisponibilidade de infraestrutura parecer erro de
+    // cliente - e o inverso, attacks, também.
+    recordTokenRefresh('REVOCATION_UNAVAILABLE');
 
     const samples = await metricsImport.prometheus.register.getMetricsAsJSON();
     const refresh = samples.find(sample => sample.name === 'auth_token_refresh_total');
     const outcomes = (refresh?.values ?? []).map(value => value.labels.outcome);
 
-    expect(outcomes).toContain('reused');
-    expect(outcomes).toContain('invalid');
+    expect(outcomes).toContain('unavailable');
+  });
+
+  it('troca de senha distingue senha atual errada de política de senha', async() => {
+    recordPasswordChange('CURRENT_PASSWORD_INVALID');
+    recordPasswordChange('PASSWORD_REUSED');
+
+    const samples = await metricsImport.prometheus.register.getMetricsAsJSON();
+    const changes = samples.find(sample => sample.name === 'auth_password_changes_total');
+    const outcomes = (changes?.values ?? []).map(value => value.labels.outcome);
+
+    // São coisas diferentes: a primeira é o usuário errando a própria senha
+    // atual, a segunda é uma senha que a política recusa.
+    expect(outcomes).toContain('current_password_invalid');
+    expect(outcomes).toContain('rejected');
+  });
+
+  it('nenhum desfecho real de autenticação colapsa em "error"', async() => {
+    // A regressão que motivou a mudança, verificada pelo caminho do controller.
+    const codigos = [
+      'REFRESH_TOKEN_REUSED',
+      'REFRESH_TOKEN_INVALID',
+      'REFRESH_TOKEN_EXPIRED',
+      'REVOCATION_UNAVAILABLE',
+      'CURRENT_PASSWORD_INVALID',
+      'INVALID_PASSWORD',
+      'PASSWORD_TOO_COMMON',
+      'PASSWORD_REUSED',
+      'USER_NOT_FOUND'
+    ];
+    codigos.forEach(codigo => {
+      recordTokenRefresh(codigo);
+      recordPasswordChange(codigo);
+    });
+    recordLoginAttempt('failure');
+
+    const samples = await metricsImport.prometheus.register.getMetricsAsJSON();
+    const porMetric = new Map(
+      samples
+        .filter(sample => sample.name.startsWith('auth_'))
+        .map(sample => [sample.name, new Set(sample.values.map(v => v.labels.outcome))])
+    );
+
+    // Nenhum `error` pode ter vindo de um código que o domínio de fato emite.
+    // `error` continua reservado para o que é realmente desconhecido.
+    expect(porMetric.get('auth_token_refresh_total')).toEqual(
+      new Set(['invalid', 'reused', 'unavailable', 'error'])
+    );
+    expect(porMetric.get('auth_password_changes_total')).toEqual(
+      new Set(['current_password_invalid', 'rejected', 'error'])
+    );
+    expect(porMetric.get('auth_login_attempts_total')).toEqual(new Set(['success', 'failure']));
   });
 
   it('normaliza outcome desconhecido em error, sem criar label nova', async() => {
@@ -144,6 +215,8 @@ describe('métricas de autenticação - semântica por resultado', () => {
     const outcomes = (changes?.values ?? []).map(value => value.labels.outcome);
 
     expect(outcomes).toContain('error');
+    // O rótulo inventado não pode ter virado dimensão: cardinalidade de label é
+    // custo de memória no Prometheus.
     expect(outcomes.every(outcome => [
       'success', 'current_password_invalid', 'rejected', 'error'
     ].includes(outcome))).toBe(true);
