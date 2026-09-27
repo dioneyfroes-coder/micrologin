@@ -4,137 +4,113 @@ import { securityAuditLogger } from '../../src/application/middleware/securityAu
 
 type Monitor = typeof securityMonitor & Record<string, any>;
 
-const requestLike = (ip: string, userAgent: string) => ({
-  ip,
-  path: '/login',
+const requestLike = (over: { ip?: string; path?: string; body?: unknown; userAgent?: string }) => ({
+  ip: over.ip ?? '1.2.3.4',
+  path: over.path ?? '/login',
   method: 'POST',
-  get: (header: string) => (header === 'User-Agent' ? userAgent : null)
+  body: over.body ?? {},
+  get: (header: string) => (header === 'User-Agent' ? (over.userAgent ?? 'agent') : null)
 });
 
-describe('securityMonitor - limites da mapa de anomalias', () => {
+/**
+ * Os eventos do monitor vivem no `securityAuditLogger`, que é o buffer único do
+ * processo. Estes testes leem de lá, e não de um segundo histórico — que foi
+ * removido por duplicar esse sem ter consumidor.
+ */
+const securityEventsOf = (type: string) =>
+  securityAuditLogger.getRecentEvents(300000).filter(event => event.type === type);
+
+describe('securityMonitor - detecção de padrões suspeitos', () => {
+  let warnSpy: jest.SpiedFunction<typeof console.warn>;
+
   beforeEach(() => {
-    (securityMonitor as Monitor).anomalies = new Map();
-    (securityMonitor as Monitor).lastCleanup = 0;
-    (securityMonitor as Monitor).clearThreatLog();
-  });
-
-  it('remove clientes sem atividade dentro da janela na limpeza periódica', () => {
-    const monitor = securityMonitor as Monitor;
-    const now = Date.now();
-    monitor.anomalies.set('old-client', [
-      { timestamp: now - 120000, path: '/login', method: 'POST' }
-    ]);
-    monitor.anomalies.set('active-client', [
-      { timestamp: now - 5000, path: '/login', method: 'POST' }
-    ]);
-
-    monitor.cleanupAnomalies(now);
-
-    expect(monitor.anomalies.has('old-client')).toBe(false);
-    expect(monitor.anomalies.has('active-client')).toBe(true);
-  });
-
-  it('mantém apenas as requisições dentro da janela por cliente', () => {
-    const monitor = securityMonitor as Monitor;
-    const req = requestLike('1.2.3.4', 'agent-a');
-    const now = Date.now();
-    monitor.detectAnomalies(req, {}, () => {});
-
-    const entry = monitor.anomalies.get('1.2.3.4agent-a');
-    entry.push({ timestamp: now - 120000, path: '/old', method: 'GET' });
-
-    monitor.detectAnomalies(req, {}, () => {});
-
-    const stored = monitor.anomalies.get('1.2.3.4agent-a');
-    expect(stored.every((r: { timestamp: number }) => now - r.timestamp < 60000)).toBe(true);
-  });
-
-  it('impõe o limite máximo de clientes rastreados', () => {
-    const monitor = securityMonitor as Monitor;
-    monitor.maxTrackedClients = 3;
-    monitor.lastCleanup = 0;
-    const now = Date.now();
-
-    for (let i = 0; i < 5; i += 1) {
-      monitor.anomalies.set(`client-${i}`, [{ timestamp: now - (5 - i), path: '/', method: 'GET' }]);
-    }
-
-    monitor.cleanupAnomalies(now);
-
-    expect(monitor.anomalies.size).toBe(3);
-    expect(monitor.anomalies.has('client-4')).toBe(true);
+    warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
   it('não toma ações punitivas no detectThreats (apenas log)', () => {
     const monitor = securityMonitor as Monitor;
-    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
-    const req = {
-      ip: '1.2.3.4',
-      path: '/login',
-      body: { user: '<script>alert(1)</script>' },
-      get: () => 'agent'
-    };
     const next = jest.fn();
 
-    monitor.detectThreats(req, {}, next);
+    monitor.detectThreats(requestLike({ body: { user: '<script>alert(1)</script>' } }), {}, next);
 
     expect(warnSpy).toHaveBeenCalled();
     expect(next).toHaveBeenCalledTimes(1);
-    expect(monitor.getThreatStats().totalThreats).toBeGreaterThan(0);
+    // `next` sem argumento: o monitor não encerra a requisição.
+    expect(next).toHaveBeenCalledWith();
+  });
 
-    warnSpy.mockRestore();
+  it('detecta script inline e registra no buffer de auditoria', () => {
+    const monitor = securityMonitor as Monitor;
+    const next = jest.fn();
+
+    monitor.detectThreats(
+      requestLike({ body: { user: '<script>alert(1)</script>' }, path: '/login' }),
+      {},
+      next
+    );
+
+    const events = securityEventsOf('suspicious_pattern_detected');
+    expect(events.length).toBeGreaterThan(0);
+
+    const event = events[events.length - 1];
+    expect(event.severity).toBe('warning');
+    expect(event.ip).toBe('1.2.3.4');
+    expect((event.details.patterns as string[]).join(' ')).toContain('script');
+    expect(event.details.path).toBe('/login');
   });
 
   it('detecta path traversal', () => {
     const monitor = securityMonitor as Monitor;
-    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
-    const req = {
-      ip: '9.9.9.9',
-      path: '/../../etc/passwd',
-      body: {},
-      get: () => 'agent'
-    };
-    const next = jest.fn();
 
-    monitor.detectThreats(req, {}, next);
+    monitor.detectThreats(requestLike({ path: '/../../etc/passwd', body: {} }), {}, () => {});
 
-    expect(monitor.getThreatReport({ type: 'suspicious_pattern' }).length).toBeGreaterThan(0);
-    warnSpy.mockRestore();
+    const events = securityEventsOf('suspicious_pattern_detected');
+    expect(events[events.length - 1].details.path).toBe('/../../etc/passwd');
   });
 
-  it('gera relatório de ameaças com filtros', () => {
+  it('detecta padrão de SQL no corpo', () => {
     const monitor = securityMonitor as Monitor;
-    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
-    const req = {
-      ip: '1.2.3.4',
-      path: '/login',
-      body: { user: 'SELECT * FROM users' },
-      get: () => 'agent'
-    };
 
-    monitor.detectThreats(req, {}, () => {});
-    monitor.detectThreats(req, {}, () => {});
+    monitor.detectThreats(requestLike({ body: { user: 'SELECT * FROM users' } }), {}, () => {});
 
-    const byType = monitor.getThreatStats().byType;
-    expect(byType.suspicious_pattern).toBeGreaterThanOrEqual(2);
+    const events = securityEventsOf('suspicious_pattern_detected');
+    expect((events[events.length - 1].details.patterns as string[]).join(' ')).toContain('select');
+  });
 
-    const filtered = monitor.getThreatReport({ ip: '1.2.3.4' });
-    expect(filtered.length).toBeGreaterThan(0);
-    warnSpy.mockRestore();
+  it('registra uma entrada só por requisição suspeita, mesmo com vários padrões', () => {
+    const monitor = securityMonitor as Monitor;
+    const before = securityEventsOf('suspicious_pattern_detected').length;
+
+    // Três padrões distintos no mesmo payload.
+    monitor.detectThreats(
+      requestLike({ body: { a: '<script>x</script>', b: 'javascript:alert(1)', c: 'vbscript:x' } }),
+      {},
+      () => {}
+    );
+
+    const after = securityEventsOf('suspicious_pattern_detected');
+    expect(after.length - before).toBe(1);
+    expect((after[after.length - 1].details.patterns as string[]).length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('requisição limpa não registra evento de segurança', () => {
+    const monitor = securityMonitor as Monitor;
+    const next = jest.fn();
+    const before = securityEventsOf('suspicious_pattern_detected').length;
+
+    monitor.detectThreats(requestLike({ body: { user: 'ana', password: 'x' } }), {}, next);
+
+    expect(securityEventsOf('suspicious_pattern_detected').length).toBe(before);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 
   it('mantém sincronia com o securityAuditLogger', () => {
-    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const monitor = securityMonitor as Monitor;
     const before = securityAuditLogger.getSecurityStats().totalRequests;
 
-    (securityMonitor as Monitor).detectThreats({
-      ip: '1.2.3.4',
-      path: '/login',
-      body: { user: '<iframe>' },
-      get: () => 'agent'
-    }, {}, () => {});
+    monitor.detectThreats(requestLike({ body: { user: '<iframe>' } }), {}, () => {});
 
     expect(securityAuditLogger.getSecurityStats().totalRequests).toBeGreaterThan(before);
-    warnSpy.mockRestore();
   });
 });

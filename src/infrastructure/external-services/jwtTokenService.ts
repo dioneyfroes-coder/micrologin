@@ -41,6 +41,17 @@ const BLACKLIST_REVOKED_VALUE = 'revoked';
 const USER_SESSION_VERSION_PREFIX = 'user_session_version:';
 
 /**
+ * Chave da marca de revogação por usuário, para tokens emitidos antes do `sv`.
+ *
+ * Constante porque é escrita e lida em pontos diferentes do arquivo. Se as duas
+ * pontas divergissem, `isUserRevoked` não acharia a marca e devolveria `false` —
+ * ou seja, um token revogado passaria a ser aceito, sem erro em lugar nenhum.
+ * É o tipo de divergência que nenhum teste de integração pega, porque as duas
+ * pontas usam a mesma constante errada.
+ */
+const USER_TOKENS_REVOKED_PREFIX = 'user_tokens_revoked:';
+
+/**
  * Política de revogação quando o armazenamento (Redis) não está disponível.
  * - `failOpen: true`  → degrada para disponibilidade (tokens revogados podem
  *                        ser aceitos). Aceitável em dev/test.
@@ -463,7 +474,7 @@ export class JWTTokenService implements TokenService {
         return false;
       }
 
-      const revokedAt = await this.redisClient.get(`user_tokens_revoked:${userId}`);
+      const revokedAt = await this.redisClient.get(`${USER_TOKENS_REVOKED_PREFIX}${userId}`);
       if (!revokedAt) {
         return false;
       }
@@ -601,7 +612,7 @@ export class JWTTokenService implements TokenService {
 
       await this.redisClient.incr(versionKey);
       await this.redisClient.expire(versionKey, ttlSeconds);
-      await this.redisClient.setEx(`user_tokens_revoked:${userId}`, ttlSeconds, Date.now().toString());
+      await this.redisClient.setEx(`${USER_TOKENS_REVOKED_PREFIX}${userId}`, ttlSeconds, Date.now().toString());
       return true;
     } catch (error) {
       return this.handleRevocationError('revogar tokens do usuário', error);
@@ -631,7 +642,7 @@ export class JWTTokenService implements TokenService {
         return false;
       }
 
-      const legacy = await this.redisClient.get(`token_blacklist:${token}`);
+      const legacy = await this.redisClient.get(`${BLACKLIST_PREFIX}${token}`);
       return legacy !== null;
     } catch (error) {
       return this.handleRevocationError('verificar blacklist', error);

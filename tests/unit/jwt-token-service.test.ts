@@ -661,4 +661,33 @@ describe('JWTTokenService - revogação em massa cobre as duas metades da sessã
     // logins futuros; a revogação precisa desaparecer sozinha.
     expect(redis.expire).toHaveBeenCalledWith('user_session_version:user-73', expect.any(Number));
   });
+
+  it('token sem `sv` ainda é derrubado por `revokeUserTokens`', async() => {
+    const redis = makeRedisClient();
+    const service = new JWTTokenService(SECRET, SECRET, redis as never);
+
+    // Payload no formato anterior ao `sv`: o caminho de verificação cai na marca
+    // `user_tokens_revoked`, que é um par escrita/leitura separado do contador
+    // de versão. Se as duas pontas usarem chaves diferentes, o token revogado
+    // volta a ser aceito sem nenhum erro — por isso o round-trip, e não a
+    // conferência de chamada.
+    const legado = { id: 'user-74', username: 'eva', iat: Math.floor(Date.now() / 1000) - 60 };
+
+    expect(await service.isUserRevoked(legado)).toBe(false);
+
+    await service.revokeUserTokens('user-74');
+
+    expect(await service.isUserRevoked(legado)).toBe(true);
+  });
+
+  it('a marca de revogação legada não atinge token emitido depois dela', async() => {
+    const redis = makeRedisClient();
+    const service = new JWTTokenService(SECRET, SECRET, redis as never);
+
+    await service.revokeUserTokens('user-75');
+
+    // Emitido depois da revogação: a marca é um instante, não um flag permanente.
+    const posterior = { id: 'user-75', username: 'dani', iat: Math.floor(Date.now() / 1000) + 10 };
+    expect(await service.isUserRevoked(posterior)).toBe(false);
+  });
 });

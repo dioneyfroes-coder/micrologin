@@ -1367,7 +1367,7 @@ Adicionar testes de segurança e concorrência, não apenas happy path.
 
 **Estado: concluída, exceto dois itens de infraestrutura que dependem de
 docker/compose** (reconexão do Redis e restart do container). Total hoje:
-**32 suítes / 391 testes unitários**, **6 suítes / 38 testes de integração**,
+**32 suítes / 395 testes unitários**, **6 suítes / 38 testes de integração**,
 **1 suíte / 14 testes E2E** contra MongoDB e Redis reais.
 
 O `GET /observability` ganhou suíte própria de superfície
@@ -1474,6 +1474,49 @@ Priorizar:
 - `jwtTokenService.ts`.
 
 Não necessariamente reduzir linhas por reduzir. A meta é remover estados paralelos e decisões duplicadas.
+
+**Estado: concluída.** O diagnóstico inicial do documento estava errado em dois
+pontos, e a medição corrigiu o rumo:
+
+- `authRoutes.ts` tem 87% de comentário, mas são 13 blocos `@swagger` — é o
+  contrato público da API, não inchaço. Não foi tocado.
+- `inputValidation.ts` não existe mais: foi consolidado em `validation.ts`, com a
+  fronteira de responsabilidade explícita no cabeçalho. A reestruturação em
+  diretórios sugerida mais abaixo (`validation/`, `normalization/`,
+  `security-observability/`) já tinha sido feita em fase anterior, e
+  `inputNormalization.ts` declara o que não faz e por quê.
+
+O que era para reduzir, de fato:
+
+- [x] **Buffer de eventos duplicado.** `securityMonitoring` mantinha um
+      `threatLog` de 1000 eventos ao lado do `events` do `securityAuditLogger`,
+      com o mesmo cap. `detectThreats` gravava o mesmo evento nos dois, com
+  `timestamp` em formatos diferentes (ISO na auditoria, epoch no monitor), e
+  nada lia a segunda cópia. O registro vai só para o `securityAuditLogger`, que é
+  o buffer que `/security/*` e o manifesto de observabilidade já liam.
+- [x] **Superfície inalcançável.** Só `detectThreats` era montado no app.
+  `monitorAuthAttempts` (corpo vazio, e o comentário afirmava que ele "garantia
+  que estava sendo monitorado"), `detectAnomalies`/`cleanupAnomalies` e o
+  subsistema `threatLog` existiam só para satisfazer teste próprio — ~200 linhas.
+  `securityMonitoring.ts` foi de 295 para 93 linhas.
+- [x] **Bug no id do log de ameaças:** `id = length + 1` colidia depois do
+      `shift()` (id 1001 se repetia) e reiniciava no `clearThreatLog()`. O id
+      deixou de existir junto com o buffer.
+- [x] **Campo morto:** `details.timestamp` era escrito em 5 lugares do
+      `securityAudit.ts` e nunca lido, ao lado de `event.timestamp`.
+- [x] **Decisão duplicada:** "o que é falha" era derivado em `updateStats` e em
+      `checkAlerts`. Agora existe `isAuthFailure`, ponto único.
+- [x] **Custo por evento registrado:** `checkAlerts` roda em todo evento e
+      chamava `getRecentEvents`, que fazia `new Date(iso).getTime()` em até 1000
+      eventos — 1000 parses de string por requisição registrada. O evento passou
+      a carregar `atMs` (epoch ms do mesmo `Date`), medido em **11,6x** mais
+      rápido com o buffer cheio.
+- [x] **Chaves de revogação duplicadas em `jwtTokenService.ts`:** a marca
+      `user_tokens_revoked` era montada inline na leitura *e* na escrita, e o
+      prefixo da blacklist era hardcoded no caminho legado. Divergir entre as
+      duas pontas faria `isUserRevoked` devolver `false` — token revogado
+      aceito, sem erro em lugar nenhum. Agora são constantes, com round-trip
+      coberto por teste (que falha de verdade quando a chave diverge).
 
 ## Exemplo de direção
 

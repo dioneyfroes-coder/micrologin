@@ -37,6 +37,35 @@ describe('SecurityAuditLogger - auditoria de segurança', () => {
     warnSpy.mockRestore();
   });
 
+  it('mantém `atMs` e `timestamp` no mesmo instante', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const audit = makeLogger();
+
+    audit.logIPBlock('1.2.3.4', 'muitas tentativas', 60000);
+
+    const event = audit.getRecentEvents()[0];
+    // Se os dois divergirem, `getRecentEvents` filtra por um instante e a API
+    // mostra outro: o relatório contaria como recente um evento velho.
+    expect(event.atMs).toBe(new Date(event.timestamp).getTime());
+
+    warnSpy.mockRestore();
+  });
+
+  it('`getRecentEvents` usa a janela, não a ordem de inserção', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const audit = makeLogger();
+
+    audit.logIPBlock('1.2.3.4', 'antigo', 60000);
+    // Envelhece o primeiro evento além da janela padrão de 5 minutos.
+    audit.getRecentEvents()[0].atMs -= 600000;
+    audit.logIPBlock('5.6.7.8', 'recente', 60000);
+
+    const ids = audit.getRecentEvents().map(e => e.ip);
+    expect(ids).toEqual(['5.6.7.8']);
+
+    warnSpy.mockRestore();
+  });
+
   it('contabiliza sucesso e falha em contadores separados, nunca somados', () => {
     const successSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});

@@ -22,6 +22,16 @@ interface AuditEventDetails {
 
 interface SecurityEvent {
   timestamp: string;
+  /**
+   * Mesmo instante de `timestamp`, em epoch ms.
+   *
+   * A string ISO é o que sai na API e no log. Comparar janelas com ela exigiria
+   * `new Date(iso).getTime()` em todo evento, e `getRecentEvents` roda a cada
+   * registro — com 1000 eventos no buffer, isso são 1000 parses por requisição
+   * registrada. Guardar o número resolve e não duplica estado: os dois são
+   * escritos no mesmo lugar, a partir do mesmo `Date`.
+   */
+  atMs: number;
   type: string;
   details: AuditEventDetails;
   severity: Severity;
@@ -68,8 +78,10 @@ export class SecurityAuditLogger {
    * Registra evento de segurança
    */
   logSecurityEvent(type: string, details: AuditEventDetails, severity: Severity = 'info'): void {
+    const at = new Date();
     const event: SecurityEvent = {
-      timestamp: new Date().toISOString(),
+      timestamp: at.toISOString(),
+      atMs: at.getTime(),
       type,
       details,
       severity,
@@ -128,8 +140,7 @@ export class SecurityAuditLogger {
     this.logSecurityEvent(type, {
       ...context,
       outcome,
-      ...(reason ? { reason } : {}),
-      timestamp: Date.now()
+      ...(reason ? { reason } : {})
     }, isSuccessOutcome(outcome) ? 'info' : 'warning');
     return outcome;
   }
@@ -141,8 +152,7 @@ export class SecurityAuditLogger {
     this.logSecurityEvent('ip_blocked', {
       ip,
       reason,
-      duration,
-      timestamp: Date.now()
+      duration
     }, 'warning');
   }
 
@@ -154,8 +164,7 @@ export class SecurityAuditLogger {
       ip,
       userAgent,
       activity,
-      details,
-      timestamp: Date.now()
+      details
     }, 'warning');
   }
 
@@ -167,8 +176,7 @@ export class SecurityAuditLogger {
       ip,
       path,
       userAgent,
-      limit,
-      timestamp: Date.now()
+      limit
     }, 'warning');
   }
 
@@ -181,8 +189,7 @@ export class SecurityAuditLogger {
       ip,
       userAgent,
       payload: payload.substring(0, 200), // Limitar tamanho
-      blocked,
-      timestamp: Date.now()
+      blocked
     }, 'error');
   }
 
@@ -194,9 +201,24 @@ export class SecurityAuditLogger {
   }
 
   /**
+   * Um outcome de autenticação conta como falha?
+   *
+   * Ponto único da decisão. `updateStats` (contagem total) e `checkAlerts`
+   * (janela de 5 minutos) olham a mesma propriedade; se as duas derivassem
+   * "falha" por conta própria, um alerta poderia disparar sobre um contador que
+   * ninguém incrementou, ou o contrário.
+   *
+   * `undefined` é falha. Só `login_attempt` e `password_change` trazem outcome;
+   * um evento sem outcome é justamente o que o alerta precisa notar.
+   */
+  private static isAuthFailure(outcome: AuthOutcome | undefined): boolean {
+    return !isSuccessOutcome(outcome as AuthOutcome);
+  }
+
+  /**
    * Atualiza estatísticas
    */
-  updateStats(type: string, details: AuditEventDetails): void {
+  private updateStats(type: string, details: AuditEventDetails): void {
     this.stats.totalRequests++;
 
     switch (type) {
@@ -205,11 +227,10 @@ export class SecurityAuditLogger {
       // resultado tem contador próprio. Um contador único que contasse todo
       // login como "failed" produziria alerta errado em base de usuários grande.
       this.stats.loginAttempts++;
-      const outcome = details.outcome as AuthOutcome | undefined;
-      if (outcome && isSuccessOutcome(outcome)) {
-        this.stats.successfulLogins++;
-      } else {
+      if (SecurityAuditLogger.isAuthFailure(details.outcome as AuthOutcome | undefined)) {
         this.stats.failedLogins++;
+      } else {
+        this.stats.successfulLogins++;
       }
       break;
     }
@@ -228,7 +249,7 @@ export class SecurityAuditLogger {
    * Log formatado no console
    * Apenas eventos de alerta (warning/error) são emitidos no console
    */
-  logToConsole(event: SecurityEvent): void {
+  private logToConsole(event: SecurityEvent): void {
     if (event.severity === 'info') {
       return;
     }
@@ -244,12 +265,12 @@ export class SecurityAuditLogger {
   /**
    * Verifica se deve disparar alertas
    */
-  checkAlerts(type: string): void {
-    const recentEvents = this.getRecentEvents(300000); // 5 minutos
-    const typeEvents = recentEvents.filter(event =>
+  private checkAlerts(type: string): void {
+    const typeEvents = this.getRecentEvents(300000).filter(event =>
       // Alerta de login olha só para as falhas: successes não são sinal de
       // ataque, e somá-los faria o alerta disparar numa base de usuários grande.
-      event.type === type && (type !== 'login_attempt' || !isSuccessOutcome(event.details.outcome as AuthOutcome))
+      event.type === type &&
+      (type !== 'login_attempt' || SecurityAuditLogger.isAuthFailure(event.details.outcome as AuthOutcome | undefined))
     );
 
     if (type === 'login_attempt' && typeEvents.length >= this.alertThresholds.failedLogins) {
@@ -267,15 +288,15 @@ export class SecurityAuditLogger {
 
   /**
    * Dispara alerta de segurança
+   *
+   * O alerta é um log. A notificação externa (e-mail, Slack) é o destino do
+   * `setAuthEventSink`, não um `if` pendurado aqui.
    */
-  triggerAlert(alertType: string, events: SecurityEvent[]): void {
+  private triggerAlert(alertType: string, events: SecurityEvent[]): void {
     logger.warn(`🚨 ALERTA DE SEGURANÇA: ${alertType}`, {
       events: events.length,
       lastEvent: events[events.length - 1]
     });
-
-    // Aqui poderia integrar com sistemas de notificação
-    // (email, Slack, SMS, etc.)
   }
 
   /**
@@ -283,10 +304,7 @@ export class SecurityAuditLogger {
    */
   getRecentEvents(timeWindow = 300000): SecurityEvent[] {
     const now = Date.now();
-    return this.events.filter(event => {
-      const eventTime = new Date(event.timestamp).getTime();
-      return now - eventTime < timeWindow;
-    });
+    return this.events.filter(event => now - event.atMs < timeWindow);
   }
 
   /**
