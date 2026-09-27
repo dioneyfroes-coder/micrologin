@@ -4,7 +4,7 @@
  * Provenance-ID: ML-0BSX
  *
  * GET /observability — endpoint próprio de observabilidade (baseado em logs).
- * Mesma proteção do /metrics (x-metrics-token quando METRICS_TOKEN configurado).
+ * Exige x-metrics-token quando METRICS_TOKEN está configurado.
  */
 import { Router } from 'express';
 import type { NextFunction, Request, Response } from 'express';

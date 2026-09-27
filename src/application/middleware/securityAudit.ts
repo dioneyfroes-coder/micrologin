@@ -9,7 +9,7 @@ import type { AuthEventKind, AuthOutcome } from '../../shared/utils/authOutcomes
 import {
   recordLoginAttempt,
   recordPasswordChange
-} from '../../shared/utils/metrics.js';
+} from '../observability/authEventSink.js';
 
 type Severity = 'info' | 'warning' | 'error';
 
@@ -90,10 +90,10 @@ export class SecurityAuditLogger {
   }
 
   /**
-   * Registra tentativa de login, e alimenta a métrica correspondente.
+   * Registra tentativa de login, e publica o evento correspondente.
    *
    * `outcomeOrCode` é o código do domínio (ou `'success'`). A tradução é feita
-   * uma vez aqui; a auditoria e o Prometheus recebem o mesmo rótulo.
+   * uma vez aqui; a auditoria e o evento publicado recebem o mesmo rótulo.
    */
   logLoginAttempt(username: string, ip: string, userAgent: string, outcomeOrCode: string | null | undefined, reason?: string): void {
     const outcome = this.recordAuth('login', 'login_attempt', outcomeOrCode, { username, ip, userAgent }, reason);
@@ -201,7 +201,7 @@ export class SecurityAuditLogger {
 
     switch (type) {
     case 'login_attempt': {
-      // A métrica é semântica: `loginAttempts` soma os dois lados e cada
+      // O contador é semântico: `loginAttempts` soma os dois lados e cada
       // resultado tem contador próprio. Um contador único que contasse todo
       // login como "failed" produziria alerta errado em base de usuários grande.
       this.stats.loginAttempts++;

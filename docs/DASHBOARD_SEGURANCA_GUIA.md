@@ -4,7 +4,7 @@
 
 Este documento fornece um guia prático e didático para utilizar o sistema de monitoramento e dashboard de segurança implementado no microserviço de autenticação.
 
-> 🚨 **Alertas Prometheus**: regras de alerta prontas (health, 5xx, p95 latência, memória e event loop) em [`examples/prometheus-alerts.yml`](examples/prometheus-alerts.yml). É o primeiro passo para o Grafana/Prometheus: monte o arquivo no Prometheus e configure o Alertmanager para entrega das notificações.
+> 🚨 **Alertas**: o serviço não embute nem scrapeia métricas. As fontes são os logs estruturados e o manifesto de `GET /observability` (protegido por `METRICS_TOKEN`). O alerta é escrito contra essas fontes, no meio de observabilidade que você plugar em `setAuthEventSink` (`src/application/observability/authEventSink.ts`).
 
 ## Credencial do dashboard
 
@@ -335,18 +335,6 @@ RISK_LEVEL=$(echo $STATS | jq -r '.security.riskLevel')
 if [ "$RISK_LEVEL" = "HIGH" ]; then
     send_slack_alert "Nível de risco ALTO no microserviço de auth!" "CRITICAL"
 fi
-```
-
-### **📊 Integração com Grafana/Prometheus**
-```bash
-# Endpoint personalizado para métricas (adicionar ao servidor)
-# GET /metrics - formato Prometheus
-
-# Exemplo de métricas:
-# auth_requests_total{status="success"} 1824
-# auth_requests_total{status="blocked"} 23
-# auth_failed_logins_total 12
-# auth_risk_level{level="medium"} 1
 ```
 
 ---

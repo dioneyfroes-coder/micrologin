@@ -117,8 +117,16 @@ export const setupErrorHandlers = (server: NodeServer, timeoutMs = 10000) => {
   process.on('uncaughtException', (err: Error) => {
     logger.error('❌ Erro não tratado', err);
 
-    // Se for erro de métricas, não quebrar a aplicação
-    if (err.message.includes('forEach') || err.message.includes('metrics')) {
+    // Isenção por mensagem, legada de quando a coleta de métricas era feita por
+    // biblioteca de terceiros. Hoje o caminho de observabilidade se protege
+    // sozinho (o sink engole o próprio erro), então nada daqui deveria casar.
+    //
+    // O efeito colateral é o oposto do pretendido: `forEach` aparece na
+    // mensagem de qualquer TypeError lançado dentro de um forEach do domínio,
+    // e esse processo segue rodando com estado possivelmente inconsistente.
+    // Tratar isso é decisão de resiliência (derrubar e deixar o PM2 reiniciar,
+    // ou continuar), não de remoção de stack.
+    if (err.message.includes('forEach')) {
       return; // NÃO chamar gracefulShutdown
     }
 

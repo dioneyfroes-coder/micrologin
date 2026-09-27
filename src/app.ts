@@ -14,7 +14,6 @@ import {
 } from './interfaces/config/appConfig.js';
 
 // Utilitários e middlewares
-import { metricsMiddleware } from './shared/utils/metrics.js';
 import { initRedis } from './infrastructure/cache/connection.js';
 import { requestLogger } from './application/middleware/requestLogger.js';
 import { connectDatabase } from './infrastructure/database/connection.js';
@@ -78,7 +77,6 @@ class AuthService {
     this.app.use(requestLogger);
     this.app.use(express.json({ limit: '100kb' }));
     this.app.use(express.urlencoded({ extended: true }));
-    this.app.use(metricsMiddleware);
     this.app.use(normalizeInput);
     this.app.use((req: Request, res: Response, next: NextFunction) => securityMonitor.detectThreats(req, res, next));
     this.app.use(advancedRateLimit.checkLimits);
@@ -140,13 +138,13 @@ class AuthService {
 
         server.listen(port, () => {
           logger.info(`🚀 Servidor HTTPS rodando em https://${serverConfig.host}:${port}`);
-          logger.info(`📚 API Docs: https://${serverConfig.host}:${port}/api-docs | 📊 Métricas: https://${serverConfig.host}:${port}/metrics | 🏥 Health: https://${serverConfig.host}:${port}/health`);
+          logger.info(`📚 API Docs: https://${serverConfig.host}:${port}/api-docs | 🏥 Health: https://${serverConfig.host}:${port}/health`);
         });
       } else {
         // Servidor HTTP para desenvolvimento
         this.server = this.app.listen(port, () => {
           logger.info(`🚀 Servidor HTTP rodando em http://${serverConfig.host}:${port}`);
-          logger.info(`📚 API Docs: http://${serverConfig.host}:${port}/api-docs | 📊 Métricas: http://${serverConfig.host}:${port}/metrics | 🏥 Health: http://${serverConfig.host}:${port}/health`);
+          logger.info(`📚 API Docs: http://${serverConfig.host}:${port}/api-docs | 🏥 Health: http://${serverConfig.host}:${port}/health`);
           if (serverConfig.nodeEnv !== 'production') {
             logger.warn('⚠️ Modo HTTP (sem SSL)');
           }

@@ -5,10 +5,13 @@
 .PHONY: help install setup dev dev-watch stop logs build build-docker build-docker-prod \
  test test-unit test-integration test-coverage test-watch lint lint-fix typecheck audit \
  deploy-local deploy-staging deploy-prod smoke-test docker-up docker-down docker-rebuild docker-logs docker-clean \
- health metrics docs shell redis-cli mongo-shell pre-commit status watch reset clean
+ health observability docs shell redis-cli mongo-shell pre-commit status watch reset clean
 
 # Porta pública do app: lida de .env (fonte da verdade); default 3000.
 APP_PORT:=$(shell grep -E '^APP_PORT=[0-9]+' .env 2>/dev/null | cut -d= -f2-)
+# Token do manifesto de observabilidade, mesma fonte. Vazio é o estado de
+# desenvolvimento (sem token, acesso liberado).
+METRICS_TOKEN:=$(shell grep -E '^METRICS_TOKEN=' .env 2>/dev/null | cut -d= -f2-)
 ifeq ($(strip $(APP_PORT)),)
 APP_PORT:=3000
 endif
@@ -138,8 +141,8 @@ docker-clean: ## Limpar containers e volumes
 health: ## Verificar saúde da aplicação (porta do .env)
 	curl -fsS "http://localhost:$(APP_PORT)/health"
 
-metrics: ## Ver métricas da aplicação (porta do .env)
-	curl -s "http://localhost:$(APP_PORT)/metrics"
+observability: ## Ver o manifesto de observabilidade (porta do .env)
+	@curl -fsS -H "x-metrics-token: $(METRICS_TOKEN)" "http://localhost:$(APP_PORT)/observability"
 
 docs: ## Abrir documentação da API
 	@echo "Documentação disponível em: http://localhost:$(APP_PORT)/api-docs"

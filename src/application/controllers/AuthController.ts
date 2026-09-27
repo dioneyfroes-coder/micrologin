@@ -9,7 +9,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { validationResult } from 'express-validator';
 import { securityAuditLogger } from '../middleware/securityAudit.js';
 import { HttpError } from '../../shared/utils/errorHandler.js';
-import { recordTokenRefresh } from '../../shared/utils/metrics.js';
+import { recordTokenRefresh } from '../observability/authEventSink.js';
 import type { AuthService } from '../../domain/index.js';
 import { REVOCATION_UNAVAILABLE_CODE } from '../../domain/index.js';
 
@@ -38,7 +38,7 @@ export class AuthWebController {
       // Delegar para o CORE
       const result = await this.authService.authenticateUser(username, password);
 
-      // Um registro só: a auditoria e a métrica saem do mesmo desfecho,
+      // Um registro só: a auditoria e o evento publicado saem do mesmo desfecho,
       // traduzido uma vez dentro do audit logger.
       securityAuditLogger.logLoginAttempt(
         username,

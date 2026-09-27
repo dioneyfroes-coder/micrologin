@@ -28,12 +28,17 @@ describe('rateLimitConfig - configuração centralizada', () => {
     expect(config.environment).toBe('production');
     expect(config.ip.points).toBe(100);
     expect(config.login.points).toBe(5);
+    // Endpoints consultados por máquina não levam rate limit: um probe que
+    // recebe 429 é um probe que mente.
     expect(config.exemptPaths).toEqual(expect.arrayContaining([
       '/health',
       '/liveness',
       '/readiness',
-      '/metrics'
+      '/observability'
     ]));
+    // A rota de métricas em texto puro foi removida; exemptionar um path que
+    // não existe é drift silencioso de configuração.
+    expect(config.exemptPaths).not.toContain('/metrics');
   });
 
   it('usa a configuração de desenvolvimento quando NODE_ENV=development', async() => {

@@ -22,7 +22,7 @@ export const setupSwagger = (app: Express): void => {
           - ✅ Login e registro de usuários
           - ✅ Autenticação via JWT tokens
           - ✅ Gerenciamento de perfil de usuário
-          - ✅ Health check e métricas
+          - ✅ Health check e manifesto de observabilidade
           - ✅ Rate limiting avançado
           
           ### Autenticação:

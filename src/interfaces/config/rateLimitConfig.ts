@@ -94,7 +94,6 @@ export const rateLimitConfig = {
     '/health',
     '/liveness',
     '/readiness',
-    '/metrics',
     '/observability',
     '/api-docs',
     '/favicon.ico'

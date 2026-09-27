@@ -9,14 +9,14 @@
  *
  * Este módulo existe porque a decisão "qual é o resultado deste evento?" estava
  * duplicada: o controller traduzia o mesmo resultado para duas línguas
- * diferentes - um booleano para a auditoria, uma string para o Prometheus - e
- * cada consumidor reinterpretava a sua. O efeito prático era que o controller
- * passava o código cru do domínio para o Prometheus, e como nenhum código do
- * domínio estava no conjunto de labels, todo desfecho diferente de sucesso
+ * diferentes - um booleano para a auditoria, uma string para o coletor de
+ * métricas - e cada consumidor reinterpretava a sua. O efeito prático era que o
+ * controller passava o código cru do domínio adiante, e como nenhum código do
+ * domínio estava no conjunto de rótulos, todo desfecho diferente de sucesso
  * virava `error`.
  *
  * Consequência: `reused`, `unavailable`, `invalid` e `current_password_invalid`
- * - justamente as labels que distinguem comprometimento de erro de usuário -
+ * - justamente os rótulos que distinguem comprometimento de erro de usuário -
  * nunca apareciam em nenhum gráfico. Um alerta de reuso de refresh token era
  * impossível de escrever.
  *
@@ -27,9 +27,9 @@
 /**
  * Resultado de um evento de autenticação, já normalizado.
  *
- * Lista fechada de propósito: rótulo de métrica vira dimensão de cardinalidade
- * e custo de memória no Prometheus. Valor fora daqui vira `error`, nunca um
- * rótulo novo.
+ * Lista fechada de propósito: um rótulo por erro destruiria qualquer agrupamento
+ * posterior e explodiria a cardinalidade de onde for indexado. Valor fora daqui
+ * vira `error`, nunca um rótulo novo.
  */
 export const AUTH_OUTCOMES = [
   'success',
@@ -54,8 +54,9 @@ export type AuthEventKind = 'login' | 'token_refresh' | 'password_change';
 /**
  * Rótulos válidos por tipo de evento.
  *
- * É a lista que a `help` do Prometheus promete, agora derivada do código em vez
- * de escrita à mão num texto que ninguém conferia.
+ * Um vocabulário por tipo é o que torna os eventos comparáveis: `reused` só
+ * faz sentido para refresh, `current_password_invalid` só para troca de senha.
+ * A lista é derivada do código, não escrita à mão num texto que ninguém conferia.
  */
 export const AUTH_OUTCOMES_BY_KIND: Readonly<Record<AuthEventKind, readonly AuthOutcome[]>> = {
   login: ['success', 'failure', 'error'],
@@ -73,7 +74,7 @@ export const AUTH_OUTCOMES_BY_KIND: Readonly<Record<AuthEventKind, readonly Auth
 const OUTCOME_BY_CODE: Readonly<Record<AuthEventKind, Readonly<Record<string, AuthOutcome>>>> = {
   login: {
     // `/login` não distingue motivo de propósito: responder "usuário não
-    // encontrado" a uma senha errada enumeraria contas. Para o Prometheus toda
+    // encontrado" a uma senha errada enumeraria contas. Para quem observa, toda
     // recusa de credencial é a mesma coisa.
     AUTHENTICATION_FAILED: 'failure',
     VALIDATION_ERROR: 'failure'

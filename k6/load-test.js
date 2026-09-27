@@ -1,6 +1,6 @@
 // Teste de carga (k6) - Authentication Service
 //
-// Pré-requisito: instalar o k6  ->  https://grafana.com/docs/k6/latest/set-up/install-k6/
+// Pré-requisito: ter o k6 instalado na máquina.
 //
 // Uso:
 //   k6 run k6/load-test.js

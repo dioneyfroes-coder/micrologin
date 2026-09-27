@@ -1,13 +1,10 @@
 import { Router } from 'express';
 import { resolve, bootstrapServices } from '../../core/bootstrap.js';
 import { validateLogin, validateRegister, validateUpdate, validateRefresh, validateChangePassword } from '../middleware/validation.js';
-import { prometheus } from '../../shared/utils/metrics.js';
 import { performHealthCheck, performLivenessCheck, performReadinessCheck } from '../../shared/utils/healthCheck.js';
 import { advancedRateLimit } from '../middleware/advancedRateLimit.js';
-import { requireMetricsToken } from '../middleware/metricsToken.js';
 import securityRoutes from './securityRoutes.js';
 import { HttpError } from '../../shared/utils/errorHandler.js';
-import { logger } from '../../shared/utils/logger.js';
 import type { AuthWebController } from '../controllers/AuthController.js';
 import type { AuthWebMiddleware } from '../middleware/AuthMiddleware.js';
 
@@ -519,57 +516,6 @@ export function createAuthRoutes() {
       next(new HttpError(500, 'HEALTH_CHECK_FAILED', 'Erro ao executar health check'));
     }
   });
-
-  const METRICS_ENABLED = process.env.METRICS_ENABLED !== 'false';
-  const METRICS_TOKEN = process.env.METRICS_TOKEN || '';
-  const metricsEndpoint = process.env.METRICS_ENDPOINT || '/metrics';
-
-  if (METRICS_ENABLED) {
-    if (process.env.NODE_ENV === 'production' && !METRICS_TOKEN) {
-      logger.warn(`⚠️ ${metricsEndpoint} exposto SEM token de autenticação em produção. Configure METRICS_TOKEN.`);
-    }
-
-    /**
-     * @swagger
-     * /metrics:
-     *   get:
-     *     summary: Métricas Prometheus
-     *     description: Retorna métricas da aplicação no formato Prometheus (protegido por METRICS_TOKEN quando configurado)
-     *     tags: [Sistema]
-     *     responses:
-     *       200:
-     *         description: Métricas obtidas com sucesso
-     *         content:
-     *           text/plain:
-     *             schema:
-     *               type: string
-     *               example: |
-     *                 # HELP http_requests_total Total number of HTTP requests
-     *                 # TYPE http_requests_total counter
-     *                 http_requests_total{method="GET",route="/health",status_code="200"} 5
-     *       401:
-     *         description: Token de métricas ausente ou inválido
-     *         content:
-     *           application/json:
-     *             schema:
-     *               $ref: '#/components/schemas/ErrorResponse'
-     *       500:
-     *         description: Erro ao gerar métricas
-     *         content:
-     *           application/json:
-     *             schema:
-     *               $ref: '#/components/schemas/ErrorResponse'
-     */
-    router.get(metricsEndpoint, requireMetricsToken, async(req, res, next) => {
-      try {
-        res.set('Content-Type', prometheus.register.contentType);
-        const metrics = await prometheus.register.metrics();
-        res.end(metrics);
-      } catch {
-        next(new HttpError(500, 'METRICS_FAILED', 'Erro ao gerar métricas'));
-      }
-    });
-  }
 
   // Rotas de debug (apenas em desenvolvimento)
   if (process.env.NODE_ENV === 'development') {

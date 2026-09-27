@@ -23,6 +23,17 @@ if [[ -n "$SECURITY_DASHBOARD_TOKEN" ]]; then
     SECURITY_HEADERS=(-H "X-Security-Token: $SECURITY_DASHBOARD_TOKEN")
 fi
 
+# Mesmo token que protege /observability. Sem ele o manifesto responde 401, e o
+# manifesto é justamente o que este check precisa ler.
+METRICS_TOKEN="${METRICS_TOKEN:-$(grep -E '^METRICS_TOKEN=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)}"
+METRICS_HEADERS=()
+
+if [[ -n "$METRICS_TOKEN" ]]; then
+    METRICS_HEADERS=(-H "x-metrics-token: $METRICS_TOKEN")
+else
+    warning "METRICS_TOKEN ausente: /observability responde 401 e o manifesto não pode ser lido"
+fi
+
 mkdir -p "$(dirname "$LOG_FILE")"
 
 # Cores
@@ -103,23 +114,45 @@ check_health() {
     fi
 }
 
-# Verificar métricas do sistema
-check_metrics() {
-    local metrics=$(curl -k -s "$SERVICE_URL/metrics")
-    
-    # Verificar se há dados de métrica
-    if [[ -z "$metrics" ]]; then
-        error "No metrics data available"
+# Verificar o manifesto de observabilidade
+#
+# Não há mais scraping de métricas: o serviço não expõe /metrics. O manifesto
+# JSON de /observability é o agregado do mesmo requestLogger, e é a única leitura
+# de volume, latência e erro disponível.
+check_observability() {
+    local manifest=$(curl -k -s "${METRICS_HEADERS[@]}" "$SERVICE_URL/observability")
+
+    if [[ -z "$manifest" ]]; then
+        error "Observability manifest not responding"
         return 1
     fi
-    
-    # Extrair métricas importantes
-    local cpu_usage=$(echo "$metrics" | grep "process_cpu_seconds_total" | tail -1 | awk '{print $2}')
-    local memory_usage=$(echo "$metrics" | grep "process_resident_memory_bytes" | tail -1 | awk '{print $2}')
-    local request_count=$(echo "$metrics" | grep "http_requests_total" | tail -1 | awk '{print $2}')
-    
-    log "CPU: ${cpu_usage}s, Memory: ${memory_usage} bytes, Requests: ${request_count}"
-    
+
+    if echo "$manifest" | grep -q "METRICS_FORBIDDEN"; then
+        error "Observability manifest requires METRICS_TOKEN (header x-metrics-token)"
+        return 1
+    fi
+
+    # Campos reais de buildObservabilitySnapshot: requests.total,
+    # requests.latency_ms.p95, requests.errors.rate_pct,
+    # health.services.{mongodb,redis}.status
+    local total=$(echo "$manifest" | jq -r '.requests.total // empty' 2>/dev/null)
+    local p95=$(echo "$manifest" | jq -r '.requests.latency_ms.p95 // empty' 2>/dev/null)
+    local error_rate=$(echo "$manifest" | jq -r '.requests.errors.rate_pct // empty' 2>/dev/null)
+    local errors_5xx=$(echo "$manifest" | jq -r '.requests.errors."5xx" // empty' 2>/dev/null)
+    local mongo=$(echo "$manifest" | jq -r '.health.services.mongodb.status // empty' 2>/dev/null)
+    local redis=$(echo "$manifest" | jq -r '.health.services.redis.status // empty' 2>/dev/null)
+
+    if [[ -z "$total" && -z "$p95" && -z "$error_rate" ]]; then
+        error "Observability manifest without requests aggregate"
+        return 1
+    fi
+
+    log "Requests in window: ${total:-0} | P95: ${p95:-unknown}ms | Error rate: ${error_rate:-0}% (5xx=${errors_5xx:-0}) | mongo=${mongo:-unknown} redis=${redis:-unknown}"
+
+    if [[ "$mongo" != "healthy" || "$redis" != "healthy" ]]; then
+        warning "Dependency reported as ${mongo:-unknown}/${redis:-unknown} in the observability manifest"
+    fi
+
     return 0
 }
 
@@ -221,7 +254,7 @@ monitor_service() {
     fi
     
     # Verificar métricas
-    check_metrics
+    check_observability
     
     # Verificar segurança
     if ! require_security_token; then

@@ -162,11 +162,6 @@ export const securityConfig = {
  * Configurações de monitoramento e logging
  */
 export const monitoringConfig = {
-  metrics: {
-    enabled: process.env.METRICS_ENABLED !== 'false',
-    endpoint: process.env.METRICS_ENDPOINT || '/metrics'
-  },
-
   healthCheck: {
     enabled: process.env.HEALTH_CHECK_ENABLED !== 'false',
     endpoint: process.env.HEALTH_CHECK_ENDPOINT || '/health'

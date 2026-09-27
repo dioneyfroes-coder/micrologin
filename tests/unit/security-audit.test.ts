@@ -23,8 +23,15 @@ describe('SecurityAuditLogger - auditoria de segurança', () => {
     // resultado a partir de um booleano paralelo.
     expect(audit.getRecentEvents()[0].details.outcome).toBe('success');
     expect(audit.getRecentEvents()[1].details.outcome).toBe('failure');
+    // A auditoria alerta só a falha. O evento em si é publicado no log
+    // estruturado (é o que sustenta a retrospectiva), mas um login correto não
+    // pode virar alerta.
     expect(warnSpy).toHaveBeenCalled();
-    expect(successSpy).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(successSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining('[SECURITY]'),
+      expect.anything()
+    );
 
     successSpy.mockRestore();
     warnSpy.mockRestore();

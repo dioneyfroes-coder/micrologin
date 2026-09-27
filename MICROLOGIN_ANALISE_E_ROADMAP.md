@@ -21,7 +21,7 @@ A nota não mede apenas quantidade de código. Ela combina qualidade estrutural,
 | Domínio / regras de negócio | **7,5** | O núcleo é bem isolado, mas algumas regras anunciadas no modelo de dados não chegam ao domínio. |
 | Segurança | **6,0** | Há bastante proteção implementada, mas existem falhas importantes de exposição e comportamento fail-open. |
 | Testes | **8,0** | Boa quantidade e existe E2E contra MongoDB/Redis reais. Faltam testes para alguns dos casos mais perigosos. |
-| Observabilidade | **7,5** | Prometheus + logs estruturados + agregador são uma boa base, mas há métricas internas com semântica incorreta. |
+| Observabilidade | **7,5** | A base é boa, mas os contadores de autenticação tinham semântica incorreta (ver Fase 9). |
 | Docker / infraestrutura | **7,0** | Multi-stage, usuário non-root, healthcheck e limites de recursos são bons. Escala do compose está incorreta. |
 | CI/CD | **5,5** | CI é relativamente completo; deploy e blue-green são declarados, mas ainda são placeholders. |
 | Documentação | **7,0** | Há bastante documentação, porém existem divergências entre README e implementação. |
@@ -590,7 +590,6 @@ Há uma base boa:
 
 - `X-Request-Id`;
 - logs estruturados;
-- Prometheus;
 - duração por requisição;
 - P50/P95/P99;
 - agregação por status e rota;
@@ -617,7 +616,7 @@ worker C → agregador C
 
 Não existe uma visão global.
 
-Como o projeto já possui Prometheus, o endpoint `/observability` pode continuar existindo como diagnóstico local, mas não deve ser tratado como fonte global para métricas de produção.
+O agregador é por processo, e o endpoint `/observability` é diagnóstico local: não deve ser tratado como fonte global para produção. O destino dos eventos de autenticação é uma porta (`setAuthEventSink`), então o meio de observação global entra ali sem tocar nos chamadores.
 
 ### 9.2 `X-Request-Id` recebido do cliente deveria ser validado
 
@@ -844,7 +843,6 @@ rate limiter
 security audit
 security monitor
 observability
-Prometheus
 Swagger
 Docker
 PM2
@@ -935,7 +933,7 @@ Aplicar em:
 /security/health
 ```
 
-Não usar o mesmo segredo destinado ao Prometheus se o objetivo for separar responsabilidades.
+Não usar o mesmo segredo em escopos diferentes se o objetivo for separar responsabilidades.
 
 ## 1.2 Remover enumeração de contas
 
@@ -1192,7 +1190,7 @@ auth_password_changes_total{outcome}
 ruim) porque os dois significam coisas diferentes para o alerta. Valores fora da
 lista fechada viram `error`, para o rótulo não virar cardinalidade infinita.
 
-Testes: `tests/unit/security-audit.test.ts` e `tests/unit/metrics-middleware.test.ts`.
+Testes: `tests/unit/security-audit.test.ts` e `tests/unit/auth-event-sink.test.ts`.
 
 ## 5.2 Separar health endpoints
 
@@ -1369,8 +1367,13 @@ Adicionar testes de segurança e concorrência, não apenas happy path.
 
 **Estado: concluída, exceto dois itens de infraestrutura que dependem de
 docker/compose** (reconexão do Redis e restart do container). Total hoje:
-**31 suítes / 376 testes unitários**, **5 suítes / 34 testes de integração**,
+**32 suítes / 391 testes unitários**, **6 suítes / 38 testes de integração**,
 **1 suíte / 14 testes E2E** contra MongoDB e Redis reais.
+
+O `GET /observability` ganhou suíte própria de superfície
+(`tests/integration/observability-surface.test.ts`): token obrigatório, recusa de
+token errado, manifesto em JSON próprio e ausência de qualquer rota de
+métricas montada no app.
 
 ## Obrigatórios
 
@@ -1425,7 +1428,7 @@ docker/compose** (reconexão do Redis e restart do container). Total hoje:
 ### Segurança HTTP
 
 - [x] `/security/*` exige credencial administrativa;
-- [x] `/metrics` exige token quando configurado;
+- [x] o manifesto de observabilidade exige token quando configurado;
 - [x] `/observability` exige token;
 - [x] JSON inválido retorna 400;
 - [x] headers de segurança presentes;
@@ -1448,6 +1451,15 @@ docker/compose** (reconexão do Redis e restart do container). Total hoje:
 ---
 
 # Fase 9 — qualidade de código
+
+> **Registro de 2026-09-27: a stack de scrape de métricas foi removida do
+> projeto.** Não há biblioteca de métricas, coletor nem formato de saída
+> embutido. O que permanece: logs estruturados, o agregador por processo e o
+> manifesto de `GET /observability`. Os eventos de autenticação saem por uma porta
+> (`setAuthEventSink` em `src/application/observability/authEventSink.ts`), e o
+> meio de observação próprio é plugado ali — ele substitui tanto o scraper
+> quanto o alerta que hoje não existe. `METRICS_TOKEN` continua protegendo o
+> manifesto, por compatibilidade de configuração já implantada.
 
 ## Reduzir complexidade
 

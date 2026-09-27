@@ -3,10 +3,16 @@
  * Project: Micrologin
  * Provenance-ID: ML-0BTK
  *
- * Proteção compartilhada dos endpoints de observabilidade/métricas.
- * Se METRICS_TOKEN não for configurado, o acesso é liberado (mesmo
- * comportamento histórico do /metrics). Caso contrário exige o header
- * `x-metrics-token` com o valor exato.
+ * Proteção do manifesto de observabilidade (`GET /observability`).
+ *
+ * Se METRICS_TOKEN não for configurado, o acesso é liberado - o manifesto traz
+ * volumes, latência e estatísticas de segurança, então em produção o token deve
+ * existir. Caso contrário, exige o header `x-metrics-token` com o valor exato.
+ *
+ * O nome do token e do middleware preserva `METRICS_TOKEN` por compatibilidade
+ * de configuração já implantada. Renomear para `OBSERVABILITY_TOKEN` mudaria a
+ * variável de ambiente de quem já tem o serviço no ar, o que é troca de
+ * contrato, não refatoração interna.
  */
 import type { NextFunction, Request, Response } from 'express';
 import { HttpError } from '../../shared/utils/errorHandler.js';

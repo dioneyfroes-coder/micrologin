@@ -1,9 +1,9 @@
 /**
  * Vocabulário de desfecho dos eventos de autenticação.
  *
- * O teste que importa é o último: ele alimenta os códigos que o domínio REALMENTE
+ * O teste que importa é o do meio: ele alimenta os códigos que o domínio REALMENTE
  * emite. A versão anterior destes testes passava 'reused' e 'invalid' direto
- * para o Prometheus e thereby provava que a tradutora funcionava - quando, em
+ * para o coletor e thereby provava que a tradutora funcionava — quando, em
  * produção, ninguém nunca passava essas strings, e todo desfecho colapsava em
  * `error`. Um teste que só exercita a fantasia da implementação não protege
  * nada.
@@ -50,8 +50,7 @@ describe('authOutcomes - tradução do desfecho', () => {
   });
 
   it('código desconhecido vira "error" e nunca cria um rótulo novo', () => {
-    // Rótulo de métrica vira dimensão de cardinalidade: um valor arbitrário
-    // virando label acabaria com o Prometheus.
+    // Um rótulo por erro destruiria qualquer agrupamento posterior.
     expect(authOutcomeFor('password_change', 'senha_com_aspas\n_e_linha_nova')).toBe('error');
     expect(authOutcomeFor('token_refresh', 'qualquer_coisa')).toBe('error');
   });
@@ -77,11 +76,11 @@ describe('authOutcomes - tradução do desfecho', () => {
     expect(authOutcomeFor('password_change', 'unavailable')).toBe('error');
   });
 
-  it('todo rótulo prometido na ajuda do Prometheus é alcançável', () => {
-    // A `help` da métrica é montada a partir de AUTH_OUTCOMES_BY_KIND. Um
-    // rótulo acrescentado à lista sem tradutor correspondente seria prometido
-    // na documentação e nunca apareceria - que é exatamente o defeito anterior,
-    // em que `reused` e `unavailable` constavam da ajuda e não existiam.
+  it('todo rótulo declarado como válido é alcançável pelo tradutor', () => {
+    // AUTH_OUTCOMES_BY_KIND é a lista que o consumidor promises. Um rótulo
+    // acrescentado à lista sem tradutor correspondente seria prometido na
+    // documentação e nunca apareceria - que é exatamente o defeito anterior, em
+    // que `reused` e `unavailable` constavam da lista e não existiam.
     for (const kind of Object.keys(AUTH_OUTCOMES_BY_KIND) as AuthEventKind[]) {
       for (const label of AUTH_OUTCOMES_BY_KIND[kind]) {
         expect({ kind, label, translated: authOutcomeFor(kind, label) })
@@ -90,7 +89,7 @@ describe('authOutcomes - tradução do desfecho', () => {
     }
   });
 
-  it('a ajuda de cada métrica não promete rótulo de outro fluxo', () => {
+  it('a lista de cada fluxo não inclui rótulo de outro fluxo', () => {
     // `reused` é legítimo em token_refresh e não tem como ocorrer em login.
     expect(AUTH_OUTCOMES_BY_KIND.login).not.toContain('reused');
     expect(AUTH_OUTCOMES_BY_KIND.token_refresh).toContain('reused');

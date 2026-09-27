@@ -14,7 +14,7 @@ Projeto de portfólio em Node.js para demonstrar uma API de autenticação com a
 - política de senha forte em fonte única (12+ caracteres, máximo de 72 bytes = limite do bcrypt, composição, lista de senhas comuns) e troca de senha com step-up, histórico de 5 hashes e encerramento das sessões
 - rate limiting por IP e por login, com backend Redis e fallback em memória quando o Redis está indisponível
 - monitoramento auxiliar de segurança com limites de memória (auditoria e anomalias sem crescimento ilimitado)
-- health check e métricas Prometheus (endpoint de métricas protegível via `METRICS_TOKEN`)
+- health check e manifesto de observabilidade por logs (protegível via `METRICS_TOKEN`)
 - documento Swagger e resposta HTTP padronizada via `HttpError`
 - suítes de testes unitários, integração e E2E
 - CI/CD com GitHub Actions onde **lint e audit falham o pipeline** quando há erros reais
@@ -67,7 +67,6 @@ As rotas são montadas na raiz da aplicação:
 | GET    | `/health`      | —                      | Health check detalhado (Mongo, Redis, memória, uptime) |
 | GET    | `/liveness`    | —                      | Liveness: 200 se o processo responde. Não consulta dependência. |
 | GET    | `/readiness`   | —                      | Readiness: 200 com Mongo de pé, 503 sem. Redis degradado não tira de prontidão. |
-| GET    | `/metrics`     | `METRICS_TOKEN` (opcional) | Métricas Prometheus                   |
 | GET    | `/observability` | `METRICS_TOKEN` (opcional) | Snapshot JSON de observabilidade **por logs** (janela rolante de requisições: volumes, P50/P95/P99, taxas de erro, top rotas) + health + segurança + memória/uptime. Path próprio, sem coletor externo. |
 | GET    | `/security/*` | `SECURITY_DASHBOARD_TOKEN` | Dashboard, auditoria e diagnóstico de segurança |
 
@@ -143,17 +142,21 @@ curl -H "X-Security-Token: $SECURITY_DASHBOARD_TOKEN" http://localhost:3000/secu
 
 A fonte do snapshot é a mesma dos logs estruturados (`requestLogger` alimenta um agregador em memória em `src/application/observability/`): nada depende de coletor externo. Erros de parsing JSON de payload agora respondem **400 `INVALID_JSON`** (antes 500, inflando a taxa de 5xx).
 
-### Métricas de autenticação
+### Eventos de autenticação
 
-O `/metrics` expõe contadores com resultado explícito, em vez de um contador único que mistura sucesso e falha:
+Cada evento de login, renovação de token e troca de senha é publicado **já com o desfecho traduzido**, num vocabulário fechado definido em `src/shared/utils/authOutcomes.ts`:
 
 ```text
-auth_login_attempts_total{outcome="success|failure"}
-auth_token_refresh_total{outcome="success|invalid|reused|unavailable"}
-auth_password_changes_total{outcome="success|current_password_invalid|rejected|error"}
+login           → success | failure
+token_refresh   → success | invalid | reused | unavailable
+password_change → success | current_password_invalid | rejected
 ```
 
-`reused` (refresh reaproveitado) é separado de `invalid` porque reuso é sinal de comprometimento, não erro de usuário. Qualquer valor fora da lista fechada vira `error`, para não criar cardinalidade infinita de rótulos. O mesmo cuidado vale para a auditoria: `loginAttempts` é sempre a soma de `successfulLogins` e `failedLogins`.
+`reused` (refresh reaproveitado) é separado de `invalid` porque reuso é sinal de comprometimento, não erro de usuário; `unavailable` é separado de `invalid` porque "não deu para revogar" (Redis fora) e "o token é ruim" são operações diferentes. Valor fora da lista vira `error`, para não criar cardinalidade infinita de rótulos.
+
+A tradução acontece uma única vez, em `authEventSink`, que publica o evento estruturado no fluxo de logs (`auth_kind`, `auth_outcome`, `auth_code`). O destino é uma porta: `setAuthEventSink` troca quem consome sem tocar nos chamadores, e nem o domínio sabe que existe consumidor. Não há scrape, coletor nem formato de saída embutido — o manifesto de `/observability` e os logs estruturados são o que existe hoje.
+
+O mesmo cuidado vale para a auditoria: `loginAttempts` é sempre a soma de `successfulLogins` e `failedLogins`.
 
 O `X-Request-Id` enviado pelo cliente só é aceito se for um UUID válido (máx. 36 caracteres); caso contrário, o serviço descarta o valor, registra o descarte e gera o próprio id — o id de requisição é chave de correlação de alerta, não campo livre de cliente.
 
@@ -192,7 +195,7 @@ Principais campos:
 - `JWT_SECRET`, `JWT_REFRESH_SECRET` (obrigatório e **diferente** de `JWT_SECRET` em produção; sem fallback silencioso), `JWT_EXPIRES`, `JWT_REFRESH_EXPIRES`
 - `SESSION_FAIL_OPEN` (política de revogação sem Redis; padrão `false` em produção)
 - `ALLOWED_ORIGINS`
-- `METRICS_ENABLED`, `METRICS_ENDPOINT`, `METRICS_TOKEN` (em produção, configure um token)
+- `METRICS_TOKEN` (em produção, configure um token: protege o manifesto de `/observability`)
 - `TRUST_PROXY` (padrão `false`: não confiar em `X-Forwarded-For`; atrás de proxy, use o número de saltos ou a faixa CIDR do proxy)
 - `SECURITY_DASHBOARD_TOKEN` (obrigatório em produção; envia-se no header `X-Security-Token`)
 - `RATE_LIMIT_*_POINTS` (pontos por janela)
