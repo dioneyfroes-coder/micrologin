@@ -447,31 +447,50 @@ pm2 reload autentication
 
 ## 🎯 PRÓXIMOS PASSOS
 
-### **Para Produção:**
-1. **Configurar alertas por email/Slack**
-2. **Implementar dashboard web visual**
-3. **Integrar com SIEM corporativo**
-4. **Configurar backup automático de logs**
-5. **Implementar rotação de logs**
+A lista abaixo é o que realmente **não** está feito. O que já existe está no
+README e no restante deste guia; repetir aqui só tornaria a lista um indicador
+de quanto falta em vez de quanto existe.
 
-### **Para Desenvolvimento:**
-1. **Criar testes automatizados do dashboard**
-2. **Implementar mock de ataques para testes**
-3. **Documentar APIs com OpenAPI/Swagger**
-4. **Criar scripts de automação**
+### **De verdade pendente:**
+1. **Notificação externa de alerta** — hoje o alerta é um log. O ponto de
+   extensão é `setAuthEventSink` (`src/application/observability/authEventSink.ts`),
+   não um `if` pendurado no logger de auditoria.
+2. **Retenção de eventos de segurança** — o buffer é de 1000 eventos **por
+   processo**, em memória. Um worker que reinicia perde o histórico, e em PM2 com
+   N workers cada um tem o seu. Quem precisa de histórico além da janela precisa
+   de destino externo.
+3. **Integração com SIEM** — não existe; depende de ambiente externo.
+4. **Alertas por regra** — o manifesto de `GET /observability` expõe volume,
+   P50/P95/P99, taxa de erro, health e risco, mas quem lê é humano ou script.
+   Nada dispara alerta de "P95 acima de X" hoje.
+
+### **Descartado, com motivo:**
+- **Rotação de logs** — já configurada (`max-size: 10m`, `max-file: 3` nos
+  compose de dev e prod).
+- **Documentação OpenAPI** — já existe em `/api-docs` (swagger-jsdoc).
+- **Dashboard web** — `examples/security-dashboard.html` consome `GET /security/*`.
+- **Testes automatizados do dashboard** — existem (`tests/unit/security-audit.test.ts`,
+  `security-config`, `security-monitoring`, `security-token`).
+- **Scripts de automação** — `scripts/` tem deploy, rollback, smoke test e
+  monitoramento, e a CI (`.github/workflows/ci-cd.yml`) roda quality, testes,
+  build, scanning e deploy.
 
 ---
 
 ## ✅ VALIDAÇÃO DO SISTEMA
 
-**✅ Status Atual:**
-- Sistema de segurança funcionando perfeitamente
-- 4 workers PM2 ativos e balanceando carga
-- Detecção de ameaças operacional
-- Dashboard respondendo corretamente
-- Logs estruturados sendo gerados
+**O que está verificado:**
+- Detecção de padrões suspeitos wired no `app.ts` (`securityMonitor.detectThreats`)
+- Buffer de auditoria único por processo, com janela de 5 minutos para alertas
+  e cap de 1000 eventos
+- Rate limiting por IP **e** por conta, com o resultado em resposta explícita
+- Testes automatizados cobrindo auditoria, normalização de entrada, token
+  (incluindo reuso de refresh) e a superfície de observabilidade
 
-**⚠️ Warning não crítico:**
-- PM2 wmic warning (não afeta funcionamento)
-
-**🎯 Resultado:** Sistema pronto para produção com monitoramento corporativo ativo!
+**Limites conhecidos, ditos aqui em vez de escondidos:**
+- O histórico de segurança é **por processo e em memória**. Com PM2 em cluster,
+  são N históricos, não um.
+- Os alertas são logs: nada é enviado para fora do processo.
+- A detecção de padrões é auxiliar e **não bloqueia** — quem bloqueia é o rate
+  limiter. Os padrões em `securityMonitoring.ts` servem para sinalizar, e a
+  proteção de entrada é a validação determinística de `validation.ts`.

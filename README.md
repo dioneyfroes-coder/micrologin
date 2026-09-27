@@ -32,6 +32,17 @@ Projeto de portfólio em Node.js para demonstrar uma API de autenticação com a
 - Docker / Docker Compose
 - GitHub Actions
 
+## Documentação
+
+| Documento | Conteúdo |
+| --- | --- |
+| [`docs/ARQUITETURA.md`](docs/ARQUITETURA.md) | camadas, ordem dos middlewares, fluxo de login/refresh/logout e onde o estado mora |
+| [`docs/SEGURANCA.md`](docs/SEGURANCA.md) | threat model, riscos aceitos e log de decisões (o que foi decidido e o que foi recusado) |
+| [`docs/DASHBOARD_SEGURANCA_GUIA.md`](docs/DASHBOARD_SEGURANCA_GUIA.md) | como usar `GET /security/*` e o dashboard |
+| [`MICROLOGIN_ANALISE_E_ROADMAP.md`](MICROLOGIN_ANALISE_E_ROADMAP.md) | análise e plano de fases executado |
+
+---
+
 ## Estrutura principal
 
 ```text
@@ -45,7 +56,7 @@ src/
 ├── domain/                   # entidades, validações e serviço de domínio
 ├── infrastructure/           # adapters (mongo/redis), JWT, cache
 ├── interfaces/               # config centralizada (app, rate limit, redis)
-└── shared/                   # utils (health check, métricas, password, username policy)
+└── shared/                   # utils (health check, logger, auth outcomes, password/username policy)
 ```
 
 Organização em arquitetura hexagonal: o domínio fica isolado, a aplicação orquestra casos de uso e a infraestrutura implementa as portas de cache, banco e JWT. A config Redis tem fonte única (`interfaces/config/redisConfig.ts`), usada por `connection.ts`, `appConfig` e `rateLimitConfig`.
