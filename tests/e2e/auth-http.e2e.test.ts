@@ -432,6 +432,49 @@ describe('E2E HTTP - fluxo completo contra infra real (compose)', () => {
     expect(profile.status).toBe(200);
   }, 30000);
 
+  it('logout só com o refresh token encerra a sessão inteira', async() => {
+    // Contrato do logout: o refresh token identifica a sessão. Um cliente que
+    // perdeu o access token (expirou, foi rotacionado) ainda precisa encerrar a
+    // sessão - e o access token que ele NÃO apresentou tem de morrer junto.
+    const unique = `lo_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const password = 'StrongPass123!';
+
+    await postJson('/register', { user: unique, password });
+    const loginRes = await postJson('/login', { user: unique, password });
+    expect(loginRes.status).toBe(200);
+    const loginBody = await loginRes.json() as {
+      data?: { accessToken?: string; refreshToken?: string };
+    };
+    const accessToken = loginBody.data?.accessToken as string;
+    const refreshToken = loginBody.data?.refreshToken as string;
+
+    // O access token funciona antes do logout...
+    expect((await getJson('/profile', bearer(accessToken))).status).toBe(200);
+
+    // ...e o logout vai SEM o header Authorization, só com o refresh token.
+    const logoutRes = await postJson('/logout', { refreshToken });
+    expect(logoutRes.status).toBe(200);
+
+    // O access token que o cliente não apresentou não sobrevive ao logout.
+    const afterLogout = await getJson('/profile', bearer(accessToken));
+    expect(afterLogout.status).toBe(401);
+
+    // O refresh token também não renova mais.
+    expect((await postJson('/refresh', { refreshToken })).status).toBe(401);
+
+    // Um par emitido depois do logout volta a funcionar (login novo = sessão nova).
+    const reLogin = await postJson('/login', { user: unique, password });
+    expect(reLogin.status).toBe(200);
+    const reLoginBody = await reLogin.json() as { data?: { accessToken?: string } };
+    expect((await getJson('/profile', bearer(reLoginBody.data?.accessToken as string))).status).toBe(200);
+  }, 30000);
+
+  it('logout sem nenhum token não encerra nada', async() => {
+    const res = await postJson('/logout', {});
+    expect(res.status).toBe(400);
+    expect((await res.json() as { code?: string }).code).toBe('REVOCATION_FAILED');
+  });
+
   it('identidade é case-insensitive em registro, login e atualização', async() => {
     const unique = `case_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const mixedCase = `Case_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;

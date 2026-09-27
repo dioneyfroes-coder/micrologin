@@ -561,3 +561,104 @@ describe('JWTTokenService - versão de sessão', () => {
     expect(decoded.id).toBe('user-55');
   });
 });
+
+describe('JWTTokenService - expiração real (o relógio, não o mock)', () => {
+  /**
+   * Espera o relógio passar da expiração do token.
+   *
+   * Não há mock de tempo aqui de propósito: expiração é exatamente o caso em que
+   * um relógio falso esconde o bug. A espera é de ~1,2s e vale o que custa.
+   */
+  const waitPastExpiry = () => new Promise(resolve => setTimeout(resolve, 1200));
+
+  it('access token expira e é recusado com TOKEN_EXPIRED', async() => {
+    const service = new JWTTokenService(SECRET, SECRET, makeRedisClient() as never);
+    const pair = await service.generateTokenPair({ id: 'user-60', username: 'ana' },
+      { accessExpiresIn: '1s', refreshExpiresIn: '1h' });
+
+    // Antes: válido.
+    expect((await service.verifyAccessToken(pair.accessToken)).id).toBe('user-60');
+
+    await waitPastExpiry();
+
+    // Depois: recusado, e com o código que o middleware translate em 401.
+    await expect(service.verifyAccessToken(pair.accessToken)).rejects.toMatchObject({
+      code: 'TOKEN_EXPIRED'
+    });
+  }, 10000);
+
+  it('refresh token expira e é recusado com REFRESH_TOKEN_EXPIRED', async() => {
+    const service = new JWTTokenService(SECRET, SECRET, makeRedisClient() as never);
+    const pair = await service.generateTokenPair({ id: 'user-61', username: 'beto' },
+      { accessExpiresIn: '1h', refreshExpiresIn: '1s' });
+
+    expect((await service.verifyRefreshToken(pair.refreshToken)).id).toBe('user-61');
+
+    await waitPastExpiry();
+
+    await expect(service.verifyRefreshToken(pair.refreshToken)).rejects.toMatchObject({
+      code: 'REFRESH_TOKEN_EXPIRED'
+    });
+  }, 10000);
+
+  it('access expirado não pode ser renovado nem com refresh válido', async() => {
+    const service = new JWTTokenService(SECRET, SECRET, makeRedisClient() as never);
+    const pair = await service.generateTokenPair({ id: 'user-62', username: 'caio' },
+      { accessExpiresIn: '1s', refreshExpiresIn: '1h' });
+
+    await waitPastExpiry();
+
+    // Renovar não é um caminho para ressuscitar o access token: a rotação emite
+    // um par NOVO, e o token velho continua morto.
+    const rotated = await service.refreshTokens(pair.refreshToken);
+    await expect(service.verifyAccessToken(pair.accessToken)).rejects.toMatchObject({
+      code: 'TOKEN_EXPIRED'
+    });
+    expect((await service.verifyAccessToken(rotated.accessToken)).id).toBe('user-62');
+  }, 10000);
+});
+
+describe('JWTTokenService - revogação em massa cobre as duas metades da sessão', () => {
+  it('derruba todas as sessões simultâneas do usuário, de qualquer dispositivo', async() => {
+    const redis = makeRedisClient();
+    const service = new JWTTokenService(SECRET, SECRET, redis as never);
+
+    // Três "dispositivos" do mesmo usuário, cada um com seu par.
+    const sessions = await Promise.all([
+      service.generateTokenPair({ id: 'user-70', username: 'dani' }),
+      service.generateTokenPair({ id: 'user-70', username: 'dani' }),
+      service.generateTokenPair({ id: 'user-70', username: 'dani' })
+    ]);
+
+    await service.revokeUserTokens('user-70');
+
+    for (const session of sessions) {
+      await expect(service.verifyAccessToken(session.accessToken)).rejects.toThrow('Token foi revogado');
+      await expect(service.verifyRefreshToken(session.refreshToken)).rejects.toThrow('Refresh token foi revogado');
+    }
+  });
+
+  it('não afeta tokens de outro usuário', async() => {
+    const redis = makeRedisClient();
+    const service = new JWTTokenService(SECRET, SECRET, redis as never);
+
+    const alice = await service.generateTokenPair({ id: 'user-71', username: 'alice' });
+    const bob = await service.generateTokenPair({ id: 'user-72', username: 'bob' });
+
+    await service.revokeUserTokens('user-71');
+
+    await expect(service.verifyAccessToken(alice.accessToken)).rejects.toThrow('Token foi revogado');
+    // A sessão do vizinho continua de pé: revogação em massa é por usuário.
+    expect((await service.verifyAccessToken(bob.accessToken)).id).toBe('user-72');
+  });
+
+  it('a entrada de revogação expira junto com o token mais longo da sessão', async() => {
+    const redis = makeRedisClient();
+    const service = new JWTTokenService(SECRET, SECRET, redis as never);
+
+    await service.revokeUserTokens('user-73');
+    // Sem TTL, o contador de versão viveria para sempre e mataria tokens de
+    // logins futuros; a revogação precisa desaparecer sozinha.
+    expect(redis.expire).toHaveBeenCalledWith('user_session_version:user-73', expect.any(Number));
+  });
+});

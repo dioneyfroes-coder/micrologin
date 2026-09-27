@@ -11,6 +11,16 @@ import { hasAllowedUsernameChars, isUsernameValid, normalizeUsername, USERNAME_M
 
 export type DomainErrorCode = 'INVALID_USERNAME' | 'INVALID_PASSWORD' | 'USER_ALREADY_EXISTS' | string;
 
+/**
+ * Código de falha da revogação quando o armazenamento de sessão (Redis) está
+ * fora do ar em modo fail-closed.
+ *
+ * Vive no domínio porque é o contrato entre o caso de uso (`endSession`), o
+ * adapter de tokens e o error handler HTTP: quem produz o erro e quem decide o
+ * status HTTP precisam falar o mesmo nome, sem depender um do outro.
+ */
+export const REVOCATION_UNAVAILABLE_CODE = 'REVOCATION_UNAVAILABLE';
+
 export class DomainError extends Error {
   name: string;
   code: DomainErrorCode;
@@ -92,6 +102,15 @@ export interface TokenGenerationOptions {
   audience?: string;
   accessExpiresIn?: string;
   refreshExpiresIn?: string;
+}
+
+/**
+ * Entrada do encerramento de sessão (POST /logout).
+ */
+export interface EndSessionInput {
+  accessToken?: string | null;
+  refreshToken?: string | null;
+  authenticatedUserId?: string | null;
 }
 
 /**
@@ -545,8 +564,94 @@ export class AuthService {
   }
 
   /**
-   * Caso de uso: Revogar um token específico (blacklist)
+   * Caso de uso: Encerrar a sessão
+   *
+   * Um dos dois tokens basta para identificar a sessão, e basta para derrubá-la:
+   *
+   * - o **refresh token** carrega o `id` do usuário, então identifica a sessão
+   *   mesmo quando o cliente não tem mais o access token (expirou, foi rotacionado
+   *   ou nunca foi guardado). Sem essa leitura, um logout enviado só com o refresh
+   *   deixava o access token válido até a expiração natural;
+   * - o **access token** chega como `authenticatedUserId`, vindo do middleware.
+   *
+   * Revogar a sessão inteira (versão de sessão no Redis) é o que cumpre a promessa
+   * do README: não sobra token órfão de um access token que o cliente não
+   * apresentou. Os tokens apresentados também entram na blacklist individualmente,
+   * para que o par fique inutilizável mesmo quando o revogador do usuário falha.
    */
+  async endSession(input: EndSessionInput): Promise<ServiceResult> {
+    const { accessToken, refreshToken, authenticatedUserId } = input;
+    let revoked = false;
+    let unavailable = false;
+
+    const track = (result: ServiceResult): void => {
+      revoked = revoked || result.success;
+      unavailable = unavailable || result.code === REVOCATION_UNAVAILABLE_CODE;
+    };
+
+    // Identidade ANTES de qualquer revogação, e isso é uma exigência de ordem,
+    // não estilo: `verifyRefreshToken` consulta a blacklist, então um refresh
+    // já revogado vem sempre recusado. Ler o dono depois de colocá-lo na
+    // blacklist devolveria sempre "não sei de quem é a sessão" e o
+    // `revokeUserTokens` nunca sairia daqui - o access token órfão sobreviveria
+    // até a expiração natural, que é exatamente o que este caso de uso promete
+    // impedir.
+    let userId = authenticatedUserId || null;
+    if (!userId && refreshToken && this.tokenGenerator.verifyRefreshToken) {
+      try {
+        const payload = await this.tokenGenerator.verifyRefreshToken(refreshToken) as { id?: string };
+        userId = payload?.id || null;
+      } catch {
+        // Apresentado inválido, expirado ou já revogado: não há sessão conhecida
+        // a derrubar. Revogar a conta errada seria pior que não revogar.
+        this.logger.warn('Logout com refresh token que não pôde ser lido');
+      }
+    }
+
+    try {
+      // Tokens apresentados individualmente: um access token mostrado no logout
+      // precisa morrer mesmo que a revogação do usuário não esteja disponível.
+      if (accessToken) {
+        track(await this.revokeToken(accessToken));
+      }
+      if (refreshToken) {
+        track(await this.revokeToken(refreshToken));
+      }
+
+      if (userId) {
+        track(await this.revokeUserTokens(userId));
+      }
+
+      // Falha de infraestrutura não é erro do cliente: a sessão NÃO foi
+      // encerrada, e dizer que encerrou seria mentira.
+      if (unavailable) {
+        return {
+          success: false,
+          error: 'Encerramento de sessão temporariamente indisponível',
+          code: REVOCATION_UNAVAILABLE_CODE
+        };
+      }
+
+      if (!revoked) {
+        return { success: false, error: 'Nenhum token foi revogado', code: 'REVOCATION_FAILED' };
+      }
+
+      this.logger.info('Sessão encerrada', { userId });
+      return { success: true };
+
+    } catch (error) {
+      this.logger.error('Erro ao encerrar sessão', error);
+      return {
+        success: false,
+        error: domainFailureMessage(error, 'Não foi possível encerrar a sessão'),
+        code: (error as { code?: string }).code || 'REVOCATION_FAILED'
+      };
+    }
+  }
+
+  /**
+ * Caso de uso: Revogar um token específico (blacklist)
+ */
   async revokeToken(token: string, expiresIn = 3600000): Promise<ServiceResult> {
     try {
       const revoked = await this.tokenGenerator.revokeToken(token, expiresIn);

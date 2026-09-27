@@ -16,6 +16,7 @@ import jwt, { SignOptions } from 'jsonwebtoken';
 import { createHash, randomUUID } from 'crypto';
 import type { RedisClient } from '../cache/connection.js';
 import type { TokenGenerationOptions, TokenPair, TokenService } from '../../domain/index.js';
+import { REVOCATION_UNAVAILABLE_CODE } from '../../domain/index.js';
 import { logger } from '../../shared/utils/logger.js';
 
 interface JwtIssuedPayload {
@@ -50,7 +51,7 @@ export interface SessionPolicy {
   failOpen: boolean;
 }
 
-export const REVOCATION_UNAVAILABLE_CODE = 'REVOCATION_UNAVAILABLE';
+export { REVOCATION_UNAVAILABLE_CODE };
 
 const revocationUnavailableError = (): Error => {
   const error = new Error('Revogação de tokens indisponível');

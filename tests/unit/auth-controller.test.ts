@@ -158,23 +158,59 @@ describe('AuthWebController - contrato HTTP', () => {
 
   it('faz logout revogando access e refresh tokens', async() => {
     const service = {
-      revokeToken: jest.fn().mockResolvedValue({ success: true }),
-      revokeUserTokens: jest.fn().mockResolvedValue({ success: true })
+      endSession: jest.fn().mockResolvedValue({ success: true })
     };
     req.headers.authorization = 'Bearer access-token';
+    req.body = { refreshToken: 'refresh-token' };
+    req.user = { id: 'u-1', username: 'alice' };
+
+    await buildController(service).logout(req, res, next);
+
+    expect(service.endSession).toHaveBeenCalledWith({
+      accessToken: 'access-token',
+      refreshToken: 'refresh-token',
+      authenticatedUserId: 'u-1'
+    });
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+  });
+
+  it('faz logout só com o refresh token: a sessão é identificada por ele', async() => {
+    const service = {
+      endSession: jest.fn().mockResolvedValue({ success: true })
+    };
     req.body = { refreshToken: 'refresh-token' };
 
     await buildController(service).logout(req, res, next);
 
-    expect(service.revokeToken).toHaveBeenCalledWith('access-token');
-    expect(service.revokeToken).toHaveBeenCalledWith('refresh-token');
+    expect(service.endSession).toHaveBeenCalledWith({
+      accessToken: null,
+      refreshToken: 'refresh-token',
+      authenticatedUserId: null
+    });
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('ignora refreshToken que não é string em vez de revogar lixo', async() => {
+    const service = {
+      endSession: jest.fn().mockResolvedValue({ success: true })
+    };
+    req.body = { refreshToken: { injetado: true } };
+
+    await buildController(service).logout(req, res, next);
+
+    expect(service.endSession).toHaveBeenCalledWith(
+      expect.objectContaining({ refreshToken: null })
+    );
   });
 
   it('responde 400 no logout quando nada pôde ser revogado', async() => {
     const service = {
-      revokeToken: jest.fn().mockResolvedValue({ success: false }),
-      revokeUserTokens: jest.fn().mockResolvedValue({ success: false })
+      endSession: jest.fn().mockResolvedValue({
+        success: false,
+        code: 'REVOCATION_FAILED',
+        error: 'Nenhum token foi revogado'
+      })
     };
 
     await buildController(service).logout(req, res, next);
@@ -186,14 +222,10 @@ describe('AuthWebController - contrato HTTP', () => {
 
   it('responde 503 no logout quando a revogação está indisponível (fail-closed)', async() => {
     const service = {
-      revokeToken: jest.fn().mockResolvedValue({
+      endSession: jest.fn().mockResolvedValue({
         success: false,
         code: 'REVOCATION_UNAVAILABLE',
-        error: 'Revogação de tokens indisponível'
-      }),
-      revokeUserTokens: jest.fn().mockResolvedValue({
-        success: false,
-        code: 'REVOCATION_UNAVAILABLE'
+        error: 'Encerramento de sessão temporariamente indisponível'
       })
     };
     req.headers.authorization = 'Bearer access-token';

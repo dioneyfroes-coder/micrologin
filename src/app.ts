@@ -10,7 +10,6 @@ import { pathToFileURL } from 'url';
 // Configurações centralizadas (carrega .env automaticamente)
 import {
   serverConfig,
-  securityConfig,
   validateConfiguration
 } from './interfaces/config/appConfig.js';
 
@@ -26,6 +25,7 @@ import observabilityRoutes from './application/routes/observabilityRoutes.js';
 import { bootstrapServices, resolve } from './core/bootstrap.js';
 
 import setupSecurity from './interfaces/config/helmet.js';
+import { buildCorsOptions } from './interfaces/config/cors.js';
 import { normalizeInput } from './application/middleware/inputNormalization.js';
 import { securityMonitor } from './application/middleware/securityMonitoring.js';
 import { advancedRateLimit } from './application/middleware/advancedRateLimit.js';
@@ -68,15 +68,9 @@ class AuthService {
     // padrão é não confiar em X-Forwarded-For, porque o cabeçalho é do cliente.
     this.app.set('trust proxy', serverConfig.proxy.trustProxy);
 
-    setupSecurity(this.app);
+    setupSecurity(this.app, serverConfig.ssl.enabled);
 
-    this.app.use(cors({
-      origin: securityConfig.cors.origins,
-      credentials: securityConfig.cors.credentials,
-      optionsSuccessStatus: 200,
-      methods: ['GET', 'POST', 'PUT', 'DELETE'],
-      allowedHeaders: ['Content-Type', 'Authorization', 'X-Security-Token']
-    }));
+    this.app.use(cors(buildCorsOptions()));
   }
 
   setupMiddleware() {

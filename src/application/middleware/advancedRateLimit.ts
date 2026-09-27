@@ -4,6 +4,7 @@ import { validateRateLimitConfig } from '../../interfaces/config/rateLimitConfig
 import { securityAuditLogger } from './securityAudit.js';
 import { HttpError } from '../../shared/utils/errorHandler.js';
 import { logger } from '../../shared/utils/logger.js';
+import { normalizeUsername } from '../../shared/utils/usernamePolicy.js';
 import type { RedisClient } from '../../infrastructure/cache/connection.js';
 
 class AdvancedRateLimiter {
@@ -123,6 +124,25 @@ class AdvancedRateLimiter {
     this.init().catch(() => {});
   }
 
+  /**
+   * Conta alvo do orçamento de tentativas de login.
+   *
+   * O limite por IP sozinho não segura um ataque distribuído: trocar de origem
+   * a cada tentativa entrega um orçamento novo, e o mesmo par de credenciais é
+   * testado indefinidamente. Por isso o login também consome o orçamento por
+   * conta - e a chave é o username canônico, para que `Alice`, `alice` e
+   * `  alice  ` compartilhem o mesmo contador.
+   *
+   * Sem username utilizável no corpo (payload ausente ou do tipo errado), a
+   * chave é o próprio IP: a requisição já será rejeitada pela validação, e a
+   * intenção aqui é não deixar a proteção virar caminho livre.
+   */
+  private loginAccountKey(req: Request, ip: string): string {
+    const username = (req.body as { user?: unknown } | undefined)?.user;
+    const canonical = typeof username === 'string' ? normalizeUsername(username) : '';
+    return canonical ? `account:${canonical}` : `anon:${ip}`;
+  }
+
   checkLimits = async(req: Request, res: Response, next: NextFunction): Promise<void> => {
     // Promove para Redis assim que disponível sem bloquear a requisição
     this.ensureInit();
@@ -145,7 +165,12 @@ class AdvancedRateLimiter {
         await this.limiters.user.consume(userId);
       }
       if (isLogin) {
+        // Duas dimensões independentes: a origem e a conta atacada. A primeira
+        // segura varredura (muitas contas a partir de uma origem), a segunda
+        // segura o ataque dirigido a uma conta - que é o que brute force de
+        // verdade é, e que trocar de IP não contorna.
         await this.limiters.login.consume(`${ip}_login`);
+        await this.limiters.login.consume(this.loginAccountKey(req, ip));
       }
 
       next();

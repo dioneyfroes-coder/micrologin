@@ -1,7 +1,18 @@
 import helmet from 'helmet';
 import type { Express, Response, Request, NextFunction } from 'express';
 
-export default function setupSecurity(app: Express): void {
+/**
+ * Aplica os headers de segurança.
+ *
+ * @param app - Aplicação Express
+ * @param tlsEnabled - O servidor está servindo HTTPS de verdade?
+ *
+ * `tlsEnabled` decide o HSTS. O header declara "daqui em diante, só HTTPS" e
+ * navegadores o ignoram quando chega por HTTP, então emití-lo num serviço em
+ * HTTP puro não protege nada: é uma promessa que o serviço não pode cumprir.
+ * Quem decide é quem sabe se há TLS no fim do processo.
+ */
+export default function setupSecurity(app: Express, tlsEnabled = false): void {
   // Headers de segurança obrigatórios
   app.use(helmet({
     contentSecurityPolicy: {
@@ -18,11 +29,13 @@ export default function setupSecurity(app: Express): void {
       }
     },
     crossOriginEmbedderPolicy: false, // Para Swagger UI
-    hsts: {
-      maxAge: 31536000,
-      includeSubDomains: true,
-      preload: true
-    }
+    hsts: tlsEnabled
+      ? {
+        maxAge: 31536000,
+        includeSubDomains: true,
+        preload: true
+      }
+      : false
   }));
 
   // Headers adicionais de segurança

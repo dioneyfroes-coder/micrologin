@@ -11,6 +11,7 @@ import { securityAuditLogger } from '../middleware/securityAudit.js';
 import { HttpError } from '../../shared/utils/errorHandler.js';
 import { recordLoginAttempt, recordPasswordChange, recordTokenRefresh } from '../../shared/utils/metrics.js';
 import type { AuthService } from '../../domain/index.js';
+import { REVOCATION_UNAVAILABLE_CODE } from '../../domain/index.js';
 
 export class AuthWebController {
   private authService: AuthService;
@@ -151,6 +152,10 @@ export class AuthWebController {
 
   /**
    * POST /logout - Endpoint para revogar tokens e encerrar a sessão
+   *
+   * O refresh token apresentado já identifica a sessão (ver `AuthService.endSession`),
+   * então o logout funciona sem o access token no header - e mesmo assim derruba
+   * tudo que aquela sessão emitiu, não apenas o par apresentado.
    */
   logout = async(req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
@@ -158,39 +163,22 @@ export class AuthWebController {
       const accessToken = authorization && authorization.startsWith('Bearer ')
         ? authorization.slice(7)
         : null;
-      const refreshToken = req.body?.refreshToken;
+      const refreshToken = typeof req.body?.refreshToken === 'string' ? req.body.refreshToken : null;
 
-      let revoked = false;
-      let revocationUnavailable = false;
-
-      const track = (result: { success: boolean; code?: string }) => {
-        revoked = revoked || result.success;
-        revocationUnavailable = revocationUnavailable || result.code === 'REVOCATION_UNAVAILABLE';
-      };
-
-      // Revogar access token na blacklist
-      if (accessToken) {
-        track(await this.authService.revokeToken(accessToken));
-      }
-
-      // Revogar refresh token na blacklist
-      if (refreshToken) {
-        track(await this.authService.revokeToken(refreshToken));
-      }
-
-      // Revogar todos os tokens do usuário (cobertura extra)
-      if (req.user?.id) {
-        track(await this.authService.revokeUserTokens(req.user.id));
-      }
+      const result = await this.authService.endSession({
+        accessToken,
+        refreshToken,
+        authenticatedUserId: req.user?.id ?? null
+      });
 
       // Falha de infraestrutura na revogação (ex.: Redis fora em modo
       // fail-closed) não é erro do cliente: a sessão NÃO foi encerrada.
-      if (revocationUnavailable) {
-        next(new HttpError(503, 'REVOCATION_UNAVAILABLE', 'Encerramento de sessão temporariamente indisponível'));
+      if (result.code === REVOCATION_UNAVAILABLE_CODE) {
+        next(new HttpError(503, REVOCATION_UNAVAILABLE_CODE, 'Encerramento de sessão temporariamente indisponível'));
         return;
       }
 
-      if (!revoked) {
+      if (!result.success) {
         next(new HttpError(400, 'REVOCATION_FAILED', 'Nenhum token foi revogado'));
         return;
       }

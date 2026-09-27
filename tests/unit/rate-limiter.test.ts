@@ -147,3 +147,108 @@ describe('AdvancedRateLimiter - aplicação de limites', () => {
     expect(next.mock.calls.every(c => c.length === 0)).toBe(true);
   });
 });
+
+describe('AdvancedRateLimiter - login por conta (brute force distribuído)', () => {
+  // Só o orçamento de login importa aqui: IP alto para que o limite por origem
+  // nunca seja o que barra, isolando a proteção contra ataque dirigido a uma
+  // conta a partir de origens diferentes.
+  beforeEach(() => {
+    jest.resetModules();
+    process.env.NODE_ENV = 'test';
+    process.env.RATE_LIMIT_PROD_IP_POINTS = '1000';
+    process.env.RATE_LIMIT_PROD_USER_POINTS = '1000';
+    process.env.RATE_LIMIT_PROD_LOGIN_POINTS = '3';
+    delete process.env.REDIS_URL;
+  });
+
+  const makeLoginRequest = (ip: string, body?: unknown) => ({
+    ip,
+    path: '/login',
+    method: 'POST',
+    get: jest.fn(() => 'agent'),
+    headers: {},
+    body
+  });
+
+  const makeResponse = () => ({
+    set: jest.fn(),
+    status: jest.fn().mockReturnThis(),
+    json: jest.fn()
+  });
+
+  const attempt = async(limiter: { checkLimits: (req: unknown, res: unknown, next: unknown) => Promise<void> },
+    ip: string, body: unknown) => {
+    const next = jest.fn();
+    const res = makeResponse();
+    await limiter.checkLimits(makeLoginRequest(ip, body) as never, res as never, next);
+    return next.mock.calls[0]?.[0];
+  };
+
+  it('bloqueia a conta mesmo quando cada tentativa vem de um IP diferente', async() => {
+    const limiter = await loadRateLimiter(null);
+    const errors = [];
+
+    // 3 IPs distintos, a mesma conta atacada: o limite por IP não impede nada
+    // aqui, porque cada origem tem orçamento próprio.
+    for (const ip of ['10.0.0.1', '10.0.0.2', '10.0.0.3', '10.0.0.4']) {
+      errors.push(await attempt(limiter, ip, { user: 'alice', password: 'Errada123!' }));
+    }
+
+    expect(errors.slice(0, 3).every(e => e === undefined)).toBe(true);
+    const blocked = errors[3];
+    expect(blocked).toBeDefined();
+    expect(blocked.statusCode).toBe(429);
+    expect(blocked.code).toBe('RATE_LIMIT_EXCEEDED');
+  });
+
+  it('a chave é a forma canônica: caixa e espaços não renovam o orçamento', async() => {
+    const limiter = await loadRateLimiter(null);
+
+    // Esgota o orçamento de `alice` (3 pontos) a partir de três IPs.
+    for (const ip of ['10.1.0.1', '10.1.0.2', '10.1.0.3']) {
+      expect(await attempt(limiter, ip, { user: 'alice', password: 'Errada123!' })).toBeUndefined();
+    }
+    // Mesma conta, outra escrita. Um atacante que ajuste a caixa continua
+    // batendo no mesmo contador.
+    const blocked = await attempt(limiter, '10.1.0.4', { user: '  ALICE  ', password: 'Errada123!' });
+
+    expect(blocked).toBeDefined();
+    expect(blocked.statusCode).toBe(429);
+  });
+
+  it('contas diferentes não compartilham orçamento', async() => {
+    const limiter = await loadRateLimiter(null);
+
+    // A conta alice já consumiu o orçamento dela com o teste anterior; aqui
+    // cada conta é atacada uma vez e nenhuma deve ser barrada.
+    const alice = await attempt(limiter, '10.2.0.1', { user: 'alice' });
+    const bob = await attempt(limiter, '10.2.0.2', { user: 'bob' });
+    const carol = await attempt(limiter, '10.2.0.3', { user: 'carol' });
+
+    expect([alice, bob, carol].every(e => e === undefined)).toBe(true);
+  });
+
+  it('sem username no corpo, o orçamento é o do IP (não vira caminho livre)', async() => {
+    const limiter = await loadRateLimiter(null);
+
+    const errors = [];
+    for (let i = 0; i < 4; i += 1) {
+      errors.push(await attempt(limiter, '10.3.0.1', undefined));
+    }
+
+    expect(errors[3]).toBeDefined();
+    expect(errors[3].statusCode).toBe(429);
+  });
+
+  it('username não string também cai no orçamento do IP', async() => {
+    const limiter = await loadRateLimiter(null);
+
+    const errors = [];
+    for (let i = 0; i < 4; i += 1) {
+      errors.push(await attempt(limiter, '10.4.0.1', { user: { $ne: null } }));
+    }
+
+    expect(errors[3]).toBeDefined();
+    expect(errors[3].statusCode).toBe(429);
+  });
+});

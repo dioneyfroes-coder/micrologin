@@ -209,6 +209,158 @@ describe('AuthService - refresh e revogação', () => {
   });
 });
 
+describe('AuthService - encerramento de sessão (POST /logout)', () => {
+  const makeTokenPort = (overrides: Record<string, unknown> = {}) => ({
+    revokeToken: jest.fn().mockResolvedValue(true),
+    revokeUserTokens: jest.fn().mockResolvedValue(true),
+    verifyRefreshToken: jest.fn().mockResolvedValue({ id: 'u-1', username: 'alice' }),
+    ...overrides
+  });
+
+  it('encerra a sessão inteira a partir do refresh token, sem access token', async() => {
+    const tokenPort = makeTokenPort();
+    const logger = makeLogger();
+    const service = new AuthService({}, {}, tokenPort, logger);
+
+    const result = await service.endSession({ refreshToken: 'rt' });
+
+    expect(result.success).toBe(true);
+    // O token apresentado vai para a blacklist...
+    expect(tokenPort.revokeToken).toHaveBeenCalledWith('rt', 3600000);
+    // ...e o dono da sessão, descoberto pelo refresh, tem tudo revogado.
+    expect(tokenPort.revokeUserTokens).toHaveBeenCalledWith('u-1');
+  });
+
+  it('usa o access token autenticado como identidade, sem reler o refresh', async() => {
+    const tokenPort = makeTokenPort();
+    const service = new AuthService({}, {}, tokenPort, makeLogger());
+
+    const result = await service.endSession({
+      accessToken: 'at',
+      refreshToken: 'rt',
+      authenticatedUserId: 'u-42'
+    });
+
+    expect(result.success).toBe(true);
+    expect(tokenPort.revokeToken).toHaveBeenCalledWith('at', 3600000);
+    expect(tokenPort.revokeToken).toHaveBeenCalledWith('rt', 3600000);
+    expect(tokenPort.revokeUserTokens).toHaveBeenCalledWith('u-42');
+    expect(tokenPort.verifyRefreshToken).not.toHaveBeenCalled();
+  });
+
+  it('não tenta revogar tokens que não foram apresentados', async() => {
+    const tokenPort = makeTokenPort();
+    const service = new AuthService({}, {}, tokenPort, makeLogger());
+
+    const result = await service.endSession({ authenticatedUserId: 'u-1' });
+
+    expect(result.success).toBe(true);
+    expect(tokenPort.revokeToken).not.toHaveBeenCalled();
+    expect(tokenPort.revokeUserTokens).toHaveBeenCalledWith('u-1');
+  });
+
+  it('refresh token ilegível não derruba a sessão, mas o que foi revogado continua válido', async() => {
+    const tokenPort = makeTokenPort({
+      verifyRefreshToken: jest.fn().mockRejectedValue(
+        Object.assign(new Error('Refresh token inválido'), { code: 'REFRESH_TOKEN_INVALID' })
+      )
+    });
+    const service = new AuthService({}, {}, tokenPort, makeLogger());
+
+    const result = await service.endSession({ refreshToken: 'token-ruim' });
+
+    // O token apresentado foi para a blacklist, então a resposta é de sucesso
+    expect(result.success).toBe(true);
+    expect(tokenPort.revokeToken).toHaveBeenCalledWith('token-ruim', 3600000);
+    // Não há sessão conhecida a derrubar: mentir aqui revogaria a conta errada.
+    expect(tokenPort.revokeUserTokens).not.toHaveBeenCalled();
+  });
+
+  it('TokenService sem verifyRefreshToken ainda encerra o par apresentado', async() => {
+    const tokenPort = makeTokenPort({ verifyRefreshToken: undefined });
+    const service = new AuthService({}, {}, tokenPort, makeLogger());
+
+    const result = await service.endSession({ refreshToken: 'rt' });
+
+    expect(result.success).toBe(true);
+    expect(tokenPort.revokeToken).toHaveBeenCalledWith('rt', 3600000);
+    expect(tokenPort.revokeUserTokens).not.toHaveBeenCalled();
+  });
+
+  it('repasse REVOCATION_UNAVAILABLE em vez de dizer que a sessão acabou', async() => {
+    // Em fail-closed o adapter LANÇA: o TokenPort só devolve boolean, quem
+    // sinaliza a indisponibilidade é a exceção com código.
+    const unavailable = Object.assign(new Error('Revogação de tokens indisponível'), {
+      code: 'REVOCATION_UNAVAILABLE'
+    });
+    const tokenPort = makeTokenPort({
+      revokeToken: jest.fn().mockRejectedValue(unavailable),
+      revokeUserTokens: jest.fn().mockRejectedValue(unavailable)
+    });
+    const service = new AuthService({}, {}, tokenPort, makeLogger());
+
+    const result = await service.endSession({
+      accessToken: 'at',
+      refreshToken: 'rt',
+      authenticatedUserId: 'u-1'
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.code).toBe('REVOCATION_UNAVAILABLE');
+  });
+
+  it('revogação parcial (um token caiu, o usuário não) ainda encerra a sessão', async() => {
+    const tokenPort = makeTokenPort({
+      revokeUserTokens: jest.fn().mockResolvedValue(false)
+    });
+    const service = new AuthService({}, {}, tokenPort, makeLogger());
+
+    const result = await service.endSession({ accessToken: 'at', authenticatedUserId: 'u-1' });
+
+    // O access token apresentado morreu: ele não volta a valer.
+    expect(result.success).toBe(true);
+  });
+
+  it('sem nenhum token e sem sessão identificada, nada é revogado', async() => {
+    const tokenPort = makeTokenPort();
+    const service = new AuthService({}, {}, tokenPort, makeLogger());
+
+    const result = await service.endSession({});
+
+    expect(result.success).toBe(false);
+    expect(result.code).toBe('REVOCATION_FAILED');
+  });
+
+  it('descobre o dono do refresh token ANTES de colocá-lo na blacklist (ordem obrigatória)', async() => {
+    // TokenPort que se comporta como o adapter real: verifyRefreshToken é
+    // recusado para token já revogado. É por isso que ler o refresh depois de
+    // revogá-lo nunca encontra ninguém, e a revogação em massa silenciosamente
+    // nunca acontece.
+    const blacklist = new Set<string>();
+    const tokenPort = {
+      revokeToken: jest.fn(async(token: string) => {
+        blacklist.add(token);
+        return true;
+      }),
+      revokeUserTokens: jest.fn().mockResolvedValue(true),
+      verifyRefreshToken: jest.fn(async(token: string) => {
+        if (blacklist.has(token)) {
+          throw new Error('Refresh token foi revogado');
+        }
+        return { id: 'u-77', username: 'alice' };
+      })
+    };
+    const service = new AuthService({}, {}, tokenPort, makeLogger());
+
+    const result = await service.endSession({ refreshToken: 'rt-real' });
+
+    expect(result.success).toBe(true);
+    expect(tokenPort.verifyRefreshToken).toHaveBeenCalledWith('rt-real');
+    // A sessão inteira do dono do refresh cai, não só o par apresentado.
+    expect(tokenPort.revokeUserTokens).toHaveBeenCalledWith('u-77');
+  });
+});
+
 describe('AuthService - troca de senha (step-up + histórico + sessões)', () => {
   const OLD_PASSWORD = 'OldStrongPass123!';
   const NEW_PASSWORD = 'NewStrongPass456!';

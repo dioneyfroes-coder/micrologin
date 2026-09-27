@@ -1367,63 +1367,83 @@ Só então documentar `--scale`.
 
 Adicionar testes de segurança e concorrência, não apenas happy path.
 
+**Estado: concluída, exceto dois itens de infraestrutura que dependem de
+docker/compose** (reconexão do Redis e restart do container). Total hoje:
+**31 suítes / 376 testes unitários**, **5 suítes / 34 testes de integração**,
+**1 suíte / 14 testes E2E** contra MongoDB e Redis reais.
+
 ## Obrigatórios
 
 ### Identidade
 
-- [ ] username case-insensitive;
-- [ ] username duplicado com case diferente;
-- [ ] normalização de whitespace;
-- [ ] username inválido.
+- [x] username case-insensitive;
+- [x] username duplicado com case diferente;
+- [x] normalização de whitespace;
+- [x] username inválido.
 
 ### Login
 
-- [ ] usuário inexistente e senha errada produzem mesma resposta;
-- [ ] rate limit de login;
-- [ ] brute force distribuído;
-- [ ] Redis indisponível.
+- [x] usuário inexistente e senha errada produzem mesma resposta;
+- [x] rate limit de login;
+- [x] brute force distribuído;
+- [x] Redis indisponível.
 
 ### Sessão
 
-- [ ] refresh concorrente;
-- [ ] refresh reusado;
-- [ ] logout revoga access token;
-- [ ] logout revoga refresh token;
+- [x] refresh concorrente;
+- [x] refresh reusado;
+- [x] logout revoga access token;
+- [x] logout revoga refresh token;
+- [x] revoke-all;
+- [x] expiração real do token.
 
-> Achado do smoke test de deploy (Fase 6): `POST /logout` só revoga o access
-> token quando ele é **apresentado** no header, e `revokeUserTokens` só roda
-> quando há `req.user` (ou seja, quando o access token chegou autenticado).
-> Um logout enviado só com o refresh token deixa o access token válido até
-> expirar, o que contraria o README ("revoga access token, refresh token e
-> tokens do usuário"). Decidir o contrato: ou o logout exige o bearer, ou o
-> refresh token apresentado identifica o usuário e revoga a sessão inteira.
-- [ ] revoke-all;
-- [ ] expiração real do token.
+> **Achado do smoke test de deploy (Fase 6) — resolvido.** `POST /logout` só
+> revogava o access token quando ele era **apresentado** no header, e
+> `revokeUserTokens` só rodava quando havia `req.user`. Um logout enviado só
+> com o refresh token deixava o access token válido até expirar, contrariando o
+> README.
+>
+> **Contrato decidido:** o refresh token apresentado identifica a sessão. O
+> `/logout` virou um caso de uso do domínio (`AuthService.endSession`) que
+> resolve a identidade **antes** de revogar e então derruba access token,
+> refresh token e todos os tokens do usuário. Redis indisponível em modo
+> fail-closed devolve 503, porque dizer que a sessão acabou quando ela continua
+> viva seria mentira.
+>
+> A ordem é exigência, não estilo: `verifyRefreshToken` consulta a blacklist, e
+> um refresh já revogado é sempre recusado. Ler o dono depois de blacklisted-lo
+> faria a revogação em massa nunca acontecer. Há teste com um TokenPort que
+> reproduz a blacklist real justamente para travar essa ordem.
 
 ### Senha
 
-- [ ] troca de senha;
-- [ ] histórico;
-- [ ] senha anterior rejeitada;
-- [ ] sessão antiga invalidada, conforme política.
+- [x] troca de senha;
+- [x] histórico;
+- [x] senha anterior rejeitada;
+- [x] sessão antiga invalidada, conforme política.
 
 ### Segurança HTTP
 
-- [ ] `/security/*` exige credencial administrativa;
-- [ ] `/metrics` exige token quando configurado;
-- [ ] `/observability` exige token;
-- [ ] JSON inválido retorna 400;
-- [ ] headers de segurança presentes;
-- [ ] CORS conforme configuração.
+- [x] `/security/*` exige credencial administrativa;
+- [x] `/metrics` exige token quando configurado;
+- [x] `/observability` exige token;
+- [x] JSON inválido retorna 400;
+- [x] headers de segurança presentes;
+- [x] CORS conforme configuração.
 
 ### Infraestrutura
 
-- [ ] Mongo indisponível;
-- [ ] Redis indisponível;
+- [x] Mongo indisponível;
+- [x] Redis indisponível;
 - [ ] reconexão Redis;
 - [ ] restart do container;
-- [ ] readiness durante startup;
-- [ ] readiness após perda de dependência.
+- [x] readiness durante startup;
+- [x] readiness após perda de dependência.
+
+> Os dois itens pendentes precisam derrubar e religar serviço de verdade
+> (`docker compose down`/matar o processo do Redis), o que é teste de
+> infraestrutura, não de unidade. Ficam para a Fase 9 junto com o resto da
+> plataforma.
 
 ---
 
