@@ -23,7 +23,14 @@ const loadRateLimiter = async(fakeRedisClient: Record<string, unknown> | null) =
   return (await import('../../src/application/middleware/advancedRateLimit.js')).advancedRateLimit;
 };
 
-describe('AdvancedRateLimiter - promoção para Redis', () => {
+const usableRedisClient = () => ({
+  isReady: true,
+  on: jest.fn(),
+  connect: jest.fn(async() => {}),
+  ping: jest.fn(async() => 'PONG')
+});
+
+describe('AdvancedRateLimiter - promoção e queda de backend', () => {
   beforeEach(() => {
     jest.resetModules();
     process.env.NODE_ENV = 'test';
@@ -31,20 +38,16 @@ describe('AdvancedRateLimiter - promoção para Redis', () => {
   });
 
   it('promove para limiters Redis quando um cliente está disponível', async() => {
-    const fakeRedisClient = {
-      isReady: true,
-      on: jest.fn(),
-      connect: jest.fn(async() => {}),
-      ping: jest.fn(async() => 'PONG')
-    };
+    const fakeRedisClient = usableRedisClient();
 
     const limiter = await loadRateLimiter(fakeRedisClient);
 
-    expect(limiter.initialized).toBe(false);
+    // Antes do init, o limite é local: `usingRedis` é a pergunta que importa.
+    expect(limiter.usingRedis).toBe(false);
     await limiter.init();
 
     expect(limiter.redisClient).toBe(fakeRedisClient);
-    expect(limiter.initialized).toBe(true);
+    expect(limiter.usingRedis).toBe(true);
     expect(limiter.limiters.ip.constructor.name).toBe('RateLimiterRedis');
     expect(limiter.limiters.login.constructor.name).toBe('RateLimiterRedis');
   });
@@ -55,8 +58,63 @@ describe('AdvancedRateLimiter - promoção para Redis', () => {
     await limiter.init();
 
     expect(limiter.redisClient).toBeNull();
-    expect(limiter.initialized).toBe(true);
+    expect(limiter.usingRedis).toBe(false);
     expect(limiter.limiters.ip.constructor.name).not.toBe('RateLimiterRedis');
+  });
+
+  it('não promove para um cliente que ainda não responde', async() => {
+    // `initRedis` resolvendo com socket em reconexão: promover aqui deixaria o
+    // limiter Redis pronto para falhar na primeira requisição.
+    const limiter = await loadRateLimiter({ isReady: false, on: jest.fn() });
+
+    await limiter.init();
+
+    expect(limiter.usingRedis).toBe(false);
+    expect(limiter.limiters.ip.constructor.name).toBe('RateLimiterMemory');
+  });
+
+  it('desce para memória quando a conexão cai, em vez de continuar no Redis morto', async() => {
+    const client = usableRedisClient();
+    const limiter = await loadRateLimiter(client);
+    await limiter.init();
+    expect(limiter.usingRedis).toBe(true);
+
+    // A queda é o estado `isReady: false` com o objeto ainda lá: é o que o
+    // node-redis apresenta enquanto tenta reconectar.
+    limiter.redisClient = { ...client, isReady: false };
+    limiter.syncBackend();
+
+    expect(limiter.usingRedis).toBe(false);
+    expect(limiter.limiters.ip.constructor.name).toBe('RateLimiterMemory');
+  });
+
+  it('volta para o Redis quando a conexão se restabelece', async() => {
+    const client = usableRedisClient();
+    const limiter = await loadRateLimiter(client);
+    await limiter.init();
+
+    limiter.redisClient = { ...client, isReady: false };
+    limiter.syncBackend();
+    expect(limiter.usingRedis).toBe(false);
+
+    limiter.redisClient = client;
+    limiter.syncBackend();
+
+    // Sem isto, uma queda de meio segundo deixava o limite em memória pelo
+    // resto do processo, e cada worker teria seu próprio orçamento.
+    expect(limiter.usingRedis).toBe(true);
+    expect(limiter.limiters.ip.constructor.name).toBe('RateLimiterRedis');
+  });
+
+  it('o status responde "o limite vale entre processos agora?"', async() => {
+    const client = usableRedisClient();
+    const limiter = await loadRateLimiter(client);
+    await limiter.init();
+
+    expect(limiter.getStatus()).toMatchObject({ usingRedis: true, redisUsable: true, hasRedis: true });
+
+    limiter.redisClient = { ...client, isReady: false };
+    expect(limiter.getStatus()).toMatchObject({ usingRedis: true, redisUsable: false, hasRedis: true });
   });
 
   it('reseta criando limiters novos em memória', async() => {
@@ -119,6 +177,61 @@ describe('AdvancedRateLimiter - aplicação de limites', () => {
     expect(err.statusCode).toBe(429);
     expect(err.code).toBe('RATE_LIMIT_EXCEEDED');
     expect(res.set).toHaveBeenCalledWith(expect.objectContaining({ 'Retry-After': expect.any(Number) }));
+  });
+
+  it('falha do driver Redis vira recusa em memória, e não 429 para o cliente', async() => {
+    const limiter = await loadRateLimiter(usableRedisClient());
+    await limiter.init();
+
+    // Limiters Redis instalados, driver fora do ar: o que chega no `catch` é
+    // um `Error` ("Connection is closed"), sem `msBeforeNext`. Tratar isso como
+    // limite estourado respondia 429 com `Retry-After` para todo mundo e
+    // registrava "violação de rate limit" numa queda de dependência.
+    limiter.limiters = {
+      ip: { consume: jest.fn().mockRejectedValue(new Error('Connection is closed.')) },
+      user: { consume: jest.fn() },
+      login: { consume: jest.fn() }
+    };
+
+    const req = makeRequest('1.2.3.4', '/anything');
+    const res = makeResponse();
+    const next = jest.fn();
+
+    await limiter.checkLimits(req as never, res as never, next);
+
+    // A requisição passa, e o backend volta a ser local.
+    expect(next).toHaveBeenCalledWith();
+    expect(limiter.limiters.ip.constructor.name).toBe('RateLimiterMemory');
+    expect(limiter.usingRedis).toBe(false);
+  });
+
+  it('a recusa de verdade continua sendo 429, mesmo vinda do backend Redis', async() => {
+    const limiter = await loadRateLimiter(usableRedisClient());
+    await limiter.init();
+
+    // O objeto de recusa do rate-limiter-flexible: tem `msBeforeNext`. É a
+    // diferença que separa "você excedeu" de "a dependência caiu".
+    limiter.limiters = {
+      ip: {
+        consume: jest.fn()
+          .mockResolvedValueOnce(undefined)
+          .mockRejectedValue({ msBeforeNext: 5000, remainingPoints: 0, totalPoints: 2 })
+      },
+      user: { consume: jest.fn() },
+      login: { consume: jest.fn() }
+    };
+
+    const req = makeRequest('1.2.3.4', '/anything');
+    const res = makeResponse();
+    const next = jest.fn();
+
+    await limiter.checkLimits(req as never, res as never, next);
+    await limiter.checkLimits(req as never, res as never, next);
+
+    // A primeira requisição passou limpa; a segunda recebeu a recusa.
+    const err = next.mock.calls[1]?.[0];
+    expect(err.statusCode).toBe(429);
+    expect(err.code).toBe('RATE_LIMIT_EXCEEDED');
   });
 
   it('bloqueia por usuário quando o ID do usuário ultrapassa o limite', async() => {

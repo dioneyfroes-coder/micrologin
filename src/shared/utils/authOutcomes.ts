@@ -59,7 +59,7 @@ export type AuthEventKind = 'login' | 'token_refresh' | 'password_change';
  * A lista é derivada do código, não escrita à mão num texto que ninguém conferia.
  */
 export const AUTH_OUTCOMES_BY_KIND: Readonly<Record<AuthEventKind, readonly AuthOutcome[]>> = {
-  login: ['success', 'failure', 'error'],
+  login: ['success', 'failure', 'unavailable', 'error'],
   token_refresh: ['success', 'invalid', 'reused', 'unavailable', 'error'],
   password_change: ['success', 'current_password_invalid', 'rejected', 'error']
 };
@@ -77,7 +77,11 @@ const OUTCOME_BY_CODE: Readonly<Record<AuthEventKind, Readonly<Record<string, Au
     // encontrado" a uma senha errada enumeraria contas. Para quem observa, toda
     // recusa de credencial é a mesma coisa.
     AUTHENTICATION_FAILED: 'failure',
-    VALIDATION_ERROR: 'failure'
+    VALIDATION_ERROR: 'failure',
+    // Exceção que não é credencial: em fail-closed, com o armazenamento de
+    // revogação fora do ar, o login recusa por indisponibilidade. Contar como
+    // `failure` transformaria uma queda do Redis em tentativa de ataque.
+    REVOCATION_UNAVAILABLE: 'unavailable'
   },
   token_refresh: {
     // Reuso é sinal de comprometimento, não erro de usuário: precisa de label

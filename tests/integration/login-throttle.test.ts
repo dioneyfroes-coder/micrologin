@@ -77,6 +77,11 @@ describe('limite de login por conta (brute force distribuído)', () => {
 
   afterAll(async() => {
     process.env = { ...originalEnv };
+    // A reconexão do Redis é infinita por decisão de produção: sem o
+    // encerramento explícito, o timer pendente segura o processo do jest e a
+    // suíte passa os testes sem nunca terminar.
+    const { disconnectRedis } = await import('../../src/infrastructure/cache/connection.js');
+    await disconnectRedis();
     server.closeAllConnections?.();
     await new Promise<void>((resolve, reject) => {
       server.close(error => error ? reject(error) : resolve());

@@ -1,5 +1,5 @@
 import { describe, it, expect, jest } from '@jest/globals';
-import { AuthService, User, DomainError } from '../../src/domain/index.js';
+import { AuthService, User, DomainError, REVOCATION_UNAVAILABLE_CODE } from '../../src/domain/index.js';
 
 const makeLogger = () => ({
   info: jest.fn(),
@@ -166,6 +166,55 @@ describe('AuthService - autenticação', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toBe('Não foi possível autenticar o usuário');
+  });
+
+  it('propaga o código de revogação indisponível em vez de virar "senha errada"', async() => {
+    // O adapter de tokens recusa em fail-closed quando o armazenamento de
+    // revogação está fora. O `catch` genérico transformava isso em falha de
+    // credencial, e o 503 do logout (que tem caminho próprio) virava 401 no
+    // login: mesma causa, respostas opostas.
+    const logger = makeLogger();
+    const userRepository = makeRepo({
+      findByUsername: jest.fn().mockResolvedValue(new User('u-1', 'alice', 'hashed-password'))
+    });
+    const revocationDown = Object.assign(new Error('Revogação indisponível'), {
+      code: REVOCATION_UNAVAILABLE_CODE
+    });
+    const tokenGenerator = {
+      generateTokenPair: jest.fn().mockRejectedValue(revocationDown)
+    };
+
+    const service = new AuthService(
+      userRepository,
+      { compare: jest.fn().mockResolvedValue(true) },
+      tokenGenerator,
+      logger
+    );
+    const result = await service.authenticateUser('alice', 'StrongPass123!');
+
+    expect(result.success).toBe(false);
+    expect(result.code).toBe(REVOCATION_UNAVAILABLE_CODE);
+    expect(result.token).toBeNull();
+  });
+
+  it('recusa de credencial não ganha código de infraestrutura', async() => {
+    const logger = makeLogger();
+    const userRepository = makeRepo({
+      findByUsername: jest.fn().mockResolvedValue(new User('u-1', 'alice', 'hashed-password'))
+    });
+
+    const service = new AuthService(
+      userRepository,
+      { compare: jest.fn().mockResolvedValue(false) },
+      {},
+      logger
+    );
+    const result = await service.authenticateUser('alice', 'WrongPass123!');
+
+    // O código ausente é o que mantém o 401 genérico no lugar certo: o
+    // controller só troca a resposta quando a causa é de infraestrutura.
+    expect(result.success).toBe(false);
+    expect(result.code).toBeNull();
   });
 
   it('busca o usuário pela forma canônica, independentemente da caixa enviada', async() => {

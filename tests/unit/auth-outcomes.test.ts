@@ -69,6 +69,16 @@ describe('authOutcomes - tradução do desfecho', () => {
     expect(authOutcomeFor('login', 'VALIDATION_ERROR')).toBe('failure');
   });
 
+  it('login recusado por revogação indisponível é "unavailable", não "failure"', () => {
+    // A exceção que confirma a regra: o código entra no login quando a recusa
+    // NÃO é de credencial. Sem ele, uma queda do Redis apareceria como pico de
+    // senha errada - e o alerta de força bruta dispararia por causa de
+    // infraestrutura.
+    expect(authOutcomeFor('login', 'REVOCATION_UNAVAILABLE')).toBe('unavailable');
+    expect(authOutcomeFor('login', 'REVOCATION_UNAVAILABLE'))
+      .not.toBe(authOutcomeFor('login', 'AUTHENTICATION_FAILED'));
+  });
+
   it('rótulo de outro fluxo não vaza para o evento', () => {
     // `reused` é legítimo em token_refresh e não existe em login. Aceitar
     // qualquer rótulo conhecido criaria uma combinação que o fluxo nunca emite.

@@ -7,10 +7,28 @@ import { logger } from '../../shared/utils/logger.js';
 import { normalizeUsername } from '../../shared/utils/usernamePolicy.js';
 import type { RedisClient } from '../../infrastructure/cache/connection.js';
 
+/** Intervalo mínimo entre tentativas de conectar ao Redis quando não há cliente. */
+const REDIS_RETRY_INTERVAL_MS = 30000;
+
+/**
+ * A rejeição veio do limite ou da infraestrutura?
+ *
+ * `rate-limiter-flexible` recusa com um objeto que traz `msBeforeNext` e
+ * `remainingPoints`. Qualquer outra coisa — um `Error` do driver de Redis — é
+ * indisponibilidade do armazenamento. Confundir os dois faz uma queda de
+ * dependência aparecer para o cliente (e para a auditoria) como abuso de taxa.
+ */
+const isRateLimitRejection = (value: unknown): boolean => {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  return typeof (value as { msBeforeNext?: unknown }).msBeforeNext === 'number';
+};
+
 class AdvancedRateLimiter {
   private redisClient: RedisClient | null = null;
   private limiters: Record<string, RateLimiterAbstract> = {};
-  private initialized = false;
+  private usingRedis = false;
   private initPromise: Promise<void> | null = null;
   private lastInitAttempt: number | null = null;
   private config;
@@ -28,6 +46,7 @@ class AdvancedRateLimiter {
   }
 
   setupLimiters(): void {
+    this.usingRedis = false;
     this.limiters = {
       ip: new RateLimiterMemory({
         keyPrefix: `${this.config.redis.keyPrefix}ip`,
@@ -77,11 +96,29 @@ class AdvancedRateLimiter {
         blockDuration: this.config.login.blockDuration
       })
     };
+
+    this.usingRedis = true;
   }
 
+  /**
+   * O armazenamento compartilhado está utilizável agora?
+   *
+   * `isReady !== false` em vez de `isReady === true` porque clientes de teste
+   * (e o contrato de `TokenService`) tratam a ausência do campo como "pronto".
+   */
+  private isRedisUsable(): boolean {
+    return !!this.redisClient && this.redisClient.isReady !== false;
+  }
+
+  /**
+   * Conecta ao Redis, se ainda não conectado.
+   *
+   * Só é chamada quando não há cliente nenhum. Havendo cliente, quem recupera a
+   * conexão é o próprio node-redis (`reconnectStrategy`), que a restabelece sem
+   * trocar o objeto.
+   */
   async init(): Promise<void> {
     if (this.redisClient) {
-      this.initialized = true;
       return;
     }
 
@@ -97,12 +134,17 @@ class AdvancedRateLimiter {
 
         if (redisClient) {
           this.redisClient = redisClient;
-          this.setupRedisLimiters();
+          // Só-promove se o cliente já responde. Promover para um socket em
+          // reconexão trocaria os limiters de memória por um backend que falha
+          // na primeira requisição, e o `syncBackend` desfaria isso logo em
+          // seguida: duas reconfigurações por queda, sem ganho nenhum.
+          if (this.isRedisUsable()) {
+            this.setupRedisLimiters();
+          }
         }
       } catch (error) {
         logger.warn('⚠️ Redis não disponível para rate limiting, usando memória', error);
       } finally {
-        this.initialized = true;
         this.initPromise = null;
         this.lastInitAttempt = Date.now();
       }
@@ -111,17 +153,45 @@ class AdvancedRateLimiter {
     return this.initPromise;
   }
 
-  ensureInit(): void {
-    if (this.initialized || this.redisClient || this.initPromise) {
+  /**
+   * Mantém o backend dos limiters em sintonia com a disponibilidade do Redis.
+   *
+   * As duas direções importam, e as duas já falhavam:
+   *
+   * - **desce para memória** quando a conexão cai, porque o `RateLimiterRedis`
+   *   rejeita a operação e o middleware tratava a rejeição como "limite
+   *   estourado". Uma indisponibilidade do Redis virava 429 para todo mundo e
+   *   ainda registrav violação de rate limit na auditoria — o serviço afirmava
+   *   estar sob ataque quando o que tinha caído era a dependência;
+   * - **sobe para o Redis** quando ela volta, para que o limite volte a ser
+   *   global. Sem isto, uma única queda de meio segundo deixava o limite em
+   *   memória pelo resto do processo: com vários workers, cada um com seu
+   *   orçamento, que é exatamente o bypass que o limite por conta existe para
+   *   impedir.
+   */
+  syncBackend(): void {
+    if (this.isRedisUsable()) {
+      if (!this.usingRedis) {
+        this.setupRedisLimiters();
+        logger.info('✅ Rate limiting migrado para o Redis (limite compartilhado entre processos)');
+      }
       return;
     }
 
-    // Não tentar reconectar com muita frequência (a cada 30s no máximo)
-    if (this.lastInitAttempt && Date.now() - this.lastInitAttempt < 30000) {
-      return;
+    if (this.usingRedis) {
+      this.setupLimiters();
+      logger.warn('⚠️ Redis indisponível: rate limiting por memória (limite passa a valer só neste processo)');
     }
 
-    this.init().catch(() => {});
+    // Sem cliente (Redis fora desde o startup, ou a reconexão em curso):
+    // refaz a tentativa no máximo a cada 30s, senão cada requisição paga uma
+    // conexão recusada.
+    if (!this.redisClient && !this.initPromise) {
+      if (this.lastInitAttempt && Date.now() - this.lastInitAttempt < REDIS_RETRY_INTERVAL_MS) {
+        return;
+      }
+      void this.init();
+    }
   }
 
   /**
@@ -143,13 +213,43 @@ class AdvancedRateLimiter {
     return canonical ? `account:${canonical}` : `anon:${ip}`;
   }
 
-  checkLimits = async(req: Request, res: Response, next: NextFunction): Promise<void> => {
-    // Promove para Redis assim que disponível sem bloquear a requisição
-    this.ensureInit();
+  /**
+   * Pontos a consumir nesta requisição, na ordem.
+   *
+   * Extrair para um método é o que permite repetir o consumo em memória depois
+   * de uma falha de infraestrutura: o mesmo conjunto de chaves, o mesmo cálculo
+   * de chave de conta, sem risco de as duas pontas divergirem.
+   */
+  private consumptionPlan(req: Request, ip: string, userId?: string): Array<{ limiter: 'ip' | 'user' | 'login', key: string }> {
+    const plan: Array<{ limiter: 'ip' | 'user' | 'login', key: string }> = [
+      { limiter: 'ip', key: ip }
+    ];
 
+    if (userId) {
+      plan.push({ limiter: 'user', key: userId });
+    }
+
+    if (req.path.includes('/login')) {
+      // Duas dimensões independentes: a origem e a conta atacada. A primeira
+      // segura varredura (muitas contas a partir de uma origem), a segunda
+      // segura o ataque dirigido a uma conta - que é o que brute force de
+      // verdade é, e que trocar de IP não contorna.
+      plan.push({ limiter: 'login', key: `${ip}_login` });
+      plan.push({ limiter: 'login', key: this.loginAccountKey(req, ip) });
+    }
+
+    return plan;
+  }
+
+  private async consume(plan: ReturnType<AdvancedRateLimiter['consumptionPlan']>): Promise<void> {
+    for (const { limiter, key } of plan) {
+      await this.limiters[limiter].consume(key);
+    }
+  }
+
+  checkLimits = async(req: Request, res: Response, next: NextFunction): Promise<void> => {
     const ip = req.ip || 'unknown';
     const userId = req.user?.id;
-    const isLogin = req.path.includes('/login');
 
     const isExempt = this.config.exemptPaths.some(path => req.path === path || req.path.startsWith(path));
 
@@ -158,84 +258,118 @@ class AdvancedRateLimiter {
       return;
     }
 
+    // Fora do caminho isento: promoções e quedas de backend fazem sentido aqui.
+    this.syncBackend();
+
+    const plan = this.consumptionPlan(req, ip, userId);
+
+    let rejection: unknown;
     try {
-      await this.limiters.ip.consume(ip);
-
-      if (userId) {
-        await this.limiters.user.consume(userId);
-      }
-      if (isLogin) {
-        // Duas dimensões independentes: a origem e a conta atacada. A primeira
-        // segura varredura (muitas contas a partir de uma origem), a segunda
-        // segura o ataque dirigido a uma conta - que é o que brute force de
-        // verdade é, e que trocar de IP não contorna.
-        await this.limiters.login.consume(`${ip}_login`);
-        await this.limiters.login.consume(this.loginAccountKey(req, ip));
-      }
-
+      await this.consume(plan);
       next();
-
-    } catch (rejRes) {
-      const rejection = rejRes as { remainingPoints?: number; msBeforeNext?: number; totalPoints?: number };
-      const remainingPoints = rejection.remainingPoints || 0;
-      const msBeforeNext = rejection.msBeforeNext || 1000;
-      const secondsToWait = Math.round(msBeforeNext / 1000) || 1;
-
-      // Registrar violação no sistema de auditoria
-      securityAuditLogger.logRateLimitViolation(
-        ip,
-        req.path,
-        req.get('User-Agent') || undefined,
-        rejection.totalPoints || 'unknown'
-      );
-
-      res.set({
-        'Retry-After': secondsToWait,
-        'X-RateLimit-Limit': rejection.totalPoints || 'unknown',
-        'X-RateLimit-Remaining': remainingPoints,
-        'X-RateLimit-Reset': new Date(Date.now() + msBeforeNext).toISOString()
-      });
-
-      const message = this.config.environment === 'development'
-        ? `Rate limit atingido (${this.config.environment.toUpperCase()}: ${secondsToWait}s). IP: ${ip}, Path: ${req.path}`
-        : `Rate limit exceeded. Try again in ${secondsToWait} seconds.`;
-
-      next(new HttpError(429, 'RATE_LIMIT_EXCEEDED', message, {
-        retryAfter: secondsToWait,
-        environment: this.config.environment,
-        ip: ip,
-        path: req.path,
-        remaining: remainingPoints,
-        resetTime: new Date(Date.now() + msBeforeNext).toISOString(),
-        limits: {
-          ip: this.config.ip,
-          user: this.config.user,
-          login: this.config.login
-        }
-      }));
+      return;
+    } catch (caught) {
+      rejection = caught;
     }
+
+    if (!isRateLimitRejection(rejection)) {
+      // Falha de infraestrutura, não limite estourado. Um `Error` do driver
+      // (conexão recusada, cliente fechado) não tem nada de `msBeforeNext`, e
+      // tratá-lo como recusa transformava a queda do Redis em 429 para todo
+      // mundo, com `Retry-After` e violação registrada na auditoria.
+      logger.warn('⚠️ Falha no armazenamento de rate limit, refazendo em memória', rejection as Error);
+      this.setupLimiters();
+      try {
+        await this.consume(plan);
+        next();
+        return;
+      } catch (memoryRejection) {
+        rejection = memoryRejection;
+      }
+    }
+
+    const details = rejection as { remainingPoints?: number; msBeforeNext?: number; totalPoints?: number };
+    const remainingPoints = details.remainingPoints || 0;
+    const msBeforeNext = details.msBeforeNext || 1000;
+    const secondsToWait = Math.round(msBeforeNext / 1000) || 1;
+
+    // Registrar violação no sistema de auditoria
+    securityAuditLogger.logRateLimitViolation(
+      ip,
+      req.path,
+      req.get('User-Agent') || undefined,
+      details.totalPoints || 'unknown'
+    );
+
+    res.set({
+      'Retry-After': secondsToWait,
+      'X-RateLimit-Limit': details.totalPoints || 'unknown',
+      'X-RateLimit-Remaining': remainingPoints,
+      'X-RateLimit-Reset': new Date(Date.now() + msBeforeNext).toISOString()
+    });
+
+    const message = this.config.environment === 'development'
+      ? `Rate limit atingido (${this.config.environment.toUpperCase()}: ${secondsToWait}s). IP: ${ip}, Path: ${req.path}`
+      : `Rate limit exceeded. Try again in ${secondsToWait} seconds.`;
+
+    next(new HttpError(429, 'RATE_LIMIT_EXCEEDED', message, {
+      retryAfter: secondsToWait,
+      environment: this.config.environment,
+      ip: ip,
+      path: req.path,
+      remaining: remainingPoints,
+      resetTime: new Date(Date.now() + msBeforeNext).toISOString(),
+      limits: {
+        ip: this.config.ip,
+        user: this.config.user,
+        login: this.config.login
+      }
+    }));
   };
 
+  /**
+   * Zera os contadores e recria os limiters.
+   *
+   * A limpeza no Redis usa SCAN, e não KEYS: `KEYS` bloqueia o servidor
+   * enquanto varre o keyspace inteiro, e quem roda isto é um endpoint de
+   * desenvolvimento, mas o bloqueio em Redis é do servidor — não do processo que
+   * pediu.
+   */
   async reset(): Promise<void> {
-    if (this.redisClient) {
+    if (this.redisClient && this.isRedisUsable()) {
       try {
-        const keys = await this.redisClient.keys(`${this.config.redis.keyPrefix}*`);
-        if (keys.length > 0) {
-          await this.redisClient.del(keys);
-        }
+        let cursor = '0';
+        do {
+          const page = await this.redisClient.scan(cursor, {
+            MATCH: `${this.config.redis.keyPrefix}*`,
+            COUNT: 100
+          });
+          cursor = page.cursor;
+          if (page.keys.length > 0) {
+            await this.redisClient.del(page.keys);
+          }
+        } while (cursor !== '0');
       } catch (error) {
         logger.warn('⚠️ Erro ao limpar Redis', error);
+        this.setupLimiters();
+        return;
       }
 
       this.setupRedisLimiters();
     } else {
+      // Cliente morto não é motivo para reinstalar limiters Redis: o
+      // `getStatus` mentiria, dizendo limite compartilhado com o Redis fora.
       this.setupLimiters();
     }
   }
 
   getStatus(): Record<string, unknown> {
     return {
-      initialized: this.initialized,
+      // `usingRedis` é a pergunta que importa ("o limite vale entre processos
+      // agora?"), não "já tentamos conectar alguma vez" — o limite em memória
+      // numa instância com cliente Redis no ar é justamente o estado perigoso.
+      usingRedis: this.usingRedis,
+      redisUsable: this.isRedisUsable(),
       environment: this.config?.environment || 'unknown',
       hasRedis: !!this.redisClient,
       limiters: Object.keys(this.limiters),
@@ -252,7 +386,7 @@ class AdvancedRateLimiter {
     this.config = { ...this.config, ...newConfig };
 
     // Recriar limiters com nova configuração, preservando o backend atual
-    if (this.redisClient) {
+    if (this.isRedisUsable()) {
       this.setupRedisLimiters();
     } else {
       this.setupLimiters();

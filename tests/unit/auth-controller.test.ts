@@ -119,6 +119,74 @@ describe('AuthWebController - contrato HTTP', () => {
     expect(err.message).toBe('Não foi possível criar a conta');
   });
 
+  it('responde 503 no login quando a revogação está indisponível (fail-closed)', async() => {
+    // Sem o código, o caso abaixo chegava como 401 "Credenciais inválidas": a
+    // senha estava certa, o serviço é que estava fora, e o cliente deixava de
+    // tentar de novo. O status é o que separa a causa.
+    const service = {
+      authenticateUser: jest.fn().mockResolvedValue({
+        success: false,
+        error: 'Revogação indisponível',
+        code: 'REVOCATION_UNAVAILABLE'
+      })
+    };
+    req.body = { user: 'alice', password: 'StrongPass123!' };
+
+    await buildController(service).login(req, res, next);
+
+    const err = next.mock.calls[0][0];
+    expect(err.statusCode).toBe(503);
+    expect(err.code).toBe('REVOCATION_UNAVAILABLE');
+    // A mensagem pública não diz que a senha estava errada, nem revela estado
+    // interno: o corpo é genérico e o status carrega o diagnóstico.
+    expect(err.message).toBe('Autenticação temporariamente indisponível');
+    expect(res.json).not.toHaveBeenCalled();
+  });
+
+  it('a recusa por indisponibilidade não vira falha de credencial na auditoria', async() => {
+    const auditModule = await import('../../src/application/middleware/securityAudit.js');
+    const loginSpy = jest.spyOn(auditModule.securityAuditLogger, 'logLoginAttempt');
+
+    const service = {
+      authenticateUser: jest.fn().mockResolvedValue({
+        success: false,
+        error: 'Revogação indisponível',
+        code: 'REVOCATION_UNAVAILABLE'
+      })
+    };
+    req.body = { user: 'alice', password: 'StrongPass123!' };
+
+    await buildController(service).login(req, res, next);
+
+    // O código cru viaja para a auditoria, que o traduz uma vez. Passar
+    // 'failure' aqui seria a queda do Redis entrando no contador de ataque.
+    expect(loginSpy).toHaveBeenCalledWith(
+      'alice',
+      '203.0.113.5',
+      'jest-agent',
+      'REVOCATION_UNAVAILABLE',
+      'Revogação indisponível'
+    );
+
+    loginSpy.mockRestore();
+  });
+
+  it('recusa de credencial continua indo para a auditoria como "failure"', async() => {
+    const auditModule = await import('../../src/application/middleware/securityAudit.js');
+    const loginSpy = jest.spyOn(auditModule.securityAuditLogger, 'logLoginAttempt');
+
+    const service = {
+      authenticateUser: jest.fn().mockResolvedValue({ success: false, error: 'Senha incorreta', code: null })
+    };
+    req.body = { user: 'alice', password: 'WrongPass123!' };
+
+    await buildController(service).login(req, res, next);
+
+    expect(loginSpy).toHaveBeenCalledWith('alice', '203.0.113.5', 'jest-agent', 'failure', 'Senha incorreta');
+
+    loginSpy.mockRestore();
+  });
+
   it('responde 400 quando a validação HTTP falha no refresh', async() => {
     const service = { refreshUserTokens: jest.fn() };
     req.body = {};

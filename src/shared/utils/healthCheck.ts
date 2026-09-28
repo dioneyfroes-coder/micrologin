@@ -4,7 +4,7 @@
  * Provenance-ID: ML-7F2A
  */
 import mongoose from 'mongoose';
-import { getCachedJWT } from '../../infrastructure/cache/connection.js';
+import { getRedisClient, performHealthCheck as performRedisHealthCheck } from '../../infrastructure/cache/connection.js';
 
 interface CheckResult {
   status: 'healthy' | 'unhealthy' | 'degraded' | 'warning';
@@ -48,20 +48,36 @@ const checkMongoDB = async(): Promise<CheckResult> => {
 
 /**
  * Verifica saúde do Redis
+ *
+ * A pergunta é "o Redis está servindo?", então a resposta tem de vir de uma
+ * operação real. Usar `getCachedJWT` para isso não servia: ele engole a falha e
+ * devolve `null` quando não há Redis, então o relatório dizia "Redis
+ * disponível" com o Redis no chão — o pior resultado para um health check, que
+ * é mentir para quem decide se o serviço está no ar.
  */
 const checkRedis = async(): Promise<CheckResult> => {
-  try {
-    // Tenta fazer uma operação simples
-    await getCachedJWT('health-check-test');
+  const client = getRedisClient();
+
+  if (!client) {
     return {
-      status: 'healthy',
-      message: 'Redis disponível'
+      status: 'degraded',
+      message: 'Redis indisponível - revogação de token degradada'
     };
+  }
+
+  try {
+    const healthy = await performRedisHealthCheck(client);
+    return healthy
+      ? { status: 'healthy', message: 'Redis disponível' }
+      : {
+        status: 'degraded',
+        message: 'Redis conectado, mas não responde a leitura/escrita'
+      };
   } catch (error) {
     return {
-      status: 'degraded', // Redis não é crítico
+      status: 'degraded',
       error: (error as Error).message,
-      message: 'Cache indisponível - funcionalidade reduzida'
+      message: 'Redis indisponível - revogação de token degradada'
     };
   }
 };
@@ -146,8 +162,14 @@ export const performLivenessCheck = (): LivenessReport => ({
  * Readiness: as dependências necessárias para atender tráfego estão de pé?
  *
  * Aqui o Mongo decide: sem banco o serviço não cumpre o contrato de nenhum
- * endpoint de negócio. O Redis, por outro lado, é fail-open por padrão em
- * dev/test, então cache indisponível é estado degradado, não "não pronto".
+ * endpoint de negócio.
+ *
+ * O Redis não tira o serviço de prontidão, e a justificativa é operacional: em
+ * produção a política de revogação é fail-closed, então Redis fora significa
+ * "não autentica" — mas o remédio é restaurar o Redis, não reiniciar o
+ * processo. Um app reiniciado voltaria a cair no mesmo estado em segundos, e
+ * tirar o container da roção só trocaria indisponibilidade por indisponibilidade,
+ * gastando o orçamento de reinício do orquestrador.
  */
 export const performReadinessCheck = async(): Promise<ReadinessReport> => {
   const startTime = Date.now();

@@ -44,9 +44,9 @@ export class AuthWebController {
         username,
         req.ip || 'unknown',
         req.get('User-Agent') || 'unknown',
-        // `AuthResult` não carrega código: falha de login é uma coisa só, por
-        // design, para não enumerar contas.
-        result.success ? 'success' : 'failure',
+        // Credencial recusada é uma coisa só, por design, para não enumerar
+        // contas. O código entra só quando a recusa *não* é de credencial.
+        result.success ? 'success' : (result.code ?? 'failure'),
         result.error ?? undefined
       );
 
@@ -62,6 +62,11 @@ export class AuthWebController {
             expiresIn: result.token.expiresIn
           }
         });
+      } else if (result.code === REVOCATION_UNAVAILABLE_CODE) {
+        // Fail-closed: sem armazenamento de revogação não há token a emitir, e
+        // 401 seria mentira - diria que a senha está errada. O corpo continua
+        // genérico, o status diz que a culpa é nossa.
+        next(new HttpError(503, REVOCATION_UNAVAILABLE_CODE, 'Autenticação temporariamente indisponível'));
       } else {
         next(new HttpError(401, 'AUTHENTICATION_FAILED', 'Credenciais inválidas'));
       }

@@ -368,8 +368,13 @@ describe('JWTTokenService - política de revogação (fail-closed vs fail-open)'
     new JWTTokenService(SECRET, SECRET, redis as never, 'auth-service', 'api-users', { failOpen: false });
 
   it('fail-closed: nega verificação de access token sem armazenamento de revogação', async() => {
-    const service = failClosed(null);
+    // O token é emitido com o armazenamento no ar e só depois ele some: é o
+    // que acontece quando o Redis cai depois do login. Emitir já com o
+    // armazenamento fora é o teste seguinte, porque é a outra metade do mesmo
+    // defeito.
+    const service = failClosed(makeRedisClient());
     const { accessToken } = await service.generateTokenPair({ id: 'user-20', username: 'nina' });
+    service.setRedisClient(null as never);
 
     await expect(service.verifyAccessToken(accessToken)).rejects.toMatchObject({
       code: 'REVOCATION_UNAVAILABLE'
@@ -377,8 +382,9 @@ describe('JWTTokenService - política de revogação (fail-closed vs fail-open)'
   });
 
   it('fail-closed: nega verificação de refresh token sem armazenamento de revogação', async() => {
-    const service = failClosed(null);
+    const service = failClosed(makeRedisClient());
     const { refreshToken } = await service.generateTokenPair({ id: 'user-21', username: 'olivia' });
+    service.setRedisClient(null as never);
 
     await expect(service.verifyRefreshToken(refreshToken)).rejects.toMatchObject({
       code: 'REVOCATION_UNAVAILABLE'
@@ -397,11 +403,41 @@ describe('JWTTokenService - política de revogação (fail-closed vs fail-open)'
   });
 
   it('fail-closed: nega quando o cliente Redis está desconectado', async() => {
-    const disconnected = { ...makeRedisClient(), isReady: false };
-    const service = failClosed(disconnected);
+    const service = failClosed(makeRedisClient());
     const { accessToken } = await service.generateTokenPair({ id: 'user-23', username: 'pedro' });
+    // `isReady: false` é o estado intermediário de uma conexão em reconexão:
+    // o objeto existe, o socket não.
+    service.setRedisClient({ ...makeRedisClient(), isReady: false } as never);
 
     await expect(service.verifyAccessToken(accessToken)).rejects.toMatchObject({
+      code: 'REVOCATION_UNAVAILABLE'
+    });
+  });
+
+  it('fail-closed: nega emissão sem armazenamento de revogação', async() => {
+    const service = failClosed(null);
+
+    // Emitir aqui entregaria ao cliente um token sem `sv`, que a própria API
+    // rejeitaria em seguida: o serviço aceitaria uma credencial que não tem
+    // como cassar. Recusar no login é o que mantém a promessa do fail-closed -
+    // e o 503 do controller diz "tente de novo", não "senha errada".
+    await expect(service.generateTokenPair({ id: 'user-25', username: 'sérgio' })).rejects.toMatchObject({
+      code: 'REVOCATION_UNAVAILABLE'
+    });
+  });
+
+  it('fail-closed: nega emissão de access token isolado sem armazenamento', async() => {
+    const service = failClosed(null);
+
+    await expect(service.generateAccessToken({ id: 'user-26', username: 'sofia' })).rejects.toMatchObject({
+      code: 'REVOCATION_UNAVAILABLE'
+    });
+  });
+
+  it('fail-closed: nega emissão quando o cliente está desconectado', async() => {
+    const service = failClosed({ ...makeRedisClient(), isReady: false });
+
+    await expect(service.generateTokenPair({ id: 'user-27', username: 'tiago' })).rejects.toMatchObject({
       code: 'REVOCATION_UNAVAILABLE'
     });
   });
@@ -418,8 +454,9 @@ describe('JWTTokenService - política de revogação (fail-closed vs fail-open)'
   });
 
   it('fail-closed: nega verificação e revogação quando o armazenamento responde com erro', async() => {
-    const service = failClosed(null);
+    const service = failClosed(makeRedisClient());
     const { accessToken } = await service.generateTokenPair({ id: 'user-24', username: 'rita' });
+    service.setRedisClient(null as never);
 
     await expect(service.verifyAccessToken(accessToken)).rejects.toMatchObject({
       code: 'REVOCATION_UNAVAILABLE'
@@ -430,8 +467,9 @@ describe('JWTTokenService - política de revogação (fail-closed vs fail-open)'
   });
 
   it('fail-closed: nega refresh (rotação) sem armazenamento de revogação', async() => {
-    const service = failClosed(null);
+    const service = failClosed(makeRedisClient());
     const { refreshToken } = await service.generateTokenPair({ id: 'user-25', username: 'sergio' });
+    service.setRedisClient(null as never);
 
     await expect(service.refreshTokens(refreshToken)).rejects.toMatchObject({
       code: 'REVOCATION_UNAVAILABLE'

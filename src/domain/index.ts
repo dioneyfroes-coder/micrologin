@@ -247,13 +247,29 @@ export class AuthResult {
   token: TokenPair | null;
   success: boolean;
   error: string | null;
+  /**
+   * Código do motivo, quando houver um que o adaptador HTTP precise distinguir.
+   *
+   * Só existe para o caso em que a falha NÃO é de credencial: em fail-closed,
+   * com o armazenamento de revogação fora do ar, o login recusa por
+   * infraestrutura. Sem o código, esse desfecho chegava ao cliente como
+   * "Credenciais inválidas" e à auditoria como falha de senha — duas mentiras.
+   */
+  code: string | null;
   timestamp: Date;
 
-  constructor(user: SafeUser | null, token: TokenPair | null, success = true, error: string | null = null) {
+  constructor(
+    user: SafeUser | null,
+    token: TokenPair | null,
+    success = true,
+    error: string | null = null,
+    code: string | null = null
+  ) {
     this.user = user;
     this.token = token;
     this.success = success;
     this.error = error;
+    this.code = code;
     this.timestamp = new Date();
   }
 
@@ -261,8 +277,8 @@ export class AuthResult {
     return new AuthResult(user, token, true, null);
   }
 
-  static failure(error: string): AuthResult {
-    return new AuthResult(null, null, false, error);
+  static failure(error: string, code: string | null = null): AuthResult {
+    return new AuthResult(null, null, false, error, code);
   }
 }
 
@@ -345,6 +361,12 @@ export class AuthService {
 
   /**
    * Caso de uso: Autenticar usuário
+   *
+   * Em fail-closed, um token que não pode ser revogado depois não é emitido:
+   * o `code` `REVOCATION_UNAVAILABLE` atravessa o resultado para que a
+   * fronteira HTTP responda 503 (indisponibilidade) em vez de 401
+   * (credencial inválida). A resposta pública continua genérica; a distinção
+   * existe para o status e para a auditoria, nunca para o cliente.
    */
   async authenticateUser(username: string, plainPassword: string): Promise<AuthResult> {
     try {
@@ -379,7 +401,10 @@ export class AuthService {
 
     } catch (error) {
       this.logger.error('Erro na autenticação', error);
-      return AuthResult.failure(domainFailureMessage(error, 'Não foi possível autenticar o usuário'));
+      return AuthResult.failure(
+        domainFailureMessage(error, 'Não foi possível autenticar o usuário'),
+        (error as { code?: string }).code ?? null
+      );
     }
   }
 

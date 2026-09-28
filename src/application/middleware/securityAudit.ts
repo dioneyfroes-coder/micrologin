@@ -49,6 +49,16 @@ interface AuditStats {
   failedLogins: number;
   /** Apenas logins que deram certo. */
   successfulLogins: number;
+  /**
+   * Logins recusados por indisponibilidade (fail-closed sem armazenamento de
+   * revogação).
+   *
+   * Bucket próprio, e não mais um item em `failedLogins`: o alerta de força
+   * bruta lê `failedLogins`, e uma queda do Redis transformaria todo mundo em
+   * "senha errada". Um alerta que dispara por causa de infraestrutura treina o
+   * time a ignorar o alerta que importa.
+   */
+  unavailableLogins: number;
   suspiciousActivities: number;
 }
 
@@ -70,6 +80,7 @@ export class SecurityAuditLogger {
       loginAttempts: 0,
       failedLogins: 0,
       successfulLogins: 0,
+      unavailableLogins: 0,
       suspiciousActivities: 0
     };
   }
@@ -201,18 +212,22 @@ export class SecurityAuditLogger {
   }
 
   /**
-   * Um outcome de autenticação conta como falha?
+   * Um outcome de autenticação conta como falha de credencial?
    *
    * Ponto único da decisão. `updateStats` (contagem total) e `checkAlerts`
    * (janela de 5 minutos) olham a mesma propriedade; se as duas derivassem
    * "falha" por conta própria, um alerta poderia disparar sobre um contador que
    * ninguém incrementou, ou o contrário.
    *
+   * `unavailable` fica de fora de propósito: recusa por infraestrutura não é
+   * evidência de ataque, e quem lê `failedLogins` para acusar alguém precisa
+   * desse sinal limpo.
+   *
    * `undefined` é falha. Só `login_attempt` e `password_change` trazem outcome;
    * um evento sem outcome é justamente o que o alerta precisa notar.
    */
   private static isAuthFailure(outcome: AuthOutcome | undefined): boolean {
-    return !isSuccessOutcome(outcome as AuthOutcome);
+    return !isSuccessOutcome(outcome as AuthOutcome) && outcome !== 'unavailable';
   }
 
   /**
@@ -223,14 +238,17 @@ export class SecurityAuditLogger {
 
     switch (type) {
     case 'login_attempt': {
-      // O contador é semântico: `loginAttempts` soma os dois lados e cada
+      // O contador é semântico: `loginAttempts` soma os três desfechos e cada
       // resultado tem contador próprio. Um contador único que contasse todo
       // login como "failed" produziria alerta errado em base de usuários grande.
       this.stats.loginAttempts++;
-      if (SecurityAuditLogger.isAuthFailure(details.outcome as AuthOutcome | undefined)) {
-        this.stats.failedLogins++;
-      } else {
+      const outcome = details.outcome as AuthOutcome | undefined;
+      if (isSuccessOutcome(outcome as AuthOutcome)) {
         this.stats.successfulLogins++;
+      } else if (outcome === 'unavailable') {
+        this.stats.unavailableLogins++;
+      } else {
+        this.stats.failedLogins++;
       }
       break;
     }
@@ -424,6 +442,12 @@ export class SecurityAuditLogger {
 
     if (stats.failedLogins > 50) {
       recommendations.push('Considere implementar autenticação de dois fatores');
+    }
+
+    if (stats.unavailableLogins > 0) {
+      recommendations.push(
+        `${stats.unavailableLogins} login(s) recusados por indisponibilidade: verifique o armazenamento de revogação (Redis)`
+      );
     }
 
     return recommendations;

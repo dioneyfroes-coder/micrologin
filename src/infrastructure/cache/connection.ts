@@ -16,7 +16,10 @@ export type RedisClient = RedisClientType<RedisDefaultModules>;
 
 let client: RedisClient | null = null;
 let isHealthy = false;
-const MAX_RETRY_ATTEMPTS = 3;
+
+/** Backoff de reconexão: 100ms dobrando, com teto de 5s. */
+const RECONNECT_BASE_DELAY_MS = 100;
+const RECONNECT_MAX_DELAY_MS = 5000;
 
 /**
  * Inicializa conexão com Redis
@@ -27,6 +30,13 @@ export const initRedis = async(): Promise<RedisClient | null> => {
     return client;
   }
 
+  // Cliente aberto e ainda reconectando: a estratégia abaixo já está cuidando
+  // disso. Criar outro agora duplicaria a tentativa (e o log de erro) sem
+  // adiantar a reconexão.
+  if (client && client.isOpen) {
+    return null;
+  }
+
   try {
     const baseOptions: RedisConnectionOptions = getRedisClientOptions();
 
@@ -34,12 +44,24 @@ export const initRedis = async(): Promise<RedisClient | null> => {
       ...baseOptions,
       socket: {
         ...(baseOptions.socket || {}),
+        // Reconecta para sempre, com backoff limitado a 5s.
+        //
+        // Desistir é o pior desfecho possível aqui: a política de revogação é
+        // fail-closed, então um cliente morto com `isReady === false` deixa o
+        // serviço inteiro devolvendo 503 até alguém reiniciar o processo. Bastava
+        // uma queda de meio segundo para travar a autenticação de forma
+        // permanente, e o único sinal disso era uma linha de log.
+        // Quem tem prazo de vida para desistir é o processo, não a conexão.
         reconnectStrategy: (retries: number) => {
-          if (retries > MAX_RETRY_ATTEMPTS) {
-            logger.error(`❌ Redis: máximo de tentativas de reconexão (${MAX_RETRY_ATTEMPTS}) excedido`);
-            return new Error('Redis reconnection failed');
+          const delay = Math.min(
+            RECONNECT_BASE_DELAY_MS * 2 ** retries,
+            RECONNECT_MAX_DELAY_MS
+          );
+          if (retries === 0) {
+            logger.warn('⚠️ Redis desconectado, tentando reconectar');
+          } else if (retries % 10 === 0) {
+            logger.warn(`⚠️ Redis ainda indisponível após ${retries} tentativas (nova em ${delay}ms)`);
           }
-          const delay = Math.min(retries * 50, 500);
           return delay;
         },
         connectTimeout: 10000
@@ -58,6 +80,27 @@ export const initRedis = async(): Promise<RedisClient | null> => {
     newClient.on('end', () => {
       isHealthy = false;
       logger.warn('⚠️ Redis desconectado');
+    });
+
+    // Reconexão bem-sucedida: `isHealthy` foi zerado no `error`/`end` da queda e
+    // nada o religava. Sem isto, o serviço voltava a funcionar mas continuava
+    // reportando Redis degradado para sempre - e o rate limiter, que só promove
+    // os limiters quando a conexão está utilizável, nunca voltava ao
+    // armazenamento global.
+    newClient.on('ready', () => {
+      void performHealthCheck(newClient)
+        .then((healthy) => {
+          isHealthy = healthy;
+          if (healthy) {
+            logger.info('✅ Redis reconectado');
+          } else {
+            logger.warn('⚠️ Redis reconectou, mas o health check falhou');
+          }
+        })
+        .catch((error: unknown) => {
+          isHealthy = false;
+          logger.error('❌ Redis reconectado com falha no health check', error);
+        });
     });
 
     // Conectar ao Redis
@@ -205,15 +248,43 @@ export const clearCache = async(key: string | null = null): Promise<void> => {
 
 /**
  * Desconecta do Redis
+ *
+ * Encerrar é o espelho de "nunca desistir": enquanto o processo vive, a
+ * reconexão é tentada indefinidamente; quando ele vai embora, o cliente em
+ * reconexão precisa perder o timer, ou o processo fica preso no event loop
+ * esperando um Redis que não responde mais.
  */
 export const disconnectRedis = async(): Promise<void> => {
-  if (client && client.isReady) {
+  if (!client) {
+    return;
+  }
+
+  // A referência sai antes do encerramento: um cliente que não respondeu ao
+  // pedido de saída não pode continuar sendo considerado o cliente do processo.
+  const current = client;
+  client = null;
+  isHealthy = false;
+
+  if (!current.isOpen) {
+    return;
+  }
+
+  try {
+    if (current.isReady) {
+      await current.quit();
+    } else {
+      // Socket em reconexão: `quit()` manda um comando que ninguém vai atender.
+      // `destroy()` fecha na hora e cancela a reconexão pendente.
+      current.destroy();
+    }
+  } catch (error) {
+    logger.error('❌ Erro ao desconectar Redis', error);
+    // Último recurso: sem isto, um `quit()` que falha deixa o timer de
+    // reconexão vivo e o processo não encerra.
     try {
-      await client.quit();
-      client = null;
-      isHealthy = false;
-    } catch (error) {
-      logger.error('❌ Erro ao desconectar Redis', error);
+      current.destroy();
+    } catch {
+      // Cliente já destruído: nada a fazer.
     }
   }
 };

@@ -128,6 +128,11 @@ export class JWTTokenService implements TokenService {
   /**
    * Garante que a revogação está disponível quando a política é fail-closed.
    * Em fail-open, apenas registra e deixa a operação seguir.
+   *
+   * Vale para *emitir* tanto quanto para *verificar*. Sem armazenamento, um token
+   * novo sai sem a claim `sv` e sem como ser revogado depois: o
+   * serviço aceitaria a própria credencial que não tem como cassar. Emitir
+   * nesse estado é a mesma falha que aceitar, vista pelo outro lado.
    */
   private assertRevocationAvailable(): void {
     if (this.isRevocationStoreReady() || this.sessionPolicy.failOpen) {
@@ -265,6 +270,10 @@ export class JWTTokenService implements TokenService {
    */
   async generateTokenPair(payload: { id: string; username: string }, options: TokenGenerationOptions = {}): Promise<TokenPair> {
     try {
+      // Emitir exige o mesmo que verificar: o armazenamento de revogação tem de
+      // estar utilizável, senão o token nasce sem como morrer.
+      this.assertRevocationAvailable();
+
       const {
         issuer = this.issuer,
         audience = this.audience,
@@ -336,6 +345,7 @@ export class JWTTokenService implements TokenService {
    */
   async generateAccessToken(payload: { id: string; username: string }, expiresIn = '15m'): Promise<string> {
     try {
+      this.assertRevocationAvailable();
       const sessionClaim = await this.sessionVersionClaim(payload.id);
       return jwt.sign({ ...payload, ...sessionClaim, token_type: 'access' }, this.secret, {
         expiresIn: expiresIn as SignOptions['expiresIn'],

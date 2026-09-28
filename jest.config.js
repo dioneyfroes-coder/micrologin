@@ -45,6 +45,11 @@ export default {
   },
 
   // Setup and teardown
+  //
+  // Nada em `setupFilesAfterEnv`: um arquivo de setup quebra o
+  // `jest.unstable_mockModule` das suítes de unidade, que é como elas trocam a
+  // conexão Redis por um duplo. O encerramento da conexão é feito no `afterAll`
+  // de cada suíte que a abre.
   setupFiles: ['<rootDir>/tests/env.setup.js'],
   testTimeout: 10000,
 

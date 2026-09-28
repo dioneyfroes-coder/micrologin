@@ -98,6 +98,89 @@ describe('SecurityAuditLogger - auditoria de segurança', () => {
     successSpy.mockRestore();
   });
 
+  it('revogação indisponível é bucket próprio, não falha de credencial', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const audit = makeLogger();
+
+    audit.logLoginAttempt('alice', '1.2.3.4', 'agent', 'REVOCATION_UNAVAILABLE', 'Revogação indisponível');
+
+    const stats = audit.getSecurityStats();
+    // A recusa aconteceu, e o total a vê...
+    expect(stats.loginAttempts).toBe(1);
+    // ...mas o bucket de ataque fica limpo: `failedLogins` é o que o alerta de
+    // força bruta lê, e uma queda do Redis não é evidência de ataque.
+    expect(stats.failedLogins).toBe(0);
+    expect(stats.unavailableLogins).toBe(1);
+    expect(audit.getRecentEvents()[0].details.outcome).toBe('unavailable');
+
+    warnSpy.mockRestore();
+  });
+
+  it('queda do Redis não dispara o alerta de múltiplos logins falhos', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const audit = makeLogger();
+
+    // Cinco recusas de infraestrutura: acima do limiar de falha de credencial.
+    for (let i = 0; i < 5; i += 1) {
+      audit.logLoginAttempt('alice', '1.2.3.4', 'agent', 'REVOCATION_UNAVAILABLE', 'Revogação indisponível');
+    }
+
+    const alertCalls = warnSpy.mock.calls.filter(([message]) =>
+      String(message).includes('MULTIPLE_FAILED_LOGINS')
+    );
+    expect(alertCalls).toHaveLength(0);
+    expect(audit.getSecurityStats().unavailableLogins).toBe(5);
+
+    warnSpy.mockRestore();
+  });
+
+  it('cinco senhas erradas continuam disparando o alerta', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const audit = makeLogger();
+
+    for (let i = 0; i < 5; i += 1) {
+      audit.logLoginAttempt('alice', '1.2.3.4', 'agent', 'failure', 'Senha incorreta');
+    }
+
+    const alertCalls = warnSpy.mock.calls.filter(([message]) =>
+      String(message).includes('MULTIPLE_FAILED_LOGINS')
+    );
+    expect(alertCalls.length).toBeGreaterThan(0);
+    expect(audit.getSecurityStats().failedLogins).toBe(5);
+
+    warnSpy.mockRestore();
+  });
+
+  it('os três desfechos de login somam o total de tentativas', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const audit = makeLogger();
+
+    audit.logLoginAttempt('alice', '1.2.3.4', 'agent', 'success');
+    audit.logLoginAttempt('alice', '1.2.3.4', 'agent', 'failure', 'Senha incorreta');
+    audit.logLoginAttempt('alice', '1.2.3.4', 'agent', 'REVOCATION_UNAVAILABLE', 'Revogação indisponível');
+
+    const stats = audit.getSecurityStats();
+    // A identidade é o que impede um desfecho de ser contado em dois lugares
+    // (ou de nenhum) quando um novo rótulo entra no vocabulário.
+    expect(stats.loginAttempts).toBe(
+      stats.successfulLogins + stats.failedLogins + stats.unavailableLogins
+    );
+
+    warnSpy.mockRestore();
+  });
+
+  it('recomenda verificar o armazenamento quando houve login indisponível', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const audit = makeLogger();
+
+    audit.logLoginAttempt('alice', '1.2.3.4', 'agent', 'REVOCATION_UNAVAILABLE', 'Revogação indisponível');
+
+    const recommendations = audit.getSecurityRecommendations();
+    expect(recommendations.some((r) => r.includes('armazenamento de revogação'))).toBe(true);
+
+    warnSpy.mockRestore();
+  });
+
   it('registra bloqueio de IP como warning e atualiza blockedRequests', () => {
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
     const audit = makeLogger();

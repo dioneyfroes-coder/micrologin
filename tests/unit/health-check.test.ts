@@ -14,7 +14,8 @@ const [healthCheckModule, mongooseModule, cache] = await (async() => {
 
   await jest.unstable_mockModule('mongoose', () => ({ default: mongooseMock }));
   await jest.unstable_mockModule('../../src/infrastructure/cache/connection.js', () => ({
-    getCachedJWT: jest.fn()
+    getRedisClient: jest.fn(),
+    performHealthCheck: jest.fn()
   }));
 
   const healthCheck = await import('../../src/shared/utils/healthCheck.js');
@@ -26,7 +27,25 @@ const [healthCheckModule, mongooseModule, cache] = await (async() => {
 
 const { performHealthCheck, performLivenessCheck, performReadinessCheck } = healthCheckModule;
 const mongodb = mongooseModule.default;
-const cacheGet = cache.getCachedJWT as jest.Mock;
+const getRedisClient = cache.getRedisClient as jest.Mock;
+const redisPing = cache.performHealthCheck as jest.Mock;
+
+/** Redis no ar: cliente presente e respondendo ao PING. */
+const redisUp = () => {
+  getRedisClient.mockReturnValue({ isReady: true });
+  redisPing.mockResolvedValue(true);
+};
+
+/** Redis instanciado mas sem responder: o caso de uma conexão em reconexão. */
+const redisUnresponsive = () => {
+  getRedisClient.mockReturnValue({ isReady: false });
+  redisPing.mockResolvedValue(false);
+};
+
+/** Sem cliente nenhum: o Redis nunca subiu, ou a conexão foi descartada. */
+const redisAbsent = () => {
+  getRedisClient.mockReturnValue(null);
+};
 
 describe('performHealthCheck - health checks de sistema', () => {
   beforeEach(() => {
@@ -35,7 +54,7 @@ describe('performHealthCheck - health checks de sistema', () => {
 
   it('reporta unhealthy quando o MongoDB está desconectado', async() => {
     mongodb.connection.readyState = 0;
-    cacheGet.mockResolvedValue(null);
+    redisUp();
 
     const result = await performHealthCheck();
 
@@ -46,7 +65,7 @@ describe('performHealthCheck - health checks de sistema', () => {
   it('reporta saudável quando MongoDB e Redis estão operacionais', async() => {
     mongodb.connection.readyState = 1;
     mongodb.connection.db.admin().ping.mockResolvedValue({ ok: 1 });
-    cacheGet.mockResolvedValue(null);
+    redisUp();
 
     const result = await performHealthCheck();
 
@@ -59,7 +78,7 @@ describe('performHealthCheck - health checks de sistema', () => {
   it('reporta degraded quando o Redis está indisponível mas o MongoDB funciona', async() => {
     mongodb.connection.readyState = 1;
     mongodb.connection.db.admin().ping.mockResolvedValue({ ok: 1 });
-    cacheGet.mockRejectedValue(new Error('redis down'));
+    redisUnresponsive();
 
     const result = await performHealthCheck();
 
@@ -68,9 +87,34 @@ describe('performHealthCheck - health checks de sistema', () => {
     expect(result.status).toBe('degraded');
   });
 
+  it('reporta degraded quando não há cliente Redis, em vez de healthy', async() => {
+    // O caso que a implementação anterior não enxergava: `getCachedJWT` engole
+    // erro e devolve `null`, então ler o cache "funcionava" mesmo com o Redis
+    // fora, e o health check dizia que estava tudo bem. A revogação de token
+    // estava inoperante e o monitor não tinha como saber.
+    mongodb.connection.readyState = 1;
+    redisAbsent();
+
+    const result = await performHealthCheck();
+
+    expect(result.services?.redis.status).toBe('degraded');
+    expect(result.status).toBe('degraded');
+  });
+
+  it('reporta degraded quando o PING do Redis falha com erro', async() => {
+    mongodb.connection.readyState = 1;
+    getRedisClient.mockReturnValue({ isReady: true });
+    redisPing.mockRejectedValue(new Error('redis down'));
+
+    const result = await performHealthCheck();
+
+    expect(result.services?.redis.status).toBe('degraded');
+    expect(result.status).toBe('degraded');
+  });
+
   it('inclui informação de memória e uptime', async() => {
     mongodb.connection.readyState = 0;
-    cacheGet.mockResolvedValue(null);
+    redisUp();
 
     const result = await performHealthCheck();
 
@@ -84,7 +128,7 @@ describe('performReadinessCheck - o startup não é tráfego válido', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mongodb.connection.db.admin().ping.mockResolvedValue({ ok: 1 });
-    cacheGet.mockResolvedValue(null);
+    redisUp();
   });
 
   it('durante a conexão (readyState=2), o serviço ainda NÃO está pronto', async() => {
@@ -130,14 +174,29 @@ describe('performReadinessCheck - o startup não é tráfego válido', () => {
 
   it('Mongo de pé com o Redis fora continua pronto, apenas degradado', async() => {
     mongodb.connection.readyState = 1;
-    cacheGet.mockRejectedValue(new Error('redis down'));
+    redisUnresponsive();
 
     const result = await performReadinessCheck();
 
     // O cache é fail-open por padrão em dev/test: sem Redis o serviço ainda
-    // cumpre o contrato dos endpoints de negócio.
+    // cumpre o contrato dos endpoints de negócio. Em produção a política é
+    // fail-closed e o próprio endpoint de login recusa - o que deixa o
+    // processo pronto, mas indisponível para tráfego, que são coisas distintas.
     expect(result.ready).toBe(true);
     expect(result.status).toBe('ready');
+    expect(result.degraded).toBe(true);
+    expect(result.checks.redis.status).toBe('degraded');
+  });
+
+  it('Mongo de pé e Redis ausente continua pronto, e reporta a degradação', async() => {
+    mongodb.connection.readyState = 1;
+    redisAbsent();
+
+    const result = await performReadinessCheck();
+
+    // Mesmo desfecho do cliente em reconexão: o readiness não pode ser
+    // dependente do Redis, ou uma queda do cache tiraria o serviço de tráfego.
+    expect(result.ready).toBe(true);
     expect(result.degraded).toBe(true);
     expect(result.checks.redis.status).toBe('degraded');
   });
