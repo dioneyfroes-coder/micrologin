@@ -13,6 +13,9 @@ const createFakeClient = () => {
     connect: jest.fn(async() => {
       clientRef.isReady = true;
       clientRef.isOpen = true;
+      // O node-redis emite `ready` na conexão inicial, não só nas reconexões.
+      // Reproduzir isso aqui é o que torna o teste da corrida real.
+      handlers.ready?.();
     }),
     ping: jest.fn(async() => 'PONG'),
     setEx: jest.fn(async(key: string, ttl: number, value: string) => {
@@ -105,6 +108,30 @@ describe('Redis cache - conexão', () => {
 });
 
 describe('Redis cache - reconexão', () => {
+  it('o ready da conexão inicial não disputa a saúde com o health check do init', async() => {
+    // O `ready` do node-redis também dispara na primeira conexão. Sem a
+    // guarda, o handler roda um PING em paralelo com o health check do
+    // `initRedis` e quem terminasse por último escrevia `isHealthy` — inclusive
+    // sobrescrevendo um `true` válido por um `false` apenas por perder a
+    // corrida. Num arranque com o Redis lento, o serviço começava reportando
+    // "Redis indisponível" mesmo tendo conectado.
+    const infoSpy = jest.spyOn(console, 'info').mockImplementation(() => {});
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const cache = await loadCache();
+
+    await cache.initRedis();
+
+    // O PING do handler não pode ter acontecido: só o do `initRedis`.
+    expect(clientRef!.ping).toHaveBeenCalledTimes(1);
+    expect(cache.getRedisStatus().isHealthy).toBe(true);
+    const reconnectLogs = [...infoSpy.mock.calls, ...warnSpy.mock.calls]
+      .filter(([message]) => String(message).includes('reconect'));
+    expect(reconnectLogs).toHaveLength(0);
+
+    infoSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
   it('a estratégia de reconexão nunca desiste: devolve atraso, não erro', async() => {
     const cache = await loadCache();
     await cache.initRedis();

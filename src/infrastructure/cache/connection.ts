@@ -71,6 +71,15 @@ export const initRedis = async(): Promise<RedisClient | null> => {
     const newClient: RedisClient = redis.createClient(redisConfig) as RedisClient;
     client = newClient;
 
+    // `ready` também dispara na conexão inicial, não só nas reconexões. O
+    // health check do `ready` roda em paralelo com o que `initRedis` faz logo
+    // abaixo, e quem terminasse por último escreveria `isHealthy` — inclusive
+    // sobrescrevendo um `true` válido com `false`, só porque o PING do handler
+    // perdeu a corrida. A marca separa os dois momentos: enquanto a conexão
+    // inicial não se assentou, quem responde por `isHealthy` é o `connect()`
+    // abaixo.
+    let initialConnectSettled = false;
+
     // Event handlers
     newClient.on('error', (err: Error) => {
       isHealthy = false;
@@ -88,6 +97,9 @@ export const initRedis = async(): Promise<RedisClient | null> => {
     // os limiters quando a conexão está utilizável, nunca voltava ao
     // armazenamento global.
     newClient.on('ready', () => {
+      if (!initialConnectSettled) {
+        return;
+      }
       void performHealthCheck(newClient)
         .then((healthy) => {
           isHealthy = healthy;
@@ -109,6 +121,7 @@ export const initRedis = async(): Promise<RedisClient | null> => {
     // ✅ HEALTH CHECK: Verificar conexão com PING
     const pingResult = await performHealthCheck(newClient);
     isHealthy = pingResult;
+    initialConnectSettled = true;
 
     if (!isHealthy) {
       logger.warn('⚠️ Redis conectado mas health check falhou');

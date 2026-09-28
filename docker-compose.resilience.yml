@@ -1,0 +1,112 @@
+# ====================================
+# STACK DE RESILIÊNCIA - testes de infraestrutura
+# Authentication Microservice
+# ====================================
+#
+# Stack separado, com nome, porta, rede e volumes próprios, usado só por
+# `scripts/infra-resilience-test.sh`. Existe porque os dois testes que faltavam
+# no roadmap (Fase 8) precisam derrubar serviço de verdade:
+#
+#   - reconexão do Redis: o teste unitário prova a estratégia, mas só um
+#     Redis real parado e religado mostra que o processo volta a atender sem
+#     ninguém reiniciá-lo;
+#   - restart do container: só um container de verdade mostra que o shutdown
+#     não fica pendurado no timer de reconexão e que o serviço volta a
+#     autenticar depois.
+#
+# Por que não reusar o compose de dev: o teste precisa de `NODE_ENV=production`
+# (é a política fail-closed que está em produção que importa), precisa poder
+# parar o Redis sem derrubar o ambiente de quem está programando, e precisa
+# poder reiniciar o container do app. Compartilhar stack com o dev tornaria cada
+# um dos testes uma ação destrutiva sobre o ambiente do outro.
+#
+# Uso (o script cuida de build, env e teardown):
+#   docker compose -p micrologin-resilience -f docker-compose.resilience.yml up -d
+#
+# As senhas abaixo são descartáveis: este stack nunca sai da máquina de quem
+# roda o teste e é destruído no fim (--keep mantém para depurar).
+
+services:
+  auth-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    image: micrologin-resilience:local
+    container_name: micrologin-resilience-app
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      VERSION: resilience-test
+      URI_MONGODB: mongodb://mongodb:27017/auth_resilience
+      REDIS_URL: redis://redis:6379/0
+      # Segredos de teste, satisfazendo a validação de produção (32+ chars,
+      # refresh diferente do access). Fixos de propósito: a assinatura precisa
+      # sobreviver ao restart do container, senão o token emitido antes do
+      # restart pareceria inválido por motivo errado.
+      JWT_SECRET: resilience-test-access-secret-000000000000
+      JWT_REFRESH_SECRET: resilience-test-refresh-secret-1111111111
+      SECURITY_DASHBOARD_TOKEN: resilience-test-dashboard-token-22222
+      # Sem certificado no stack de teste; o app só avisa no log.
+      SSL_ENABLED: "false"
+      CLUSTER_ENABLED: "false"
+      # Limite de login folgado: o teste faz logins em sequência e o limite de
+      # produção (5 por 15min) transformaria uma assertiva sobre 503 em uma
+      # falha de teste. O objetivo é que qualquer 429 observado aqui seja
+      # realmente o bug (falha de infraestrutura tratada como abuso).
+      RATE_LIMIT_PROD_LOGIN_POINTS: "500"
+      RATE_LIMIT_PROD_LOGIN_DURATION: "60"
+      RATE_LIMIT_PROD_IP_POINTS: "500"
+      LOG_LEVEL: info
+    ports:
+      - "${RESILIENCE_PORT:-3200}:3000"
+    networks:
+      - resilience-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/readiness"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
+
+  mongodb:
+    image: mongo:7-jammy
+    container_name: micrologin-resilience-mongo
+    volumes:
+      - resilience-mongo:/data/db
+    networks:
+      - resilience-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: micrologin-resilience-redis
+    # Sem persistência: o teste reinicia o Redis de propósito e não quer que a
+    # retomada dependa de dados sobreviventes.
+    command: redis-server --save "" --appendonly no
+    networks:
+      - resilience-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+networks:
+  resilience-network:
+    driver: bridge
+
+volumes:
+  resilience-mongo:
+    driver: local

@@ -141,8 +141,27 @@ log_info "Base URL: ${BASE_URL}"
 log_info "Usuário de teste: ${USERNAME}"
 
 cleanup() {
-    if [ -n "${ACCESS_TOKEN:-}" ]; then
-        request DELETE "/delete" "" "$ACCESS_TOKEN" || true
+    # A conta do smoke test é removida antes de sair, porque o CI roda isto a
+    # cada deploy: sem isso, o banco de produção ganhava um usuário `smoke-*` por
+    # publicação, para sempre.
+    #
+    # Não dá para apagar com o token do fim do teste: o logout já o revogou, e
+    # `DELETE /delete` exige access token válido (401). A conta continua
+    # existindo, então o caminho é autenticar de novo e apagar com a sessão nova.
+    # Se nem isso for possível (rate limit, Redis fora), o aviso abaixo é
+    # honesto: sobrou uma conta, e quem olha o banco depois sabe o porquê.
+    if [ -n "${USERNAME:-}" ]; then
+        request POST "/login" "{\"user\":\"${USERNAME}\",\"password\":\"${PASSWORD}\"}"
+        if [ "$STATUS" = "200" ]; then
+            request DELETE "/delete" "" "$(json_field "$BODY" data.accessToken)"
+            if [ "$STATUS" = "200" ]; then
+                log_success "conta de teste removida (${USERNAME})"
+            else
+                log_error "conta de teste ${USERNAME} ficou no banco (DELETE /delete respondeu ${STATUS})"
+            fi
+        else
+            log_error "conta de teste ${USERNAME} ficou no banco (não foi possível reabrir sessão: HTTP ${STATUS})"
+        fi
     fi
 }
 trap cleanup EXIT
@@ -206,10 +225,10 @@ log_success "reuso rejeitado OK"
 
 # 8. Logout encerra a sessão
 #
-# O access token é enviado no header: o endpoint só consegue revogar o access
-# token apresentado, e revogar os tokens do usuário depende de `req.user`, que
-# vem do access token autenticado. Um logout só com refresh token deixa o
-# access token vivo até expirar (achado registrado no roadmap, Fase 8).
+# O refresh token apresentado identifica a sessão: `endSession` resolve o dono
+# do token e derruba o access token, o refresh e todos os tokens do usuário. O
+# access token vai no header apenas para exercitar o caminho completo - o
+# contrato não depende dele (achado registrado no roadmap, Fase 8).
 log_info "[8/8] logout"
 request POST "/logout" "{\"refreshToken\":\"${NEW_REFRESH}\"}" "$NEW_ACCESS"
 expect_status 200 "logout"
