@@ -111,14 +111,22 @@ POST /login
           → normalizeUsername
           → findByUsername          UserRepository
           → compare(senha, hash)    CryptoService
+          → revogação disponível?   Redis (fail-closed)
+             │  fora  ──► 503 REVOCATION_UNAVAILABLE  (não 401)
+             ▼
+          → generateTokenPair
       → securityAuditLogger.logLoginAttempt(rótulo canônico)
-      ← 200 { accessToken, refreshToken } | 401
+      ← 200 { accessToken, refreshToken } | 401 | 503
 ```
 
 O rótulo do desfecho é decidido **uma vez**, em
 `src/shared/utils/authOutcomes.ts`, e viaja pronto para a auditoria e para o
 log estruturado. `/login` não distingue "usuário não encontrado" de "senha
-errada" na resposta: distinguir enumeraria contas.
+errada" na resposta: distinguir enumeraria contas. A recusa por revogação
+indisponível entra na auditoria como `unavailable`, não como falha de
+credencial — o alerta de força bruta não pode disparar por causa de uma queda
+do Redis. O `503` em vez de `401` existe para o status dizer "a culpa é da
+infraestrutura" sem jamais revelar a causa na resposta.
 
 ---
 
@@ -170,8 +178,9 @@ POST /logout   (Authorization e/ou refreshToken, ambos opcionais)
       ← 200 { message } mesmo sem token nenhum
 ```
 
-A ordem importa e já foi corrigida uma vez: ler o access token antes do refresh
-fazia o logout com apenas um dos doisparer de revogar metade da sessão. Sem
+A ordem importa e já foi corrigida uma vez: resolver a identidade pelo access
+token antes do refresh fazia um logout enviado **apenas com o refresh token**
+deixar o access token vivo até expirar. Sem
 nenhum token, a resposta é `200` com mensagem — não é erro do cliente, e
 diferenciar revelaria se o par existia.
 

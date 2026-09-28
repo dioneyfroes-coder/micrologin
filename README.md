@@ -83,7 +83,7 @@ As rotas são montadas na raiz da aplicação:
 
 Rotas de segurança (auditoria/monitoramento) ficam em `src/application/routes/securityRoutes.ts` (montadas em `/security/*`) e exigem o header `X-Security-Token`. Um guia prático de uso do dashboard de segurança está em [`docs/DASHBOARD_SEGURANCA_GUIA.md`](docs/DASHBOARD_SEGURANCA_GUIA.md), com exemplos em [`examples/`](examples).
 
-Falhas de login retornam `401 AUTHENTICATION_FAILED` com a mensagem `Credenciais inválidas`; falhas de registro retornam `400 REGISTRATION_FAILED` com a mensagem `Não foi possível criar a conta`, sem revelar se a conta existe.
+Falhas de login retornam `401 AUTHENTICATION_FAILED` com a mensagem `Credenciais inválidas`; falhas de registro retornam `400 REGISTRATION_FAILED` com a mensagem `Não foi possível criar a conta`, sem revelar se a conta existe. A única exceção é a recusa por **indisponibilidade de revogação** (Redis fora, fail-closed): login devolve `503 REVOCATION_UNAVAILABLE` — o corpo continua genérico, mas o status diz "a culpa é nossa, tente de novo", em vez de "a senha está errada".
 
 O username é a identidade da conta e é normalizado para minúsculas em todas as entradas (registro, login, atualização e consulta ao banco): `Alice`, `alice` e `  ALICE  ` são a mesma conta. A senha é um valor opaco e nunca é transformada (sem escaping, sem "sanitização"): o que o cliente envia é exatamente o que é validado e hasheado.
 
@@ -96,7 +96,9 @@ A blacklist de tokens e a revogação por usuário vivem no Redis. O que acontec
 | `false` (padrão em produção) | **fail-closed**: verificação de token, `POST /refresh` e `POST /logout` respondem `503 REVOCATION_UNAVAILABLE` em vez de aceitar tokens sem controle de revogação |
 | `true` (padrão em dev/test) | **fail-open**: o serviço continua disponível e a revogação é degradada (com log explícito do risco) |
 
-Erros do próprio Redis (conexão perdida, `isReady: false`) seguem a mesma política, e a recuperação é automática quando o Redis volta. O rate limiting tem decisão própria: cai para o armazenamento em memória **por processo**, portanto não é global entre workers — trate-o como proteção de borda, não como controle distribuído.
+Erros do próprio Redis (conexão perdida, `isReady: false`) seguem a mesma política. A conexão **nunca desiste** de reconectar (backoff dobrando, teto 5s): quem tem prazo de vida é o processo, não a conexão, e uma queda de meio segundo não pode deixar a autenticação devolvendo 503 até alguém reiniciar o container. O health check para de mentir quando o Redis cai: `/health` reporta `degrated` (via PING/PONG real, não lendo um cache que engole erro), `/readiness` continua `200` (o remédio é restaurar o Redis, não reiniciar o processo) e `/liveness` continua `200`. Quando o Redis volta, o serviço se recupera sozinho — inclusive o rate limiting, que retorna ao armazenamento compartilhado.
+
+O rate limiting tem decisão própria: cai para o armazenamento em memória **por processo** quando o Redis some (e sobe de volta quando ele volta). Enquanto em memória, o limite não é global entre workers — trate-o como proteção de borda, não como controle distribuído. A queda não vira mentira: um erro do **driver** (conexão recusada, cliente fechado) é distinguido do objeto de recusa do `rate-limiter-flexible`, então a indisponibilidade do Redis nunca responde `429` para o cliente nem entra na auditoria como "violação de rate limit".
 
 ## Modelo de sessão
 
@@ -146,7 +148,7 @@ curl -H "X-Security-Token: $SECURITY_DASHBOARD_TOKEN" http://localhost:3000/secu
     "by_route": [{ "method": "POST", "route": "/login", "count": 501 }]
   },
   "health": { "status": "healthy", "services": { "mongodb": { "status": "healthy" }, "redis": { "status": "healthy" } } },
-  "security": { "riskLevel": "MINIMAL", "blockedRequests": 0, "failedLogins": 1 },
+  "security": { "riskLevel": "MINIMAL", "blockedRequests": 0, "failedLogins": 1, "unavailableLogins": 0 },
   "logging": { "format": "structured", "level": "info", "request_id_header": "X-Request-Id" }
 }
 ```
@@ -158,16 +160,18 @@ A fonte do snapshot é a mesma dos logs estruturados (`requestLogger` alimenta u
 Cada evento de login, renovação de token e troca de senha é publicado **já com o desfecho traduzido**, num vocabulário fechado definido em `src/shared/utils/authOutcomes.ts`:
 
 ```text
-login           → success | failure
-token_refresh   → success | invalid | reused | unavailable
-password_change → success | current_password_invalid | rejected
+login           → success | failure | unavailable | error
+token_refresh   → success | invalid | reused | unavailable | error
+password_change → success | current_password_invalid | rejected | error
 ```
 
-`reused` (refresh reaproveitado) é separado de `invalid` porque reuso é sinal de comprometimento, não erro de usuário; `unavailable` é separado de `invalid` porque "não deu para revogar" (Redis fora) e "o token é ruim" são operações diferentes. Valor fora da lista vira `error`, para não criar cardinalidade infinita de rótulos.
+`reused` (refresh reaproveitado) é separado de `invalid` porque reuso é sinal de comprometimento, não erro de usuário; `unavailable` é separado de `failure`/`invalid` porque "não deu para revogar" (Redis fora) e "a credencial é ruim" são operações diferentes. Valor fora da lista vira `error`, para não criar cardinalidade infinita de rótulos.
 
 A tradução acontece uma única vez, em `authEventSink`, que publica o evento estruturado no fluxo de logs (`auth_kind`, `auth_outcome`, `auth_code`). O destino é uma porta: `setAuthEventSink` troca quem consome sem tocar nos chamadores, e nem o domínio sabe que existe consumidor. Não há scrape, coletor nem formato de saída embutido — o manifesto de `/observability` e os logs estruturados são o que existe hoje.
 
-O mesmo cuidado vale para a auditoria: `loginAttempts` é sempre a soma de `successfulLogins` e `failedLogins`.
+O mesmo cuidado vale para a auditoria: `loginAttempts` é sempre a soma de
+`successfulLogins`, `failedLogins` e `unavailableLogins` — uma queda do Redis
+não aparece como pico de senha errada no alerta de força bruta.
 
 O `X-Request-Id` enviado pelo cliente só é aceito se for um UUID válido (máx. 36 caracteres); caso contrário, o serviço descarta o valor, registra o descarte e gera o próprio id — o id de requisição é chave de correlação de alerta, não campo livre de cliente.
 
@@ -219,11 +223,30 @@ Nenhuma credencial real fica versionada: apenas exemplos (`.env.example` e `.env
 npm test                    # toda a suite (unit + integração)
 npm run test:unit           # suítes unitárias
 npm run test:integration    # suíte de integração
+npm run test:e2e            # E2E contra MongoDB e Redis reais (sobe via compose)
+npm run test:infra          # resiliência de infraestrutura (derruba Redis e container de verdade)
 npm run test:coverage       # cobertura (text + html + lcov)
 npm run lint                # ESLint em src/ e tests/
 ```
 
-O pipeline de CI usa `test:unit:fast`, `test:integration:app` e `test:coverage:fast` (com `--runInBand` para CI).
+`test:infra` (`scripts/infra-resilience-test.sh`) sobe um stack isolado com a
+imagem de produção, para o Redis no meio do teste e reinicia o container,
+observando o serviço por HTTP:
+
+```text
+Redis para → 503 REVOCATION_UNAVAILABLE no login (não 401, não 429),
+             liveness 200, readiness 200 e degradado, container sem restart
+Redis volta → autenticação e rate limit compartilhado restaurados sem
+             reiniciar o processo
+restart     → o container encerra em ~1s e volta a autenticar, mesmo com o
+             Redis fora (o shutdown não depende de dependência disponível)
+```
+
+O pipeline de CI usa `test:unit:fast`, `test:integration:app` e
+`test:coverage:fast` (com `--runInBand` para CI). O `test:infra` fica de fora do
+CI de propósito: ele derruba serviço de verdade, e o trabalho disso é provar que
+a versão que você está para implantar reage como deve — rodado localmente ou no
+host de deploy, antes do corte.
 
 ## CI/CD
 

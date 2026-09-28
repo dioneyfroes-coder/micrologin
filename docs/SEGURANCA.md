@@ -170,6 +170,45 @@ pontas faria `isUserRevoked` devolver `false` — token revogado aceito, sem err
 em lugar nenhum. É o tipo de bug que nenhum teste de integração pega, porque as
 duas pontas usam a mesma constante errada.
 
+### D11 — A reconexão do Redis é infinita; quem desiste é o processo
+Backoff dobrando a partir de 100ms, teto de 5s, sem previsão de desistência.
+*Recusado:* desistir depois de N tentativas. Sob fail-closed, um cliente morto
+com `isReady === false` deixa o serviço inteiro devolvendo `503` até alguém
+reiniciar o processo — bastava uma queda de meio segundo para travar a
+autenticação de forma permanente, e o único sinal era uma linha de log. O
+espelho também vale: ao encerrar, o processo **destrói** o socket em reconexão
+em vez de mandar `quit()` (um comando que ninguém vai atender) — senão o timer
+pendente segura o processo no event loop e o container não para.
+
+### D12 — `ready` da reconexão não disputa a saúde com o `init`
+O `ready` do node-redis emite na conexão inicial também. O handler só roda
+depois que a conexão inicial se assentou; antes disso, quem responde por
+`isHealthy` é o health check do `initRedis`.
+*Recusado:* cuidar de `ready` sem a guarda. A corrida ressuscitava a saúde
+depois de uma queda real (o health check do handler perdia e reescrevia um
+`true` válido por `false`, e vice-versa) e imprimia "Redis reconectou, mas o
+health check falhou" num arranque normal.
+
+### D13 — Falha de driver no rate limiter não é limite estourado
+O middleware distingue a recusa do `rate-limiter-flexible` (tem `msBeforeNext`)
+do `Error` do driver de Redis, refaz o consumo em memória e desce o backend.
+*Recusado:* tratar `Error` como recusa de limite. Uma queda do Redis virava
+`429` com `Retry-After` para todo mundo e "violação de rate limit" na auditoria
+— o serviço acusando ataque quando o que caiu foi a dependência. E o limite por
+conta existe justamente para o atacante distribuído: deixar o backend em memória
+depois que o Redis voltou daria a cada worker seu próprio orçamento. Por isso a
+promoção de volta também é automática, e `reset()` faz SCAN em vez de
+`KEYS` (que bloqueia o servidor inteiro).
+
+### D14 — Login recusado por infraestrutura é `unavailable`, não `failure`
+Quando a revogação está indisponível (fail-closed), o login responde `503
+REVOCATION_UNAVAILABLE`, e a auditoria conta em `unavailableLogins`.
+*Recusado:* o `401 "Credenciais inválidas"` de antigamente. Com a senha certa e
+o Redis fora, `401` fazia o cliente desistir de uma conta boa e colocava a
+indisponibilidade no contador de força bruta — o alerta que treina o time a
+ignorar o alerta que importa. O corpo público continua genérico; só o **status**
+carrega o diagnóstico.
+
 ---
 
 ## 7. O que este serviço não é

@@ -1365,10 +1365,10 @@ Só então documentar `--scale`.
 
 Adicionar testes de segurança e concorrência, não apenas happy path.
 
-**Estado: concluída, exceto dois itens de infraestrutura que dependem de
-docker/compose** (reconexão do Redis e restart do container). Total hoje:
-**32 suítes / 395 testes unitários**, **6 suítes / 38 testes de integração**,
-**1 suíte / 14 testes E2E** contra MongoDB e Redis reais.
+**Estado: concluída.** Total hoje: **32 suítes / 425 testes unitários**,
+**6 suítes / 38 testes de integração**, **1 suíte / 14 testes E2E** contra
+MongoDB e Redis reais, e **1 suíte de infraestrutura** (`npm run test:infra`)
+que derruba o Redis e o container contra a imagem de produção.
 
 O `GET /observability` ganhou suíte própria de superfície
 (`tests/integration/observability-surface.test.ts`): token obrigatório, recusa de
@@ -1438,15 +1438,46 @@ métricas montada no app.
 
 - [x] Mongo indisponível;
 - [x] Redis indisponível;
-- [ ] reconexão Redis;
-- [ ] restart do container;
+- [x] reconexão Redis;
+- [x] restart do container;
 - [x] readiness durante startup;
 - [x] readiness após perda de dependência.
 
-> Os dois itens pendentes precisam derrubar e religar serviço de verdade
-> (`docker compose down`/matar o processo do Redis), o que é teste de
-> infraestrutura, não de unidade. Ficam para a Fase 9 junto com o resto da
-> plataforma.
+> Os dois itens de infraestrutura que faltavam dependiam de derrubar serviço de
+> verdade, e agora são exercitados por `npm run test:infra`
+> (`scripts/infra-resilience-test.sh` + `docker-compose.resilience.yml`, um
+> stack separado com porta, rede e volumes próprios). O teste observa o serviço
+> por HTTP — como o orquestrador e o cliente — e cobre:
+>
+> ```text
+> Redis parado com o app no ar
+>     → 503 REVOCATION_UNAVAILABLE no login (não 401 de credencial inválida)
+>     → nenhum 429 (falha de driver não vira "limite estourado")
+>     → liveness 200, readiness 200 e degradado
+>     → RestartCount do container continua 0 (dependência caída não mata o app)
+>
+> Redis religado
+>     → o login volta a funcionar sem ninguém reiniciar o processo
+>     → o rate limiting volta ao armazenamento compartilhado
+>
+> restart do container
+>     → encerra em ~1s e volta a autenticar (smoke test completo)
+>     → encerra em ~1s mesmo com o Redis fora (shutdown não depende de
+>       dependência indisponível — a reconexão é infinita por decisão, então o
+>       encerramento precisa cancelar o timer pendente)
+> ```
+>
+> **Achados do próprio teste, corrigidos:**
+>
+> - `ready` do node-redis também dispara na conexão inicial, e o handler
+>   disputava `isHealthy` com o health check do `initRedis`. A corrida
+>   ressuscitava a saúde depois de uma queda (8 testes unitários falhavam sem a
+>   guarda) e imprimia "Redis reconectou, mas o health check falhou" num
+>   arranque normal, sem queda nenhuma;
+> - o smoke test do deploy deixava um usuário `smoke-*` no banco a cada
+>   publicação: a limpeza rodava depois do logout, com o access token já
+>   revogado, e recebia 401. Agora reabre sessão e apaga a conta, avisando
+>   quando não consegue.
 
 ---
 
@@ -1546,16 +1577,32 @@ cada uma com responsabilidade única.
 
 Depois das correções funcionais:
 
-- [ ] atualizar screenshots/README;
-- [ ] adicionar diagrama arquitetural;
-- [ ] adicionar fluxo de autenticação;
-- [ ] adicionar threat model resumido;
-- [ ] documentar decisões de segurança;
-- [ ] documentar trade-off de Redis;
-- [ ] documentar estratégia de sessões;
-- [ ] documentar deployment real;
-- [ ] remover comentários de features não implementadas;
-- [ ] substituir “production-ready” por uma descrição precisa.
+**Estado: concluída.** Trata-se de documentação e coerência, e cada item tem um
+artefato apontando para a realidade do código:
+
+- [x] atualizar screenshots/README — o README foi reconciliado com o estado
+      final (testes, políticas, comportamento do Redis e desfechos de
+      autenticação); não há screenshots — é uma API, e as imagens não mostram
+      nada que o Swagger não mostre.
+- [x] adicionar diagrama arquitetural — `docs/ARQUITETURA.md` §1 (diagrama de
+      camadas) e `docs/SEGURANCA.md` §3 (fronteiras de confiança).
+- [x] adicionar fluxo de autenticação — `docs/ARQUITETURA.md` §3–§7 (registro,
+      login, refresh com consumo único, logout, troca de senha).
+- [x] adicionar threat model resumido — `docs/SEGURANCA.md` §2–§4.
+- [x] documentar decisões de segurança — `docs/SEGURANCA.md` §6, incluindo as
+      decisões novas de resiliência (D11–D14: reconexão infinita, `ready` sem
+      corrida, falha de driver no rate limit, bucket `unavailable`).
+- [x] documentar trade-off de Redis — README "Política de revogação quando o
+      Redis está indisponível" + decisões D11–D13.
+- [x] documentar estratégia de sessões — README "Modelo de sessão" e o fluxo no
+      `docs/ARQUITETURA.md`.
+- [x] documentar deployment real — README "CI/CD" e Fase 6 acima.
+- [x] remover comentários de features não implementadas — auditado; sobrou
+      apenas o comentário obsoleto do logout no `smoke-test.sh`, corrigido.
+- [x] substituir "production-ready" por uma descrição precisa — o README abre
+      com a descrição exata (estudo de arquitetura com políticas de segurança;
+      **não** é solução de produção sem revisão), e o resto do repositório
+      segue o mesmo tom.
 
 ---
 
