@@ -1,1728 +1,350 @@
-# Micrologin — análise técnica completa e roadmap
+# Micrologin — roadmap: criptografia, backup, escala DDoS/roubo de credenciais
 
-**Data da análise:** 2026-09-25  
-**Material analisado:** `micrologin-main` do arquivo ZIP fornecido.  
-**Escopo:** arquitetura, implementação, segurança, testes, Docker, CI/CD, observabilidade, documentação e maturidade para portfólio/produção.
+**Versão do roadmap:** 2.0 (substitui a análise v1, concluída em 2026-09-28 e
+preservada no histórico do git).
 
-> **Resumo executivo:** o Micrologin é um projeto de autenticação acima da média para portfólio. A arquitetura, separação de responsabilidades, cobertura de testes e preocupação com segurança são reais, não apenas cosméticas. O problema é que algumas partes tentam parecer “production-grade” antes de estarem realmente fechadas. Há falhas concretas — algumas importantes — que impedem tratá-lo como serviço pronto para produção.
+**Foco:** levar o serviço de autenticação de "estudo com arquitetura de
+produção" para "demonstração de resiliência": criptografia mais forte,
+backup/restauração reais, escalabilidade horizontal e vertical, e **provas
+automatizadas** de que ele sobrevive a roubo de credenciais e a DDoS.
 
----
-
-## 1. Veredito geral
-
-### Nota geral: **7,3 / 10**
-
-A nota não mede apenas quantidade de código. Ela combina qualidade estrutural, correção funcional, segurança, testes e coerência entre o que o projeto diz fazer e o que efetivamente faz.
-
-| Área | Nota | Avaliação |
-|---|---:|---|
-| Arquitetura | **8,5** | Boa separação entre domínio, aplicação, infraestrutura e interfaces; ports/adapters e DI estão presentes de verdade. |
-| Organização do código | **8,0** | Estrutura clara, nomenclatura razoável e responsabilidades relativamente bem separadas. Há duplicação e módulos mortos. |
-| Domínio / regras de negócio | **7,5** | O núcleo é bem isolado, mas algumas regras anunciadas no modelo de dados não chegam ao domínio. |
-| Segurança | **6,0** | Há bastante proteção implementada, mas existem falhas importantes de exposição e comportamento fail-open. |
-| Testes | **8,0** | Boa quantidade e existe E2E contra MongoDB/Redis reais. Faltam testes para alguns dos casos mais perigosos. |
-| Observabilidade | **7,5** | A base é boa, mas os contadores de autenticação tinham semântica incorreta (ver Fase 9). |
-| Docker / infraestrutura | **7,0** | Multi-stage, usuário non-root, healthcheck e limites de recursos são bons. Escala do compose está incorreta. |
-| CI/CD | **5,5** | CI é relativamente completo; deploy e blue-green são declarados, mas ainda são placeholders. |
-| Documentação | **7,0** | Há bastante documentação, porém existem divergências entre README e implementação. |
-| Portfólio | **8,5** | Demonstra bastante coisa útil para um backend profissional; a densidade técnica é um ponto forte. |
-| Pronto para produção | **5,5** | Ainda não. As falhas principais precisam ser resolvidas antes de qualquer alegação de produção. |
-
-### Em uma frase
-
-**É um bom projeto de engenharia para portfólio, mas ainda é melhor descrito como “auth service experimental/educacional com arquitetura de produção” do que como “microserviço de autenticação pronto para produção”.**
+> **Orientações do documento:** o roadmap é a lista de TODO. Cada fase termina
+> com "Estado:" e "Definição de pronto" preenchidos na implementação. Toda
+> decisão de segurança registrada como `D#` em `docs/SEGURANCA.md`. Nada de
+> promises — arquivo deveria provar o que faz (mesma régua da v1).
 
 ---
 
-# 2. O que está realmente bom
+## 1. Estado atual (baseline medido em 2026-09-28)
 
-## 2.1 Arquitetura não é só decoração
-
-A separação está razoavelmente bem feita:
-
-```text
-HTTP / Express
-      ↓
-Controllers + Middleware + Routes
-      ↓
-Domain / Application Service
-      ↓
-Ports / interfaces
-      ↓
-Adapters
-      ↓
-MongoDB / Redis / JWT / bcrypt
-```
-
-O `AuthService` de domínio recebe `UserRepository`, `CryptoService`, `TokenService` e `Logger` por injeção. Isso é muito melhor do que colocar Mongoose, bcrypt e JWT diretamente dentro do caso de uso.
-
-O projeto também possui um `ServiceContainer` e um bootstrap centralizado. Não é a arquitetura mais simples possível, mas demonstra domínio sobre inversão de dependência.
-
-### Ponto positivo específico
-
-O domínio não depende diretamente de Express, Mongoose ou Redis. Isso facilita testes unitários e substituição de infraestrutura.
-
----
-
-## 2.2 Há testes de verdade
-
-O repositório possui:
-
-- **30 arquivos de teste**;
-- aproximadamente **246 casos `it/test`** identificáveis no código;
-- testes unitários de domínio, middleware, JWT, Redis, rate limiting, observabilidade e configurações;
-- testes de integração;
-- um E2E que conversa com **MongoDB e Redis reais**.
-
-O E2E percorre um fluxo importante:
-
-```text
-register
-  ↓
-login
-  ↓
-profile
-  ↓
-update
-  ↓
-refresh / rotação
-  ↓
-logout
-  ↓
-blacklist
-```
-
-Isso é um diferencial relevante para portfólio. Muitos projetos de autenticação ficam apenas em mocks de serviço e nunca demonstram o fluxo completo.
-
-### Limitação importante
-
-A quantidade de testes é boa, mas a distribuição ainda não está alinhada com o risco. Há mais testes para estruturas internas do que para alguns comportamentos de segurança de maior impacto.
-
----
-
-# 3. Problemas críticos encontrados
-
-## P0 — `/security/*` está exposto sem autenticação
-
-Arquivo:
-
-`src/application/routes/securityRoutes.ts`
-
-As rotas seguintes são montadas diretamente em `/security/*` sem middleware de autenticação ou token administrativo:
-
-```text
-GET /security/stats
-GET /security/report
-GET /security/events
-GET /security/threats
-GET /security/health
-```
-
-Elas expõem informações como:
-
-- eventos recentes;
-- IPs envolvidos;
-- padrões de ataque;
-- estatísticas de rate limit;
-- nível de risco;
-- recomendações internas;
-- detalhes do ambiente de segurança.
-
-Somente o endpoint `/security/test` possui uma restrição explícita para produção.
-
-### Gravidade
-
-**Alta.** Um atacante não deveria receber o relatório interno de segurança de um serviço de autenticação.
-
-### Correção
-
-Definir uma política única:
-
-```text
-/security/*
-    ↓
-admin/security middleware
-    ↓
-metrics token forte OU mTLS OU VPN/rede administrativa
-```
-
-Para esse projeto, o caminho mais simples é reutilizar o mecanismo de `METRICS_TOKEN`, mas com um token separado, por exemplo `SECURITY_DASHBOARD_TOKEN`.
-
----
-
-## P0 — escala horizontal declarada no Compose não funciona como documentada
-
-`docker-compose.prod.yml` contém simultaneamente:
-
-```yaml
-container_name: auth-service-prod
-```
-
-e
-```yaml
-ports:
-  - "${APP_PORT:-3000}:3000"
-```
-
-enquanto a documentação afirma que é possível:
-
-```bash
-docker compose ... up -d --scale auth-service=3
-```
-
-Esse desenho é incompatível com escalabilidade horizontal real no Docker Compose.
-
-Além disso, três réplicas não poderiam compartilhar o mesmo bind de porta do host dessa forma.
-
-### Correção
-
-Escolher uma destas arquiteturas:
-
-**Opção A — Compose local simples**
-
-- sem `--scale`;
-- uma réplica;
-- remover a promessa de horizontal scaling.
-
-**Opção B — múltiplas réplicas**
-
-- remover `container_name`;
-- não publicar a porta da aplicação diretamente para cada réplica;
-- usar reverse proxy/load balancer na frente;
-- deixar o tráfego chegar ao serviço internamente.
-
-Para um projeto de portfólio, a opção B é mais interessante, desde que realmente implementada.
-
----
-
-## P0/P1 — Redis indisponível transforma controles de segurança em comportamento fail-open
-
-O Redis é usado para:
-
-- blacklist de JWT;
-- revogação por usuário;
-- rate limiting compartilhado.
-
-Quando o Redis cai, o projeto deliberadamente continua operando em modo degradado.
-
-Isso é uma decisão válida para disponibilidade, mas é perigosa para autenticação porque algumas proteções deixam de existir:
-
-```text
-Redis fora
-   ↓
-blacklist ignorada
-   ↓
-token revogado pode voltar a ser aceito
-```
-
-O mesmo vale para rate limiting, que retorna ao armazenamento em memória por processo.
-
-### O problema real
-
-Com vários workers/processos, rate limiting em memória não é global.
-
-Exemplo:
-
-```text
-Worker A → 5 tentativas
-Worker B → 5 tentativas
-Worker C → 5 tentativas
-```
-
-Cada processo pode enxergar somente sua parcela do tráfego.
-
-### Decisão recomendada
-
-Escolher explicitamente entre:
-
-**Modo fail-closed para autenticação crítica**
-
-- se Redis estiver indisponível, negar operações que dependam de revogação/controle de sessão;
-- preservar segurança acima de disponibilidade.
-
-ou
-
-**Modo degradado documentado**
-
-- aceitar o risco;
-- gerar alerta forte;
-- diferenciar health/readiness de liveness;
-- deixar claro que revogação pode ficar indisponível.
-
-Para um projeto chamado Micrologin, eu trataria blacklist e revogação como controles críticos e não esconderia a degradação.
-
----
-
-# 4. Problemas importantes de autenticação
-
-## 4.1 Enumeração de usuários
-
-O domínio retorna mensagens diferentes:
-
-```text
-Usuário não encontrado
-Senha incorreta
-Usuário já existe
-```
-
-O controller então envia essas diferenças ao cliente.
-
-Isso facilita descobrir quais contas existem.
-
-### Melhor comportamento
-
-No login:
-
-```text
-Credenciais inválidas
-```
-
-No registro:
-
-```text
-Não foi possível criar a conta
-```
-
-Pode haver logging/auditoria internamente com o motivo real, mas a resposta externa deve ser uniforme.
-
----
-
-## 4.2 Username tem normalização inconsistente
-
-O schema Mongo usa:
-
-```text
-lowercase: true
-```
-
-mas o domínio e a consulta de login não normalizam o username para lowercase antes de consultar.
-
-Isso cria o cenário:
-
-```text
-Registro:
-Alice123
-   ↓
-Mongo salva:
-alice123
-
-Login:
-Alice123
-   ↓
-findOne({ user: "Alice123" })
-   ↓
-não encontra
-```
-
-O E2E não detecta isso porque usa usernames já minúsculos.
-
-### Correção
-
-Definir uma única normalização de identidade:
-
-```ts
-normalizeUsername(username) => username.trim().toLowerCase()
-```
-
-Usá-la em:
-
-- register;
-- login;
-- update;
-- repository queries.
-
----
-
-## 4.3 Rotação de refresh token tem janela de corrida
-
-Hoje o fluxo é essencialmente:
-
-```text
-verify(old refresh)
-      ↓
-generate(new pair)
-      ↓
-blacklist(old refresh)
-```
-
-Duas requisições concorrentes podem passar pelo `verify` antes da blacklist ser gravada.
-
-Resultado potencial:
-
-```text
-Request A ── verify(old) ── generate(new A)
-Request B ── verify(old) ── generate(new B)
-                         ↓
-                  ambos aceitos
-```
-
-O teste E2E cobre reuso sequencial, mas não concorrência.
-
-### Correção
-
-Mover o estado de rotação para Redis com operação atômica, por exemplo:
-
-```text
-jti do refresh
-    ↓
-SET NX / compare-and-set
-    ↓
-somente o primeiro consumidor vence
-```
-
-Além disso, testar duas chamadas simultâneas para `/refresh`.
-
----
-
-## 4.4 Token é usado como chave de blacklist
-
-Hoje a blacklist usa algo equivalente a:
-
-```text
-token_blacklist:<JWT completo>
-```
-
-Isso é funcional, mas não é a melhor modelagem.
-
-Melhor:
-
-```text
-blacklist:<jti>
-```
-
-com:
-
-- `jti` aleatório;
-- TTL igual ao restante de validade;
-- segredo/token completo não armazenado como chave.
-
-O projeto já adicionou `jwtid` aos tokens do pair, então está muito perto de uma solução melhor.
-
----
-
-## 4.5 `JWT_REFRESH_SECRET` pode cair no mesmo segredo do access token
-
-O bootstrap faz fallback para:
-
-```text
-JWT_REFRESH_SECRET || JWT_SECRET
-```
-
-Isso reduz a separação criptográfica entre os dois tipos de token.
-
-### Melhor
-
-Em produção:
-
-```text
-JWT_SECRET          obrigatório
-JWT_REFRESH_SECRET  obrigatório
-```
-
-ambos com tamanho mínimo validado e sem fallback silencioso.
-
----
-
-# 5. Problemas na política de senha
-
-## 5.1 O modelo possui histórico, mas o fluxo não o utiliza
-
-O schema possui:
-
-```text
-passwordChangedAt
-passwordExpired
-passwordHistory
-```
-
-Também existe `wasPasswordUsedBefore()`.
-
-Porém, o adapter e o caso de uso de atualização de senha não integram esses campos ao fluxo de troca de senha.
-
-Na prática:
-
-```text
-passwordHistory existe
-        mas
-passwordHistory não participa da troca de senha
-```
-
-Isso é uma funcionalidade parcialmente implementada.
-
-### Correção
-
-Na troca de senha:
-
-1. carregar histórico;
-2. verificar reutilização;
-3. adicionar hash antigo ao histórico;
-4. limitar tamanho do histórico;
-5. atualizar `passwordChangedAt`;
-6. invalidar sessões anteriores, se essa for a política;
-7. salvar atomicamente.
-
----
-
-## 5.2 `passwordExpired` parece ser um dead feature
-
-Existe no schema, mas não há um fluxo consistente de expiração de senha.
-
-Duas opções corretas:
-
-- implementar de verdade;
-- remover para não criar uma falsa impressão de cobertura.
-
-Para um projeto de portfólio, remover feature inacabada costuma ser melhor do que deixar uma “promessa” morta no modelo.
-
----
-
-# 6. Sanitização está conceitualmente misturada com validação
-
-`sanitizeInput` usa DOMPurify e `validator.escape()` para strings de entrada.
-
-Isso é problemático principalmente para credenciais.
-
-Uma senha é um valor opaco. Ela não deveria ser transformada por HTML escaping antes de ser validada/hashada.
-
-Exemplo conceitual:
-
-```text
-senha digitada:
-A&B<C
-
-entrada transformada:
-A&amp;B&lt;C
-```
-
-A aplicação está mudando o valor secreto fornecido pelo usuário.
-
-Mesmo quando login e registro usam a mesma transformação, isso é uma abstração ruim e cria comportamento surpreendente para clientes.
-
-### Arquitetura recomendada
-
-Separar:
-
-```text
-Validation
-    ↓
-verifica formato e limites
-
-Normalization
-    ↓
-normaliza apenas campos que realmente possuem canonicalização
-
-Encoding / output escaping
-    ↓
-feito no contexto de saída
-```
-
-Não aplicar HTML escaping globalmente em senha.
-
-Também não há SQL no MongoDB; portanto o comentário “escapar caracteres SQL” representa uma preocupação importada de outro contexto.
-
----
-
-# 7. Bug de semântica no sistema de auditoria
-
-Em `securityAudit.ts`, todo evento `login_attempt` incrementa:
-
-```text
-failedLogins++
-```
-
-inclusive quando:
-
-```ts
-logLoginAttempt(..., true)
-```
-
-O próprio teste atual aceita esse comportamento.
-
-Ou seja, a métrica chamada `failedLogins` não representa exclusivamente logins falhos.
-
-Isso gera uma situação perigosa: a infraestrutura de monitoramento pode produzir conclusões erradas mesmo estando “testada”.
-
-### Correção
-
-Manter:
-
-```text
-loginAttempts
-failedLogins
-successfulLogins
-```
-
-ou incrementá-los de acordo com `details.success`.
-
-Depois criar testes que expressem a semântica correta, não apenas a implementação atual.
-
----
-
-# 8. Tratamento de `uncaughtException` merece revisão
-
-O código possui uma exceção especial que ignora certos `uncaughtException` quando a mensagem contém termos como `forEach` ou `metrics`.
-
-Isso é arriscado.
-
-Depois de um `uncaughtException`, o processo pode estar em um estado inconsistente. Evitar a parada com base no texto da exceção pode mascarar corrupção do estado.
-
-### Melhor abordagem
-
-```text
-uncaughtException
-      ↓
-log
-      ↓
-shutdown controlado
-      ↓
-container/process manager recria
-```
-
-Recuperação seletiva deve acontecer em nível de operação específica, não como exceção global baseada em `message.includes(...)`.
-
----
-
-# 9. Observabilidade
-
-## Pontos fortes
-
-Há uma base boa:
-
-- `X-Request-Id`;
-- logs estruturados;
-- duração por requisição;
-- P50/P95/P99;
-- agregação por status e rota;
-- health check;
-- métricas de memória;
-- relatório de segurança;
-- endpoint `/observability` protegido.
-
-Isso é bastante para um projeto pessoal.
-
-## Pontos a melhorar
-
-### 9.1 O agregador é por processo
-
-O snapshot em memória enxerga apenas as requisições daquele processo.
-
-Com vários workers:
-
-```text
-worker A → agregador A
-worker B → agregador B
-worker C → agregador C
-```
-
-Não existe uma visão global.
-
-O agregador é por processo, e o endpoint `/observability` é diagnóstico local: não deve ser tratado como fonte global para produção. O destino dos eventos de autenticação é uma porta (`setAuthEventSink`), então o meio de observação global entra ali sem tocar nos chamadores.
-
-### 9.2 `X-Request-Id` recebido do cliente deveria ser validado
-
-Hoje qualquer cliente pode fornecer o próprio `X-Request-Id`.
-
-Melhor:
-
-- aceitar UUID válido;
-- rejeitar valores longos/incomuns;
-- ou sempre gerar um novo ID e armazenar o recebido em um campo separado.
-
----
-
-# 10. Health check
-
-O health check é útil, mas mistura conceitos diferentes.
-
-Atualmente memória elevada pode transformar a aplicação em `503`, mesmo com MongoDB e Redis saudáveis.
-
-Idealmente existiriam:
-
-```text
-/liveness
-    processo está vivo?
-
-/readiness
-    pode receber tráfego?
-
-/health
-    diagnóstico detalhado
-```
-
-Em produção isso reduz falsos restarts e torna o comportamento operacional mais previsível.
-
----
-
-# 11. Rate limiting
-
-A implementação é acima da média para um projeto de portfólio.
-
-Há:
-
-- limite por IP;
-- limite por usuário;
-- limite específico para login;
-- Redis quando disponível;
-- fallback em memória;
-- `Retry-After`;
-- auditoria de violações.
-
-### Melhorias
-
-1. Configurar `trust proxy` corretamente quando houver reverse proxy.
-2. Diferenciar explicitamente tráfego interno e externo.
-3. Não usar `KEYS` em Redis para limpeza de produção; preferir namespace + SCAN.
-4. Criar teste de múltiplos workers.
-5. Criar teste específico com Redis indisponível.
-6. Tornar o comportamento fail-open/fail-closed uma decisão de configuração documentada.
-
----
-
-# 12. Docker
-
-## Pontos bons
-
-O Dockerfile é bom para projeto pessoal:
-
-- multi-stage;
-- imagem Alpine;
-- `dumb-init`;
-- usuário non-root;
-- dependências de produção separadas;
-- healthcheck;
-- build TypeScript fora do stage final;
-- logs e limites de recursos no Compose.
-
-Isso demonstra maturidade.
-
-## Problemas
-
-### 12.1 Compose de produção não é realmente uma plataforma de produção
-
-Ele é basicamente:
-
-```text
-1 container
-+ rede bridge
-+ healthcheck
-+ port bind
-```
-
-Não há:
-
-- reverse proxy no repositório;
-- balanceador;
-- TLS na borda;
-- deployment real;
-- secrets manager real;
-- rollback realmente integrado ao registry externo.
-
-Como projeto de laboratório isso é perfeitamente aceitável. O problema é a documentação chamar algumas dessas capacidades de “produção” antes de implementá-las.
-
----
-
-# 13. CI/CD: aqui existe bastante maquiagem documental
-
-O workflow de CI é razoavelmente bom para:
-
-- install;
-- lint;
-- typecheck;
-- audit;
-- gitleaks;
-- testes;
-- build;
-- push de imagem;
-- Trivy.
-
-Mas a parte de deployment não faz deployment real.
-
-Existem passos como:
-
-```text
-echo "Deploying..."
-echo "Deployment completed"
-sleep 30
-```
-
-com o comando real comentado.
-
-Também existe:
-
-```text
-# Implementar blue-green deployment
-```
-
-e depois o job anuncia que o deployment foi concluído.
-
-Isso precisa ser corrigido conceitualmente.
-
-### Para portfólio
-
-É melhor escrever:
-
-```text
-CI completo
-CD preparado como template
-```
-
-do que:
-
-```text
-CI/CD completo
-```
-
-quando o deploy real ainda não existe.
-
----
-
-# 14. Release pipeline também está incompleto
-
-O workflow cria GitHub Release e changelog, mas o bloco de tag/push da imagem Docker ainda é comentário.
-
-Portanto:
-
-```text
-Release GitHub = real
-Release Docker = parcialmente declarado
-```
-
-O README deve refletir isso.
-
----
-
-# 15. Documentação tem inconsistências reais
-
-Alguns exemplos:
-
-### README diz `/api` como base configurável
-
-As rotas são montadas diretamente em `/`, não existe um prefixo global `/api` na aplicação mostrada.
-
-### README diz 235 testes / 26 suítes
-
-O repositório analisado contém aproximadamente:
-
-- 30 arquivos de teste;
-- 246 casos `it/test` identificáveis.
-
-Isso sugere que o README ficou para trás.
-
-### `.env.docker`
-
-O README fala sobre `.env.docker`, mas o arquivo não está presente no material analisado.
-
-### Branch protection
-
-O README descreve branch protection como regra desejada, enquanto o `todo.txt` registra que essa proteção foi deliberadamente pulada.
-
-### `docs/todo.txt`
-
-Todos os itens aparecem como `[x]`, embora o próprio documento diga que existem decisões externas ainda abertas.
-
-Isso reduz a credibilidade do checklist.
-
----
-
-# 16. O maior problema arquitetural do projeto
-
-Não é falta de código.
-
-É **complexidade maior do que a maturidade operacional atual**.
-
-O projeto possui muitos componentes:
-
-```text
-DI container
-hexagonal architecture
-JWT pair
-refresh rotation
-blacklist
-Redis
-rate limiter
-security audit
-security monitor
-observability
-Swagger
-Docker
-PM2
-cluster
-CI/CD
-Trivy
-Gitleaks
-Compose scaling
-rollback
-release automation
-```
-
-Isso impressiona visualmente.
-
-Mas cada componente cria uma superfície adicional para bugs.
-
-O próximo estágio do projeto não deveria ser adicionar mais features.
-
-Deveria ser:
-
-> **reduzir divergência entre intenção, documentação e comportamento real.**
-
----
-
-# 17. O que eu NÃO implantaria agora
-
-Não recomendo adicionar neste momento:
-
-- Kubernetes;
-- OpenTelemetry;
-- Kafka/RabbitMQ;
-- microsserviços adicionais;
-- sistema de notificações externo;
-- captcha externo;
-- OAuth provider;
-- painel frontend complexo;
-- service mesh;
-- feature flags sofisticadas.
-
-O projeto ainda ganha mais corrigindo fundamentos do que adicionando tecnologia.
-
----
-
-# 18. Roadmap recomendado
-
-## Fase 0 — corrigir documentação e declarar o estado real
-
-### Objetivo
-Remover discrepâncias entre código e documentação.
-
-### Tarefas
-
-- [x] Corrigir contagem de testes no README.
-- [x] Corrigir referência a `/api`.
-- [x] Remover referência a `.env.docker` se ele não existir.
-- [x] Marcar CI como completo e CD como template até o deploy real existir.
-- [x] Corrigir descrição de blue-green.
-- [x] Reescrever `docs/todo.txt` com estados:
-  - `[x] implementado`
-  - `[~] parcial`
-  - `[ ] pendente`
-- [x] Documentar explicitamente o comportamento quando Redis está indisponível.
-
-### Resultado esperado
-O README passa a descrever exatamente o sistema existente.
-
----
-
-# Fase 1 — fechar segurança crítica
-
-## 1.1 Proteger `/security/*`
-
-**Status: concluído.** O dashboard exige `SECURITY_DASHBOARD_TOKEN` no header `X-Security-Token`, com middleware aplicado às rotas administrativas.
-
-Criar middleware específico:
-
-```text
-requireSecurityToken
-```
-
-Aplicar em:
-
-```text
-/security/stats
-/security/report
-/security/events
-/security/threats
-/security/health
-```
-
-Não usar o mesmo segredo em escopos diferentes se o objetivo for separar responsabilidades.
-
-## 1.2 Remover enumeração de contas
-
-**Status: concluído.** Login e registro retornam mensagens públicas uniformes; o motivo permanece disponível na auditoria e nos logs internos.
-
-Login:
-
-```text
-401 AUTHENTICATION_FAILED
-"Credenciais inválidas"
-```
-
-Registro:
-
-```text
-resposta genérica
-```
-
-Logs internos continuam detalhando o motivo.
-
-## 1.3 Normalizar username
-
-**Status: concluído.** A forma canônica é `normalizeUsername()` (`trim` + `lowercase`) em `src/shared/utils/usernamePolicy.ts`, aplicada em:
-
-- `LoginCredentials` e `User` (domínio);
-- validação HTTP (`validateLogin`, `validateRegister`, `validateUpdate`);
-- consultas do adapter Mongo (`findByUsername`, `exists`).
-
-A senha **não** é normalizada: é valor opaco.
-
-Testes adicionados:
-
-- `tests/unit/username-policy.test.ts` (normalização, idempotência, idempotência com non-string);
-- `tests/unit/domain-user.test.ts` e `domain-auth-service*.test.ts` (entidade, registro, login e update);
-- `tests/unit/validation-middleware.test.ts` (sanitizador de campo e senha preservada);
-- `tests/integration/auth-flow.test.ts` (identidade única independente da caixa);
-- `tests/e2e/auth-http.e2e.test.ts` (registro/login/update case-insensitive contra MongoDB real).
-
-## 1.4 Remover fallback automático do refresh secret
-
-**Status: concluído.** `JWT_REFRESH_SECRET` é lido em `securityConfig.jwt.refreshSecret` e, em produção, é obrigatório, precisa ter no mínimo 32 caracteres e ser diferente de `JWT_SECRET` (`validateConfiguration`). O bootstrap não faz mais `JWT_REFRESH_SECRET || JWT_SECRET`; o `JWTTokenService` registra aviso quando não recebe segredo de refresh.
-
-## 1.5 Revisar comportamento quando Redis cai
-
-**Status: concluído — decisão: fail-closed em produção.**
-
-`SESSION_FAIL_OPEN` (default: `false` em produção, `true` em dev/test) define a política de revogação:
-
-- **fail-closed** (produção): sem armazenamento de revogação, a verificação de access/refresh token, o refresh e o logout respondem erro `REVOCATION_UNAVAILABLE` (HTTP 503) em vez de aceitar tokens sem controle;
-- **fail-open** (dev/test): comportamento degradado anterior, com log explícito.
-
-Erros do próprio Redis (conexão perdida) também respeitam a política. Testes em `tests/unit/jwt-token-service.test.ts` cobrem: Redis ausente, cliente desconectado (`isReady: false`), Redis respondendo erro, recuperação após reconectar, e os dois modos.
-
----
-
-# Fase 2 — corrigir modelo de sessão
-
-## 2.1 Blacklist por `jti`
-
-**Status: concluído.** A chave deixou de ser o token e passou a ser o identificador do próprio JWT:
-
-```text
-token_blacklist:jti:<jti>       # tokens emitidos a partir de agora
-token_blacklist:sha256:<hash>   # tokens legados sem jti (fallback)
-```
-
-O token completo nunca vira chave de armazenamento. Cada token emitido recebe `jti` próprio (inclusive access e refresh, que antes compartilhavam o mesmo `jti` — revogar o refresh derrubava o access da mesma emissão). O TTL da entrada é o menor entre o solicitado e a vida restante do token, então a blacklist nunca cresce além da expiração natural. Tokens sem `jti` (versões anteriores) também são consultados na chave legada durante a transição.
-
-## 2.2 Refresh rotation atômica
-
-**Status: concluído.** O consumo do refresh token é uma escrita `SET NX` (`token_blacklist:jti:<jti> = rotated`, TTL = vida restante do token) executada **antes** de emitir o novo par. `SET NX` decide o vencedor de forma atômica no próprio Redis, fechando a janela entre "verificar" e "revogar":
-
-- primeira requisição com o token → rotaciona (200);
-- qualquer outra, inclusive simultânea → 401 `REFRESH_TOKEN_REUSED`;
-- token já revogado por logout → 401 `REFRESH_TOKEN_INVALID` (distinção feita pelo valor da entrada: `rotated` vs `revoked`).
-
-Teste obrigatório do roadmap, como E2E contra Redis real (`tests/e2e/auth-http.e2e.test.ts`):
-
-```text
-Promise.all([
-  refresh(oldToken),
-  refresh(oldToken)
-])
-// => uma 200 e uma 401
-```
-
-## 2.3 Session version / token version
-
-**Status: concluído (na Fase 3, ver 3.3).** O token carrega `sv` (versão de
-sessão) e o Redis guarda `user_session_version:<userId>`, incrementado a cada
-revogação em massa. Substituiu a comparação por `iat` contra timestamp, que
-produzia tokens mortos quando o login acontecia no mesmo segundo da revogação.
-O timestamp (`user_tokens_revoked:<userId>`) foi mantido apenas para tokens
-antigos, que não têm a claim.
-
----
-
-# Fase 3 — corrigir senha e identidade
-
-## 3.1 Escolher uma política real de senha
-
-**Status: concluído.** A política vive em um único objeto, `PASSWORD_POLICY`
-(`src/shared/utils/passwordPolicy.ts`), lido pelo middleware HTTP, pelo domínio e
-pelos testes. Nenhuma camada redefine comprimento ou composição.
-
-| Decisão | Valor | Motivo |
+| Área | Hoje | Onde |
 | --- | --- | --- |
-| Mínimo | 12 caracteres | acima do mínimo de 8 da NIST, já que há composição |
-| **Máximo** | **72 bytes** | bcrypt ignora o que passa de 72 bytes: aceitar mais prometeria uma proteção que o hash não entrega (verificado: duas senhas com o mesmo prefixo de 72 bytes comparam como iguais) |
-| Composição | maiúscula, minúscula, número, símbolo | camada extra à checagem de senha comum; a NIST desaconselha composição, mas aqui o comprimento é exigido junto |
-| Senhas comuns | 27 entradas, comparação sem caixa e por substring | cobre o caso offline sem colocar rede no caminho de registro |
-| **Expiração** | **nunca** | rotação forçada empurra o usuário para padrões piores (NIST SP 800-63B); a troca é evento |
-| Histórico | 5 hashes (FIFO) | impede reuso sem transformar o documento em arquivo de credenciais |
+| Assinatura JWT | **HS256** simétrico (`jsonwebtoken`), access 15m / refresh 7d, `jti` + `sv` | `src/infrastructure/external-services/jwtTokenService.ts` |
+| Hash de senha | **bcrypt cost 12**, política 12–72 bytes, histórico 5, blacklist de comuns | `src/shared/utils/passwordPolicy.ts`, `appConfig.ts` |
+| Redis | v7, AOF `appendonly yes`, **sem senha/ACL**, **sem réplica**, blacklist por `jti` com `SET NX` | `docker-compose.yml`, `connection.ts` |
+| MongoDB | v7 **single node, sem auth, sem backup configurado** | `docker-compose.yml`, `models/User.ts` |
+| Escala | vertical PM2 (4 instâncias) OU cluster module (4/8) OU compose 1 réplica com `container_name` + bind | `ecosystem.config.cjs`, `src/app.ts`, compose |
+| Rate limit | `rate-limiter-flexible`, Redis + fallback memória **por processo** | `advancedRateLimit.ts` |
+| Auditoria/obs | buckets `loginAttempts/successfulLogins/failedLogins/unavailableLogins`, `/observability` agregador **por processo** | `securityAudit.ts`, `requestLogAggregator.ts` |
+| Testes | 32u/425 + 6i/38 + 1e2e/14 + infra real (`test:infra`) + k6 (`test:load`) | `tests/`, `k6/`, `scripts/infra-resilience-test.sh` |
+| Deploy | `deploy.sh` com backup de imagem, readiness, smoke e rollback | `scripts/deploy.sh`, `.github/workflows/ci-cd.yml` |
 
-Senha continua sendo valor opaco: limite é aplicado sem tocar no valor que vai
-para o bcrypt (e o limite é contado em **bytes**, para que caractere multibyte não
-"pague" por um limite que o algoritmo não honra).
+**Achados relevantes para este roadmap:**
 
-## 3.2 Integrar histórico
-
-**Status: concluído.** `passwordHistory` e `passwordChangedAt` existiam no schema
-Mongo e em lugar nenhum do código — estado morto. Agora:
-
-- a entidade `User` carrega `passwordHistory` e tem `changePassword(newHash)`,
-  que empurra o hash anterior (limitado a 5, FIFO) e marca a data da troca;
-- `User.updateData(username, hash)` virou `User.updateUsername(username)`: **a
-  senha não muda mais pela atualização de perfil**;
-- novo caso de uso `AuthService.changePassword(userId, current, next)`, que
-  recusa reutilização da senha atual e de qualquer uma das últimas 5;
-- o adapter carrega o histórico com `select('+passwordHistory')` (o campo é
-  `select: false` no schema) e o persiste no `save`;
-- o hash nunca aparece em `toSafeObject`.
-
-## 3.3 Invalidar sessões após troca de senha
-
-**Status: concluído — decisão: encerrar todas as sessões.**
-
-Trocar a senha chama `revokeUserTokens(userId)`: qualquer access ou refresh token
-emitido antes da troca deixa de valer. Um token vazado não sobrevive à resposta
-de quem suspected comprometimento, e o usuário precisa apenas fazer login de
-novo.
-
-O caminho HTTP é `PUT /password`, que **exige a senha atual** (step-up): um access
-token vazado não basta para tomar a conta de forma permanente. Tentar trocar a
-senha por `PUT /update` é recusado com 400.
-
-**Bug encontrado pelos testes E2E e corrigido:** a revogação por usuário usava
-`iat` (segundos) contra um timestamp em milissegundos. Um login feito no mesmo
-segundo da revogação — exatamente o caso de quem acabou de trocar a senha — recebia
-um token já morto. Substituído por **versão de sessão** (Fase 2.3): a claim `sv`
-no token e um contador `user_session_version:<userId>` no Redis, incrementado a
-cada revogação em massa. Sem dependência de relógio. Tokens antigos (sem `sv`)
-continuam usando a regra por timestamp, que expira sozinha.
-
-## 3.4 Remover `passwordExpired` se não for usado
-
-**Status: concluído.** `passwordExpired` não era lido nem escrito em lugar
-nenhum; a decisão de não expirar senha agora está explícita em
-`PASSWORD_POLICY.expires = false` e documentada acima.
-
-# Fase 4 — limpar a camada HTTP
-
-## 4.1 Remover sanitização global de senha
-
-**Status: concluído.** `src/application/middleware/sanitization.ts` foi renomeado para `inputNormalization.ts` e agora faz apenas o que faz sentido em entrada:
-
-- remove caracteres de controle Unicode (C0/C1);
-- **não** transforma credenciais (`password`, `newPassword`, `refreshToken`, `authorization`, ...): a lista de campos opacos é comparada sem diferenciar maiúsculas/minúsculas;
-- **não** faz HTML escaping (a API responde JSON) nem "escape SQL" (não há SQL no projeto);
-- `isomorphic-dompurify` e `validator` foram removidos das dependências (só eram usados aqui).
-
-Escaping de saída continua sendo responsabilidade do ponto onde o dado é renderizado.
-
-Testes em `tests/unit/input-normalization.test.ts` (antes `sanitization.test.ts`) expressam a nova semântica: senha e refresh token chegam intactos ao domínio.
-
-## 4.2 Separar
-
-```text
-validation
-normalization
-sanitization
-output encoding
-```
-
-**Status: concluído.** Fronteiras atuais:
-
-```text
-validation/      → src/application/middleware/validation.ts (formato e limites)
-normalization/   → src/shared/utils/usernamePolicy.ts (identidade)
-                   src/application/middleware/inputNormalization.ts (controles Unicode)
-output encoding  → contexto de saída (a API responde JSON; não há renderização HTML)
-```
-
-## 4.3 Eliminar `inputValidation.ts` se ele não for o mecanismo oficial
-
-**Status: concluído.** `express-validator` é o mecanismo oficial: é o que as rotas
-usam de fato, é coerente com a resposta JSON da API e mantém as políticas de
-identidade e senha em fonte única (`usernamePolicy.ts` e `passwordPolicy.ts`).
-
-Mapa de uso antes de remover:
-
-```text
-inputValidation.ts  →  importado apenas por tests/unit/input-validation.test.ts
-validation.ts       →  importado pelas rotas de autenticação
-```
-
-Ou seja, o módulo Joi era código morto que ainda arrastava uma dependência
-inteira. Removidos:
-
-```text
-src/application/middleware/inputValidation.ts
-tests/unit/input-validation.test.ts
-joi (package.json / package-lock.json)
-```
-
-O que **não** foi portado, de propósito:
-
-- **limites de payload por contexto (1KB login, 2KB registro).** O limite
-  global de `express.json({ limit: '100kb' })` já existe, e as rotas de
-  autenticação recebem corpos pequenos por construção. Um limite por contexto
-  aqui só criaria dois lugares para divergir.
-- **allowlist de caracteres de senha.** Uma allowlist fixa de caracteres
-  restringiria senhas legítimas e contradiz a decisão de tratar senha como
-  valor opaco.
-- **validação de e-mail.** Não existe campo de e-mail na API.
-
-Efeito colateral positivo: `Request.validationDetails`, que existia só para o
-middleware Joi, saiu de `src/types/express.d.ts`.
+- O **refresh reusado já é detectado** (`REFRESH_TOKEN_REUSED`, `jwtTokenService.ts:560`), mas
+  o reuso **não dispara resposta automática** (revogar a sessão, alertar). Hoje é só 401.
+- O Redis **não exige credencial** em nenhum compose — qualquer contêiner da rede lê e
+  escreve blacklist e rate limit.
+- O Mongo **não tem réplica nem backup**; com escala horizontal da API, ele continua SPOF.
+- O `--scale` documentado na v1 (Fase 7) **não foi implementado**: falta o proxy na frente.
+- Falha de driver no rate limit **não vira 429** (D13) — base sólida para o teste de DDoS.
 
 ---
 
-# Fase 5 — observabilidade correta
-
-## 5.1 Corrigir contadores de login
-
-**Status: concluído.** `AuditStats` agora tem os três contadores com semântica
-própria, e `loginAttempts` é a soma verificada dos outros dois:
+## 2. Modelo de adversário assumido (o que os testes precisam sobreviver)
 
 ```text
-loginAttempts     → todo login, sucesso ou falha
-successfulLogins  → só os que deram certo
-failedLogins      → só os que falharam
+A1 Roubo de credenciais          atacante obtém access e/ou refresh de um
+                                 usuário legítimo e tenta usar enquanto o
+                                 legítimo segue ativo.
+A2 Reuso de refresh              atacante repete um refresh já rotacionado
+                                 (ou o legitimo e o atacante disputam).
+A3 Espelhamento de senha         a senha roubada de uma conta é testada em
+                                 outras contas (credential stuffing).
+A4 Força bruta distribuída      muitos IPs / botnet atacando /login ao mesmo
+                                 usuário ou a muitos usuários.
+A5 Flood HTTP                    volume de requisições legítimas-formato sobre
+                                 /login, /refresh, /register (CPU/I/O).
+A6 Slowloris                     conexões abertas que não completam, travando
+                                 o limite de sockets do Node/proxy.
+A7 Malformados/oversized         payloads gigantes, headers estranhos,
+                                 X-Forwarded-For forjado para burlar IP.
 ```
 
-E o agregado deixou de ser apenas interno: `metrics.ts` expõe
-
-```text
-auth_login_attempts_total{outcome}
-auth_token_refresh_total{outcome}
-auth_password_changes_total{outcome}
-```
-
-`reused` (refresh reaproveitado) é separado de `invalid` (usuário mandou token
-ruim) porque os dois significam coisas diferentes para o alerta. Valores fora da
-lista fechada viram `error`, para o rótulo não virar cardinalidade infinita.
-
-Testes: `tests/unit/security-audit.test.ts` e `tests/unit/auth-event-sink.test.ts`.
-
-## 5.2 Separar health endpoints
-
-> Achado posterior (Fase 6): os probes estavam sujeitos ao rate limit global
-> de IP, porque só `/health` estava em `exemptPaths`. Com o limite estrito, o
-> próprio `/liveness` respondia 429 - o orquestrador marcaria um container
-> saudável como unhealthy, e o deploy reverteria uma versão boa. `/liveness`,
-> `/readiness` e `/observability` entraram em `exemptPaths`: endpoint de
-> operação é consultado por máquina, e um probe limitado por taxa é um probe
-> que mente.
-
-**Status: concluído.**
-
-```text
-/liveness   → 200 se o processo responde. Não toca em Mongo nem Redis.
-/readiness  → 200 se o Mongo responde, 503 se não. Redis degradado não tira de prontidão.
-/health     → relatório detalhado (Mongo, Redis, memória, uptime).
-```
-
-O `/liveness` não consulta dependência de propósito: se consultasse, uma queda
-do banco derrubaria processos perfeitamente capazes de reconectar, e o
-orquestrador reiniciaria tudo sem necessidade.
-
-## 5.3 Definir `trust proxy`
-
-**Status: concluído.** `TRUST_PROXY` com padrão **não confiável**:
-
-```text
-ausente / false / 0 / off / no  → false (padrão seguro)
-número inteiro                  → quantidade de saltos de proxy
-lista de CIDR                   → faixa do proxy confiável
-true / on / always              → true, com aviso no log
-```
-
-Sem isso, `X-Forwarded-For` é controlado por quem fala com o Node, e `req.ip`
-vira uma variável que o cliente escolhe - o que derruba o rate limit por IP.
-
-Testes: `tests/unit/trust-proxy-config.test.ts`.
-
-## 5.4 Reduzir confiança em `X-Request-Id` externo
-
-**Status: concluído.** O `X-Request-Id` de entrada só é reutilizado se for um
-UUID (versão 1-8, variante correta) com no máximo 36 caracteres. Qualquer outra
-coisa - string arbitrária, JSON, CRLF para injetar cabeçalho, payload de 2KB - é
-descartada, com log, e o serviço gera o próprio id.
-
-O `id` de requisição é chave de correlação de alerta, então aceitar valor de
-cliente sem filtro é dar ao atacante controle sobre o log store.
-
-Testes: `tests/unit/request-id.test.ts` e um caso E2E que manda os bytes crus
-por socket, que é o caminho que um cliente hostil usaria.
+Cada ataque gera uma **prova automatizada** (fase 5 e 6) com assertivas de
+saída: serviço segue respondendo, liveness 200, sem restart, e **se recupera**
+quando o ataque para.
 
 ---
 
-# Fase 6 — corrigir o deployment
+# Fase 1 — criptografia mais forte
 
-## Opção recomendada para este projeto
+## 1.1 Assinar JWT com curva elíptica (HS256 → ES256)
 
-Não tentar fingir Kubernetes.
+**Status: pendente.**
 
-Montar um deployment real pequeno:
+Trocar a assinatura simétrica por **ES256 (ECDSA P-256)** com `jose`:
 
-```text
-GitHub Actions
-      ↓
-GHCR
-      ↓
-server Linux
-      ↓
-Docker Compose
-      ↓
-reverse proxy
-      ↓
-auth-service
-```
+- a chave **privada** assina (só em quem emite: o serviço / segredo na borda);
+- a chave **pública** verifica (qualquer verificação, sem expor o segredo);
+- claim `kid` no header e **rotação de chave** com período de tolerância
+  (verificador aceita a chave anterior enquanto ela existir);
+- `jsonwebtoken` sairia de prod se nada mais usar; manter `jose` como única lib.
 
-### Implementar de verdade
+Tarefas:
 
-**Status: concluído.** O deploy real existe e foi exercitado, não descrito.
+- [ ] comparar `jsonwebtoken`(HS256) vs `jose`(ES256) e registrar decisão `D15` em `docs/SEGURANCA.md`
+- [ ] gerar par de chaves (development e production) e documentar provisão por KMS/secrets manager
+- [ ] `JWTTokenService` assina com privada e verifica com pública, `algorithms: ['ES256']`
+- [ ] claim `kid` obrigatória; validar token sem `kid` como erro de verificação
+- [ ] rotação: suportar 2 chaves simultâneas em produção (nova assina, antiga ainda é aceita verificar; prazo curto e agendado)
+- [ ] `validateConfiguration`: produção exige chaves reais (não placeholder) e recusa HS256
+- [ ] testes: assinar/verificar, token com `kid` errado, chave antiga durante a janela de rotação, token sem `kid`
+- [ ] E2E e `test:infra` verdes com o novo esquema (o smoke de deploy assina e verifica de ponta a ponta)
 
-- [x] SSH/deploy para servidor - job `deploy` do CI, por matriz (staging/produção).
-- [x] Pull da imagem por digest - a referência vem do output `digest` do build
-      (`ghcr.io/...@sha256:...`), nunca de `latest`.
-- [x] Backup da versão em vigor - a anterior recebe tag `*-backup-<ts>` e é
-      anotada em `/var/lib/micrologin/backups/previous-image`.
-- [x] `docker compose up -d` - via `IMAGE_REF`, para o compose usar a
-      referência imutável e não remontar `repo:sha256:...`.
-- [x] readiness check - espera `/readiness` responder 200.
-- [x] smoke test real - `scripts/smoke-test.sh`: liveness, readiness, registro,
-      login, `/profile`, rotação de refresh, rejeição de reuso e logout.
-- [x] rollback automático - dispara em readiness ou smoke falhando, e **refaz o
-      smoke na versão restaurada** antes de dizer que voltou.
-- [x] registro da versão implantada - `/var/lib/micrologin/deployed-version`
-      (JSON com digest, status, anterior, autor, commit e host), publicado no
-      resumo do job.
-- [x] lock por host - `flock` impede dois deploys simultâneos se atropelarem.
+**Definição de pronto:** verificação usa chave pública em todos os ambientes; a
+chave privada não é necessária em verificador; teste de rotação cobre janela de
+tolerância; produção valida `kid` presente.
 
-O que o CI parou de fingir:
+## 1.2 Decisão de hash de senha: argon2id vs bcrypt raisado
 
-```text
-antes:  job "deploy" imprimia "✅ Deployment completed" sem deployar nada
-        needs.build.outputs.image-url não existe (docker/build-push-action
-        não tem esse output), então a "imagem" do deploy era string vazia
-        Trivy escaneava ...:${{ github.sha }}, tag que o metadata-action
-        não publica (a tag é sha-<40 chars>)
+**Status: pendente.** bcrypt cost 12 já é decente, mas OWASP 2024 recomenda
+**argon2id**. Hashing é ativo no caminho de login/registro — a decisão precisa
+medir custo em máquina real, não só ler tabela.
 
-agora:  job "deploy" só roda em workflow_dispatch, exige secrets de servidor
-        e falha se não estiverem configurados; a referência da imagem vem
-        do digest real e é a mesma que o Trivy escaneia
-```
+- [ ] benchmark: bcrypt(cost 12) vs argon2id (m=64MiB, t=3, p=4) vs argon2id (16MiB/1/1) — tempo por hash e p95 no /login atual
+- [ ] decisão `D16` em `docs/SEGURANCA.md`: manter bcrypt **ou** migrar argon2id
+- [ ] se migrar: migration de hashes existentes (verificação bcrypt primeiro, rehash argon2id no próximo login), com `PASSWORD_POLICY`
+- [ ] avaliar **pepper** (HMAC-SHA256 antes do hash) `D17` — custo de operação vs ganho, sob KMS
+- [ ] manter limites: senha opaca, máximo em bytes, histórico 5
 
-### Comportamento do rollback
+**Definição de pronto:** decisão D16/D17 registradas com dado medido (não por
+palpite); migração sem quebrar usuários existentes (login antigo continua
+funcionando até rehash).
 
-| Situação | Ação | Status registrado | Exit |
-| --- | --- | --- | --- |
-| Smoke e readiness OK | versão nova no ar | `deployed` | 0 |
-| Readiness não vem | reverte | `rolled-back` | 1 |
-| Smoke falha (a versão não autentica) | reverte | `rolled-back` | 1 |
-| Versão anterior também está quebrada | não há para onde voltar | `rolled-back-but-broken` | 1 |
-| Rate limit bloqueia o smoke (429) | **mantém** a versão nova | `deployed-inconclusive` | 1 |
-| Pull da imagem falha | não mexe no que está no ar | `failed-pull` | 1 |
-| Sem versão anterior no primeiro deploy | sobe, sem para onde voltar | `deployed` | 0 |
+## 1.3 Credenciais em repouso das dependências
 
-O caso `deployed-inconclusive` é uma decisão explícita: um 429 é o serviço
-funcionando, e reverter uma versão boa por causa de limite de capacidade
-transformaria um problema de taxa em uma indisponibilidade. O pipeline fica
-vermelho para um humano decidir.
+**Status: pendente.** Redis e Mongo hoje não pedem senha.
 
-### Segredos necessários (por ambiente)
+- [ ] Redis: `requirepass`/ACL no compose prod + `REDIS_PASSWORD` no `connection.ts` e no URL
+- [ ] Mongo: criar usuário próprio do serviço (`authSource=admin`), sem privilégio além do necessário
+- [ ] TLS entre auth-service e Redis/Mongo em prod (ou rede interna dedicada, decisão explícita)
+- [ ] segredos via variável/arquivo de secrets, nunca no compose versionado
+- [ ] nomes de usuário de aplicação não admin no Mongo
 
-```text
-{PROD|STAGING}_DEPLOY_HOST        host do servidor
-{PROD|STAGING}_DEPLOY_USER        usuário SSH
-{PROD|STAGING}_DEPLOY_SSH_KEY     chave privada (formato PEM)
-{PROD|STAGING}_DEPLOY_KNOWN_HOSTS chave pública do host (evita TOFU cego)
-{PROD|STAGING}_DEPLOY_SSH_PORT    opcional, default 22
-{PROD|STAGING}_DEPLOY_ENV_FILE    ex.: /opt/micrologin/.env.prod
-{PROD|STAGING}_DEPLOY_COMPOSE_FILE ex.: /opt/micrologin/docker-compose.prod.yml
-{PROD|STAGING}_DEPLOY_BASE_URL    URL pública, usada no smoke test
-{PROD|STAGING}_REGISTRY_USERNAME  opcional, só se a imagem do GHCR for privada
-{PROD|STAGING}_REGISTRY_TOKEN     idem
-```
+**Definição de pronto:** `docker-compose.prod.yml` sobe Mongo/Redis exigindo
+credencial; app autentica; teste de infra valida que sem credencial a conexão
+falha (composição isolada).
+
+## 1.4 Ciclo de vida de chaves e segredos
+
+- [ ] ROTAÇÃO documentada e testada para: JWT ES256 (1.1), pepper (se aceitar), senhas de Mongo/Redis
+- [ ] guarda da chave privada ES256 fora do repositório (secrets manager/KMS)
+- [ ] gitleaks + audit contínuo já existem; validar que as chaves novas não caem em `.env*` versionado
 
 ---
 
-# Fase 7 — escala real, somente depois
+# Fase 2 — backup e restauração
 
-Caso queira demonstrar escalabilidade:
+## 2.1 MongoDB: backup criptografado, retenção e restauração real
 
-```text
-                 ┌─ auth-1
-client → proxy ──┼─ auth-2
-                 └─ auth-3
-                      │
-              Redis + Mongo
-```
+**Status: pendente.** Não existe nada hoje.
 
-Regras:
+- [ ] `scripts/backup.sh`: `mongodump` → tar → **criptografia (age/gpg simétrico)** → destino com rótulo `sha-data` + data
+- [ ] retenção: manter N diários + M semanais; poda automática
+- [ ] RPO/RTO definidos e documentados (ex.: RPO 24h, RTO ≤ 15 min — ajustar à realidade)
+- [ ] `scripts/restore.sh` com **drill real**: restaura o dump no compose isolado e executa fluxo de login
+- [ ] `npm run test:backup` (ou passo de CI manual) que: gera dump, apaga o banco, restaura, valida usuário sobreviveu
+- [ ] alerta quando backup falha ou fica velho (fonte: authEventSink / log estruturado já existente)
+- [ ] documentar restauração pontual só com o dump criptografado (sem acesso ao servidor)
 
-- remover `container_name`;
-- remover bind fixo da porta por réplica;
-- proxy/load balancer distribui tráfego;
-- Redis mantém estado compartilhado;
-- Mongo mantém persistência;
-- health/readiness decide quem recebe tráfego.
+**Definição de pronto:** existe um backup criptografado (verificável: `age -d`
+devolve o dump íntegro), um restore já exercitado localmente de ponta a ponta, e
+um teste que falha de verdade se a restauração não reconhecer um usuário.
 
-Só então documentar `--scale`.
+## 2.2 Redis: o estado perdido e o que recuperar
 
----
+O Redis guarda blacklist, rotação, versão de sessão e rate limit. **Perda do
+Redis = tokens revogados voltam a valer e rate limit reseta** (controle de
+sessão amnésico até expirar). Decisões:
 
-# Fase 8 — testes de nível profissional
+- [ ] persistência explícita: AOF `fsync=everysec` + RDB snapshot no compose prod (hoje só AOF default)
+- [ ] política quando Redis some de vez (falha de disco): fail-closed derruba revogação? ou religa e aceita janela curta? decidir `D18`
+- [ ] backup de Redis **intencionalmente não é o objetivo primário**: re-registrar sessões revogadas é inviável; documentar que o Redis é regenerável (login novo) e o Mongo é a fonte de verdade
+- [ ] snapshots de Redis (por fora) só para diagnóstico forense, não para restore de serviço
 
-Adicionar testes de segurança e concorrência, não apenas happy path.
+**Definição de pronto:** RPO/RTO documentados separando Mongo (restaurável do
+dump) de Redis (regenerável por design); decisão D18 registrada.
 
-**Estado: concluída.** Total hoje: **32 suítes / 425 testes unitários**,
-**6 suítes / 38 testes de integração**, **1 suíte / 14 testes E2E** contra
-MongoDB e Redis reais, e **1 suíte de infraestrutura** (`npm run test:infra`)
-que derruba o Redis e o container contra a imagem de produção.
+## 2.3 Backup da configuração e da versão em vigor
 
-O `GET /observability` ganhou suíte própria de superfície
-(`tests/integration/observability-surface.test.ts`): token obrigatório, recusa de
-token errado, manifesto em JSON próprio e ausência de qualquer rota de
-métricas montada no app.
-
-## Obrigatórios
-
-### Identidade
-
-- [x] username case-insensitive;
-- [x] username duplicado com case diferente;
-- [x] normalização de whitespace;
-- [x] username inválido.
-
-### Login
-
-- [x] usuário inexistente e senha errada produzem mesma resposta;
-- [x] rate limit de login;
-- [x] brute force distribuído;
-- [x] Redis indisponível.
-
-### Sessão
-
-- [x] refresh concorrente;
-- [x] refresh reusado;
-- [x] logout revoga access token;
-- [x] logout revoga refresh token;
-- [x] revoke-all;
-- [x] expiração real do token.
-
-> **Achado do smoke test de deploy (Fase 6) — resolvido.** `POST /logout` só
-> revogava o access token quando ele era **apresentado** no header, e
-> `revokeUserTokens` só rodava quando havia `req.user`. Um logout enviado só
-> com o refresh token deixava o access token válido até expirar, contrariando o
-> README.
->
-> **Contrato decidido:** o refresh token apresentado identifica a sessão. O
-> `/logout` virou um caso de uso do domínio (`AuthService.endSession`) que
-> resolve a identidade **antes** de revogar e então derruba access token,
-> refresh token e todos os tokens do usuário. Redis indisponível em modo
-> fail-closed devolve 503, porque dizer que a sessão acabou quando ela continua
-> viva seria mentira.
->
-> A ordem é exigência, não estilo: `verifyRefreshToken` consulta a blacklist, e
-> um refresh já revogado é sempre recusado. Ler o dono depois de blacklisted-lo
-> faria a revogação em massa nunca acontecer. Há teste com um TokenPort que
-> reproduz a blacklist real justamente para travar essa ordem.
-
-### Senha
-
-- [x] troca de senha;
-- [x] histórico;
-- [x] senha anterior rejeitada;
-- [x] sessão antiga invalidada, conforme política.
-
-### Segurança HTTP
-
-- [x] `/security/*` exige credencial administrativa;
-- [x] o manifesto de observabilidade exige token quando configurado;
-- [x] `/observability` exige token;
-- [x] JSON inválido retorna 400;
-- [x] headers de segurança presentes;
-- [x] CORS conforme configuração.
-
-### Infraestrutura
-
-- [x] Mongo indisponível;
-- [x] Redis indisponível;
-- [x] reconexão Redis;
-- [x] restart do container;
-- [x] readiness durante startup;
-- [x] readiness após perda de dependência.
-
-> Os dois itens de infraestrutura que faltavam dependiam de derrubar serviço de
-> verdade, e agora são exercitados por `npm run test:infra`
-> (`scripts/infra-resilience-test.sh` + `docker-compose.resilience.yml`, um
-> stack separado com porta, rede e volumes próprios). O teste observa o serviço
-> por HTTP — como o orquestrador e o cliente — e cobre:
->
-> ```text
-> Redis parado com o app no ar
->     → 503 REVOCATION_UNAVAILABLE no login (não 401 de credencial inválida)
->     → nenhum 429 (falha de driver não vira "limite estourado")
->     → liveness 200, readiness 200 e degradado
->     → RestartCount do container continua 0 (dependência caída não mata o app)
->
-> Redis religado
->     → o login volta a funcionar sem ninguém reiniciar o processo
->     → o rate limiting volta ao armazenamento compartilhado
->
-> restart do container
->     → encerra em ~1s e volta a autenticar (smoke test completo)
->     → encerra em ~1s mesmo com o Redis fora (shutdown não depende de
->       dependência indisponível — a reconexão é infinita por decisão, então o
->       encerramento precisa cancelar o timer pendente)
-> ```
->
-> **Achados do próprio teste, corrigidos:**
->
-> - `ready` do node-redis também dispara na conexão inicial, e o handler
->   disputava `isHealthy` com o health check do `initRedis`. A corrida
->   ressuscitava a saúde depois de uma queda (8 testes unitários falhavam sem a
->   guarda) e imprimia "Redis reconectou, mas o health check falhou" num
->   arranque normal, sem queda nenhuma;
-> - o smoke test do deploy deixava um usuário `smoke-*` no banco a cada
->   publicação: a limpeza rodava depois do logout, com o access token já
->   revogado, e recebia 401. Agora reabre sessão e apaga a conta, avisando
->   quando não consegue.
+- [ ] já existe (Fase 6 v1): imagem anterior + `deployed-version`. Estender com backup de `.env.prod` e compose usados
+- [ ] teste de que o deploy consegue restaurar imagem **e** configuração
 
 ---
 
-# Fase 9 — qualidade de código
+# Fase 3 — escala vertical (dimensionar para cima antes de escalar para fora)
 
-> **Registro de 2026-09-27: a stack de scrape de métricas foi removida do
-> projeto.** Não há biblioteca de métricas, coletor nem formato de saída
-> embutido. O que permanece: logs estruturados, o agregador por processo e o
-> manifesto de `GET /observability`. Os eventos de autenticação saem por uma porta
-> (`setAuthEventSink` em `src/application/observability/authEventSink.ts`), e o
-> meio de observação próprio é plugado ali — ele substitui tanto o scraper
-> quanto o alerta que hoje não existe. `METRICS_TOKEN` continua protegendo o
-> manifesto, por compatibilidade de configuração já implantada.
+## 3.1 Baseline de capacidade
 
-## Reduzir complexidade
+**Status: pendente.**
 
-O projeto possui vários pontos em que documentação e comentários são maiores do que a lógica em si.
+- [ ] rodar `npm run test:load` com p50/p95/p99 e taxa de erro para: 1 worker, 100/200/400 VUs em /health, /login, /refresh, /register
+- [ ] medirmemória RSS e heap com `--max-memory-restart` do PM2 (hoje 500M) e limites do compose (512m)
+- [ ] guardar resultado em `docs/metricas.md` (ou no README) como referência "quanto um worker aguenta"
+- [ ] custo de autenticação já é dominado por bcrypt/argon2id — medir se o hash come > X% do tempo de /login
 
-Priorizar:
+**Definição de pronto:** tabela publicada com capacidade por worker e por réplica, e o gargalo identificado com número.
 
-- `securityAudit.ts`;
-- `securityMonitoring.ts`;
-- `inputValidation.ts`;
-- `authRoutes.ts`;
-- `jwtTokenService.ts`.
+## 3.2 Tuning de Node/PM2
 
-Não necessariamente reduzir linhas por reduzir. A meta é remover estados paralelos e decisões duplicadas.
-
-**Estado: concluída.** O diagnóstico inicial do documento estava errado em dois
-pontos, e a medição corrigiu o rumo:
-
-- `authRoutes.ts` tem 87% de comentário, mas são 13 blocos `@swagger` — é o
-  contrato público da API, não inchaço. Não foi tocado.
-- `inputValidation.ts` não existe mais: foi consolidado em `validation.ts`, com a
-  fronteira de responsabilidade explícita no cabeçalho. A reestruturação em
-  diretórios sugerida mais abaixo (`validation/`, `normalization/`,
-  `security-observability/`) já tinha sido feita em fase anterior, e
-  `inputNormalization.ts` declara o que não faz e por quê.
-
-O que era para reduzir, de fato:
-
-- [x] **Buffer de eventos duplicado.** `securityMonitoring` mantinha um
-      `threatLog` de 1000 eventos ao lado do `events` do `securityAuditLogger`,
-      com o mesmo cap. `detectThreats` gravava o mesmo evento nos dois, com
-  `timestamp` em formatos diferentes (ISO na auditoria, epoch no monitor), e
-  nada lia a segunda cópia. O registro vai só para o `securityAuditLogger`, que é
-  o buffer que `/security/*` e o manifesto de observabilidade já liam.
-- [x] **Superfície inalcançável.** Só `detectThreats` era montado no app.
-  `monitorAuthAttempts` (corpo vazio, e o comentário afirmava que ele "garantia
-  que estava sendo monitorado"), `detectAnomalies`/`cleanupAnomalies` e o
-  subsistema `threatLog` existiam só para satisfazer teste próprio — ~200 linhas.
-  `securityMonitoring.ts` foi de 295 para 93 linhas.
-- [x] **Bug no id do log de ameaças:** `id = length + 1` colidia depois do
-      `shift()` (id 1001 se repetia) e reiniciava no `clearThreatLog()`. O id
-      deixou de existir junto com o buffer.
-- [x] **Campo morto:** `details.timestamp` era escrito em 5 lugares do
-      `securityAudit.ts` e nunca lido, ao lado de `event.timestamp`.
-- [x] **Decisão duplicada:** "o que é falha" era derivado em `updateStats` e em
-      `checkAlerts`. Agora existe `isAuthFailure`, ponto único.
-- [x] **Custo por evento registrado:** `checkAlerts` roda em todo evento e
-      chamava `getRecentEvents`, que fazia `new Date(iso).getTime()` em até 1000
-      eventos — 1000 parses de string por requisição registrada. O evento passou
-      a carregar `atMs` (epoch ms do mesmo `Date`), medido em **11,6x** mais
-      rápido com o buffer cheio.
-- [x] **Chaves de revogação duplicadas em `jwtTokenService.ts`:** a marca
-      `user_tokens_revoked` era montada inline na leitura *e* na escrita, e o
-      prefixo da blacklist era hardcoded no caminho legado. Divergir entre as
-      duas pontas faria `isUserRevoked` devolver `false` — token revogado
-      aceito, sem erro em lugar nenhum. Agora são constantes, com round-trip
-      coberto por teste (que falha de verdade quando a chave diverge).
-
-## Exemplo de direção
-
-Em vez de:
-
-```text
-validation.ts
-inputValidation.ts
-sanitization.ts
-securityMonitoring.ts
-securityAudit.ts
-```
-
-sem fronteiras nítidas, buscar:
-
-```text
-validation/
-normalization/
-security-observability/
-```
-
-cada uma com responsabilidade única.
+- [ ] workers = CPUs disponíveis (não fixo 4 cego); documentar relação `PM2_INSTANCES`/`CLUSTER_WORKERS`
+- [ ] heap e GC sob carga (v8 max-old-space), timeouts, `keep-alive` no servidor HTTP
+- [ ] validar que dois mecanismos de cluster (PM2 e cluster module) nunca ativos juntos (já há `CLUSTER_ENABLED=false` sob PM2 — manter como teste)
+- [ ] limites de requisção em andamento (concurrent requests) como disjuntor de memória (importa também para DDoS, Fase 6)
 
 ---
 
-# Fase 10 — limpeza final de portfólio
+# Fase 4 — escala horizontal (réplicas atrás de proxy)
 
-Depois das correções funcionais:
+## 4.1 Proxy na frente (nginx) e réplicas sem `container_name`
 
-**Estado: concluída.** Trata-se de documentação e coerência, e cada item tem um
-artefato apontando para a realidade do código:
+**Status: pendente (era a "Fase 7 só depois" da v1 — agora é o objetivo).**
 
-- [x] atualizar screenshots/README — o README foi reconciliado com o estado
-      final (testes, políticas, comportamento do Redis e desfechos de
-      autenticação); não há screenshots — é uma API, e as imagens não mostram
-      nada que o Swagger não mostre.
-- [x] adicionar diagrama arquitetural — `docs/ARQUITETURA.md` §1 (diagrama de
-      camadas) e `docs/SEGURANCA.md` §3 (fronteiras de confiança).
-- [x] adicionar fluxo de autenticação — `docs/ARQUITETURA.md` §3–§7 (registro,
-      login, refresh com consumo único, logout, troca de senha).
-- [x] adicionar threat model resumido — `docs/SEGURANCA.md` §2–§4.
-- [x] documentar decisões de segurança — `docs/SEGURANCA.md` §6, incluindo as
-      decisões novas de resiliência (D11–D14: reconexão infinita, `ready` sem
-      corrida, falha de driver no rate limit, bucket `unavailable`).
-- [x] documentar trade-off de Redis — README "Política de revogação quando o
-      Redis está indisponível" + decisões D11–D13.
-- [x] documentar estratégia de sessões — README "Modelo de sessão" e o fluxo no
-      `docs/ARQUITETURA.md`.
-- [x] documentar deployment real — README "CI/CD" e Fase 6 acima.
-- [x] remover comentários de features não implementadas — auditado; sobrou
-      apenas o comentário obsoleto do logout no `smoke-test.sh`, corrigido.
-- [x] substituir "production-ready" por uma descrição precisa — o README abre
-      com a descrição exata (estudo de arquitetura com políticas de segurança;
-      **não** é solução de produção sem revisão), e o resto do repositório
-      segue o mesmo tom.
+```text
+       ┌─ auth-1 ─┐
+client→ nginx ────┼─ auth-2 ── Redis (compartilhado)
+        (TLS)     └─ auth-3 ── Mongo (single node: ver 4.3)
+```
+
+- [ ] `auth-proxy` (nginx) no `docker-compose.prod.yml`: terminação TLS, `limit_req`/`limit_conn` (herda Fase 6)
+- [ ] remover `container_name` e bind fixo da porta do `auth-service`; apenas o proxy publica porta
+- [ ] `x-forwarded-for` confiável: `TRUST_PROXY` = faixa do proxy no prod (hoje default false — decisão consciente)
+- [ ] `upstream` com `max_fails`/`fail_timeout` usando `/readiness` como health de participação
+- [ ] provar `docker compose up -d --scale auth-service=3` com smoke + `test:infra` verdes
+- [ ] rate limit global confirmado via Redis entre réplicas (uma réplica vê o consumo da outra); se Redis cai → fallback por processo **documentado como degradação explícita**
+- [ ] `/observability` é por réplica: expor `instance_id` no snapshot e documentar que a visão global vem do sink (`authEventSink`), não do agregador local
+
+**Definição de pronto:** nginx distribui, readiness remove a réplica quebrada,
+autenticação de uma réplica enxerga a revogação feita na outra, e o teste
+`--scale` faz parte da suite (como `test:infra`).
+
+## 4.2 Mongo com réplicas (HA) ou single node documentado
+
+- [ ] decidir: **replica set (3 nós, primário+2)** para o repositório ficar à altura do proxy, **ou** manter single node com backup (Fase 2) e declarar o limite
+- [ ] se replica set: `docker-compose.prod.yml` com 3 nodos, scripts de inicialização, app usa `replicaSet=` na URI
+- [ ] se single node: registrar em `docs/ARQUITETURA.md` que o Mongo é o ponto de falha único **ainda que** a API escale
+
+**Definição de pronto:** decisão registrada, e o teste de failover (se aplicável)
+executa: primário cai, leitura/escrita seguem no novo primário, app reconecta.
+
+## 4.3 Sessão e identidade em escala
+
+- [ ] revogação entre réplicas (já via Redis) — teste com 2 réplicas: logout na A derruba token validado na B
+- [ ] rate limit de login global entre réplicas (brute force distribuído não ganha orçamento ×N)
+- [ ] consistência do Mongo em réplicas: único writer (primary) — leituras de `findByUsername` no login, aceitáveis com `readConcern` local; documentar
 
 ---
 
-# 19. Ordem exata que eu seguiria
+# Fase 5 — sobrevivência a ataque de roubo de credenciais
 
-Esta é a ordem prática, sem inventar mais infraestrutura:
+## 5.1 Resposta automática ao reuso de refresh (detecção já existe, resposta não)
 
-```text
-1. Proteger /security/*
-        ↓
-2. Normalizar username
-        ↓
-3. Corrigir enumeração de contas
-        ↓
-4. Remover sanitização de senha
-        ↓
-5. Corrigir failedLogins
-        ↓
-6. Definir comportamento Redis-offline
-        ↓
-7. Separar JWT_REFRESH_SECRET
-        ↓
-8. Trocar blacklist para jti
-        ↓
-9. Tornar refresh rotation atômica
-        ↓
-10. Integrar passwordHistory OU remover feature
-        ↓
-11. Remover passwordExpired OU implementar
-        ↓
-12. Corrigir health/readiness
-        ↓
-13. Corrigir Compose scaling/documentação
-        ↓
-14. Corrigir CI/CD declarando o que é realmente executado
-        ↓
-15. Implementar deploy real
-        ↓
-16. Criar testes de concorrência e falha de infraestrutura
-        ↓
-17. Atualizar README e roadmap
-```
+**Status: pendente — hoje `REFRESH_TOKEN_REUSED` vira só 401.**
 
----
+- [ ] no reuso detectado (`consumeRefreshToken`), além do 401: **revogar a sessão do usuário** (`endSession`), marcando `sv` — o atacante e o token antigo morrem juntos
+- [ ] evento de segurança `token_reuse_detected` para a auditoria + alerta de gravidade alta via `authEventSink`
+- [ ] distinção honesta: reuso pode ser erro de cliente (proxy fazendo retry) — o 401 continua, e a resposta agressiva é **condicionável** (`AUTO_REVOKE_ON_REUSE`, default protocolo: revogar)
+- [ ] testes: refletir esse comportamento novo no `tests/e2e` e unit do `jwt-token-service`
+- [ ] atualizar README/SEGURANCA (contrato muda: reuso ≠ só 401)
 
-# 20. Meta de qualidade após essas fases
+**Definição de pronto:** um teste provando que dar um refresh já usado, com o
+usuário logado em outro device, derruba a sessão do device legítimo **e** o
+reuso em seguida dá 401 com outro código.
 
-Uma meta realista seria transformar o projeto de:
+## 5.2 Suite de sobrevivência a roubo de credenciais
 
-```text
-7,3/10
-```
+Uma suíte nova (`tests/security/credential-theft.survival.test.ts` + script) que
+encena o ataque contra a stack real e asserta que o **legítimo continua vivo**:
 
-para algo na faixa de:
+| Cenário | Ação | Assertiva |
+| --- | --- | --- |
+| T1 refresh roubado e usado | atacante usa o refresh do usuário legítimo | 401 reuso; **sessão revogada**; legítimo precisa relogin; alerta registrado |
+| T2 access roubado pós-troca de senha | legítimo troca senha; atacante usa access antigo | 401 (`sv` antigo); legítimo segue autenticado com o novo |
+| T3 refresh roubado pós-logout | legítimo faz logout; atacante usa refresh | 401 `REFRESH_TOKEN_INVALID`; nada aceito |
+| T4 pair roubado + uso simultâneo | legítimo e atacante disputam o mesmo refresh (concorrência) | um ganha (200), o outro 401 reuso; sessão revogada após decisão |
+| T5 senha vazada aplicada em outras contas | senha da conta A usada em B/C (carta de força de "credencial stuffing") | taxa de sucesso = baseline (não há como detectar igualdade de hash barata — registrar limite no leia-me; opcional: hash igual predito = relogin forçado) |
+| T6 simulação de comprometimento | "achou" que foi roubado: muda senha + logout all | todos os tokens mortos imediatamente (já coberto; refazer na suite de sobrevivência) |
 
-```text
-8,5+/10
-```
+- [ ] cada cenário roda **com Redis real** (compose isolado, como `test:infra`) e **também sem Redis** para medir o modo fail-closed
+- [ ] métricas de saída: tempo entre o primeiro uso do atacante e a detecção (≤ 1 rotação), e zero acesso do atacante a `/profile` depois da revogação
 
-sem adicionar grandes tecnologias novas.
+**Definição de pronto:** suite nova verde, documentada, e com 2 assertivas que
+quebram o build se a resposta automática for removida (mutation check).
 
-O salto viria de:
+## 5.3 Alerta e observabilidade do roubo
 
-```text
-menos promessa
-+ menos duplicação
-+ mais consistência
-+ controles críticos realmente fechados
-+ deployment real
-+ testes dos casos perigosos
-```
+- [ ] evento/risco "credenciais provavelmente comprometidas" no manifesto `/observability` e no sink
+- [ ] log estruturado com `auth_outcome=reused`, `auth_code=TOKEN_REUSE_DETECTED`
 
 ---
 
-# 21. Conclusão técnica
+# Fase 6 — sobrevivência a ataque DDoS
 
-O Micrologin **não é um projeto ruim e também não é apenas um CRUD maquiado**.
+## 6.1 Camadas de contenção (proxy → app → OS)
 
-Ele demonstra conhecimento de:
+- [ ] nginx: `limit_req` por IP na borda, `limit_conn`, `client_max_body_size`, `client_body_timeout`/`client_header_timeout`, `keepalive` tuning
+- [ ] app: limite de requisições em andamento (disjuntor), continuação do rate limit por IP/usuário/login (já existentes)
+- [ ] OS/container: `net.core.somaxconn`, `sysctl` documentados, limites de FD, `init` já presente (dumb-init)
+- [ ] `X-Forwarded-For` : com `TRUST_PROXY` correto, IP real do cliente alimenta o rate limit (hoje default `false` — em prod atrás do proxy será faixa do nginx)
 
-- TypeScript;
-- Express;
-- arquitetura hexagonal;
-- DI;
-- MongoDB;
-- Redis;
-- JWT;
-- bcrypt;
-- rate limiting;
-- Docker;
-- CI;
-- observabilidade;
-- testes E2E;
-- engenharia de segurança básica.
+## 6.2 Suite de sobrevivência DDoS
 
-O principal problema é outro: o projeto está em um estágio onde **corrigir inconsistências vale muito mais do que adicionar tecnologia**.
+Script novo estilo `test:infra` (`scripts/ddos-survival-test.sh` + compose
+isolado) que dispara e mede:
 
-A arquitetura já é suficientemente boa para crescer. O trabalho de maior valor agora é provar que os componentes existentes se comportam corretamente quando:
+| Ataque | Ferramenta | Assertiva |
+| --- | --- | --- |
+| A5 flood HTTP em /login, /refresh, /register | k6 (`k6/load-test.js` com cenário de sobrecarga) | p95 dentro do limite após rate limit engajar; 429s; **liveness 200 durante o ataque**; RestartCount 0 |
+| A4 força bruta distribuída (muitos IPs) | k6 com `X-Forwarded-For` variado atrás do proxy | limite global (Redis) segura: nº de tentativas aceitas ≤ baseline; sem vazamento via roll-over de IP |
+| A7 payload oversized / malformados | script HTTP com corpos 10MB+, JSON inválido em lote | 400/413, sem 5xx, sem pico de memória RSS, liveness 200 |
+| A6 slowloris | script Node de sockets parciais (sem dependência externa) | conexões morrem por timeout (proxy), app continua respondendo; sem esgotar FD |
+| A5 pós-ataque | após parar o ataque | serviço volta ao p50 baseline sozinho (auto-recuperação) |
 
-```text
-usuário envia dados estranhos
-Redis cai
-Mongo cai
-há concorrência
-há múltiplos workers
-há proxy
-há token revogado
-há refresh simultâneo
-há tentativa de enumeração
-há deployment quebrado
-```
+- [ ] k6: adicionar cenários de sobrescrita (override) além do corrente; thresholds de p95/erro por rota
+- [ ] assertivas duras no script (+ sample no CI remoto quando houver infra): `liveness==200`, `RestartCount==0`, `rate_limited>0`, `recovery p95 < baseline`
+- [ ] documentar limites operacionais atingidos (ex.: "sem proxy, 400VUs derrubam 1 worker; com proxy, aguenta 2s de rajada" etc.)
 
-Se essas situações forem cobertas, o projeto deixa de ser apenas um showcase de arquitetura e passa a ser uma demonstração muito mais forte de engenharia de software aplicada.
+**Definição de pronto:** script roda de ponta a ponta contra a imagem de
+produção, mostra o serviço segurando os 5 cenários (ou registra quais limites de
+capacidade foram os primeiros a ceder — e o porquê), e termina com o serviço
+saudável sem intervenção manual.
+
+## 6.3 O que NÃO é objetivo do teste DDoS
+
+- [ ] simular ataques de rede (SYN flood de verdade, UDP/amplificação): são da borda do provedor/CDN, não do serviço. Se entrar CDN, documentar.
+- [ ] prometer que o app sozinho segura botnet gigante: a contenção é em camadas; o teste mede **o serviço não ser o elo que cai primeiro**.
 
 ---
 
-## 22. Limitação da presente análise
+# Fase 7 — fechamento de portfólio
 
-O ZIP fornecido não contém o histórico `.git`, portanto não foi possível auditar o histórico de commits ou confirmar empiricamente o estado do GitHub a partir deste arquivo.
+- [ ] README: nova seção "Resiliência" com o que cada suite prova (backup restaured, escala, roubo de credenciais, DDoS) e como rodar (`test:backup`, `test:ddos`, `test:credential-theft`)
+- [ ] `docs/SEGURANCA.md`: decisões D15–D18 + threat model atualizado com os 7 ataques
+- [ ] `docs/ARQUITETURA.md`: diagrama com proxy, réplicas e + fluxo de backup/restore
+- [ ] CI: rodar as suítes novas no que couber (unit/survival sem derrubar serviço de verdade); `test:infra`/`test:ddos` documentados como provas locais/de host
+- [ ] validar `deploy.sh` + smoke + rollback com ES256 e com Redis/Mongo autenticados
 
-Também tentei instalar as dependências do projeto para executar a suíte localmente. A instalação de `node_modules` não terminou corretamente no ambiente de análise e as tentativas de `npm ci` excederam o tempo disponível. Por isso, os resultados executáveis aqui ficaram limitados a verificações estáticas, contagem de testes, sintaxe de shell/YAML/JSON e inspeção direta do código.
+---
 
-Isso significa que as afirmações sobre testes existentes são baseadas no conteúdo dos arquivos; não estou afirmando que a suíte completa foi executada com sucesso neste ambiente.
+## O que NÃO será implantado agora (escopo explícito)
+
+```text
+- Kubernetes (sobre complexidade que compose+nginx resolve)
+- OpenTelemetry/Kafka/RabbitMQ (continuam do lado do authEventSink, não do core)
+- CDN/WAF de provedor (se entrar, é camada externa documentada)
+- OAuth provider / SSO / captcha externo
+- service mesh / feature flags sofisticadas
+```
+
+## Meta de saída
+
+```text
+antes (v1):  7,3/10, "estudo com arquitetura de produção"
+depois (v2): criptografia assimétrica + backup restaurável + prova de escala
+             horizontal/vertical + 2 suítes de sobrevivência (roubo de
+             credenciais e DDoS), todas executadas de verdade
+```
+
+Tudo que este roadmap promete termina em **código e teste executados**, no
+mesmo padrão da v1: nada de caixa marcada sem artefato.
