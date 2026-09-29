@@ -223,8 +223,84 @@ processo que respondeu, e por isso ele é por processo.
 
 ---
 
+## 9. Projeção em hardware grande (120 núcleos / 120 GB)
+
+Seção **teórica**, por extrapolação a partir do que está medido em
+[`metricas.md`](metricas.md) num i5-7200U com 4 núcleos, 2.0 CPU de orçamento e
+1 GiB. Nenhum número aqui foi medido em máquina de 120 núcleos. O que muda é a
+conclusão, e ela é contraintuitiva.
+
+### O que escala e o que não escala
+
+Medido em 4 CPU: o throughput do hash satura por **núcleo** (22/s → 37/s de c=1
+para c=8, e c=32 não melhora), e `UV_THREADPOOL_SIZE` não interfere — o
+`@node-rs/argon2` usa pool próprio. Então:
+
+| Recurso | Comportamento ao crescer | Quem limita hoje |
+| --- | --- | --- |
+| Núcleos | escala ~linearmente até o limite de banda de memória | 2.0 CPU no compose |
+| RAM | **não melhora throughput**; só permite `m` maior, e `m` maior custa CPU | não é o gargalo |
+| `m` (memória por hash) | custo *linear em CPU* por hash | 64 MiB medido |
+| `t` (passadas) | custo *linear em CPU* por hash | 1, no mínimo |
+| `p` (paralelismo) | não dá ganho em servidor — divide o mesmo CPU | 1 |
+
+**A consequência central: num servidor de 120 núcleos, o `/login` deixa de ser
+limitado por CPU e o gargalo vira banda de memória.** Argon2id é memory-hard de
+propósito — cada hash varre `m` KiB muitas vezes. Com 120 hashers em paralelo, a
+soma é `120 × 64 MiB = 7.5 GB` varrendo a hierarquia de memória ao mesmo tempo.
+Enquanto a máquina tiver RAM para absorver (`mem_limit` por worker × workers),
+isso é rápido; quando o working set ultrapassa o que cabe em cache e o bandwidth
+satura, mais núcleos **não** compram throughput. O ponto de virada é bandwidth de
+memória, não contagem de núcleos.
+
+Estimativa de ordem de grandeza, assumindo o custo de 36 ms/hash medido em
+2.0 CPU e escalando por núcleo: `120 núcleos ÷ 36 ms ≈ 3.300 logins/s` de
+teto **antes** de o bandwidth virar limite. Com 2.0 CPU de orçamento em 4
+núcleos o serviço entregava ~22 logins/s, e a razão entre as duas estimativas
+(150x) é o número de núcleos, não uma nova medição.
+
+### O que teria que mudar no código
+
+Nada da segurança. Três coisas de operação, nesta ordem de impacto:
+
+1. **`cpus` do compose.** Continua em 2.0, então 118 dos 120 núcleos ficariam
+   ociosos. Subir para o número de núcleos desejado é a mudança de maior
+   retorno. Continua sendo decisão de disponibilidade: o resto da máquina
+   (Mongo, Redis, TLS) disputa o mesmo hardware.
+
+2. **`PM2_INSTANCES`.** O padrão é 4 workers (`ecosystem.config.cjs`), pensado
+   para 4 núcleos. Com 120 núcleos e 2.0 CPU de orçamento, 4 workers é
+   desperdício; o número de workers deve acompanhar o `cpus`, não o total de
+   núcleos. Cada worker tem seu próprio heap, seu próprio agregado de
+   `GET /observability` e sua própria memória de auditoria — a seção 8 mostra que
+   esse estado é **por worker**, então mais workers significa mais estado não
+   compartilhado, e é aí que a horizontalização cobra.
+
+3. **Teto de memória do hash (`ARGON2_MEMORY_BUDGET_KIB`).** Hoje é uma
+   constante de 768 MiB, derivada de `1 GiB de mem_limit − 256 MiB de folga`.
+   Com 120 GB ela é uma constante sem significado: não muda sozinha com o hardware e
+   a validação do arranque passaria a recusar configurações que caberiam folgadas
+   num servidor grande. Hoje ela **impede** de usar a RAM do servidor, que é
+   exatamente o recurso que o atacante não tem. Este é o ponto onde a decisão
+   `D16` precisaria ser reavaliada com medição no hardware real, e não
+   extrapolada: `m` maior só faz sentido se o objetivo declarado for resistir a
+   ataque de dicionário com GPU, e isso é escolha de política, não de throughput.
+
+### O que a aplicação faria, em uma frase
+
+Com 120 núcleos e 120 GB, e com `cpus`, `PM2_INSTANCES` e o teto de memória
+acompanhados, o serviço passaria de ~22 logins/s para uma casa de **milhares**,
+com p95 de login perto do custo de um hash isolado (~36 ms) em vez dos 78.7 ms
+medidos — porque a latência deixaria de ter fila de espera, que é onde ela
+nasce hoje. E mesmo assim, **manter `m=64MiB, t=1` continua sendo a escolha
+correta**: num servidor grande, memória ociosa não é problema, mas CPU por hash
+ainda é, e o atacante paga a mesma tabela de custos que o servidor. A RAM extra
+permitiria `m` maior, e essa é uma decisão de política de segurança a tomar com
+medição própria, não um efeito de ter comprado hardware.
+
 ## Onde está o resto
 
 - Decisões de segurança, threat model e riscos aceitos: [`SEGURANCA.md`](SEGURANCA.md)
 - Comportamento de revogação, modelo de sessão e política de senha: [`../README.md`](../README.md)
 - Guia do dashboard de segurança: [`DASHBOARD_SEGURANCA_GUIA.md`](DASHBOARD_SEGURANCA_GUIA.md)
+- Números medidos e extrapolação de hardware: [`metricas.md`](metricas.md)

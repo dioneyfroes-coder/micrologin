@@ -223,6 +223,40 @@ retenha além do argon2 compete com o hash. Com 64 MiB sobram ~33% de folga.
 só bater a OWASP com folga; entrega 2.4x de memória a p95 de 84.2 ms. Fica atrás
 porque 64 MiB entrega mais defesa **e** a mesma latência.
 
+### Como o hash escala com núcleos (medido em 4 CPU)
+
+Isto aqui é o dado que governa qualquer projeção para hardware grande, então
+foi medido em vez de assumido. Mede `hashes/s` com `c` chamadas concorrentes de
+`m=64MiB, t=1`, no mesmo container, variando só a concorrência:
+
+| concorrência | 4 CPU, pool default | 4 CPU, `UV_THREADPOOL_SIZE=24` |
+| --- | --- | --- |
+| c=1 | 22/s | 22/s |
+| c=4 | 35/s | 25/s |
+| c=8 | 37/s | 25/s |
+| c=16 | 31/s | 33/s |
+| c=32 | 36/s | 32/s |
+
+Três leituras, e a segunda é a que costuma ser assumida errada:
+
+**1. O hash é paralelizável no processo, e escala com núcleo.** A 4 CPU o
+throughput vai de 22/s para ~37/s e satura. Satura por **núcleo**, não por
+`UV_THREADPOOL_SIZE`: o `@node-rs/argon2` roda em pool próprio (tokio do Rust),
+não no threadpool do libuv, então `UV_THREADPOOL_SIZE=24` não muda nada —
+medido, não suposto. O número de threads de que o serviço pode dispor é o número
+de núcleos que o container recebe.
+
+**2. Mais concorrência não rende depois do número de núcleos.** c=32 em 4 CPU
+não é melhor que c=8; é o mesmo throughput com 4x a latência e 4x a memória de
+pico. Em `c=32` o p95 sobe e o total não muda. Consequência prática:
+aumentar concorrência acima do número de núcleos só compra fila.
+
+**3. O teto é memória, e por isso o `m` não escala com a máquina.** A 120 GB
+divididos por 4 workers dá 30 GB por worker, o que é espaço para `m` na casa
+das centenas de MiB — mas `m` maior custa *também* CPU por hash, e CPU é o que
+limita o login. Subir `m` aproveita RAM ociosa para tornar o login mais lento.
+Ver a projeção em [arquitetura](ARQUITETURA.md).
+
 ### Endpoint real com o parâmetro escolhido (m=64MiB, t=1)
 
 O benchmark isolado é o do hash. O número que decide é o do `/login`, medido no

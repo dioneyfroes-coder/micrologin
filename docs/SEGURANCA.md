@@ -351,6 +351,13 @@ a CPU da máquina, agora dividida com Mongo, Redis, Portainer e outro projeto. E
 servidor compartilhado, **quem decide é o número do endpoint, não o do benchmark
 isolado** — e ele dizia que o teto de memória nunca foi o limite do login.
 
+**Os parâmetros não sobem porque a máquina ficou maior.** A extrapolação para
+hardware grande está em [`ARQUITETURA.md`](ARQUITETURA.md#9-projeção-em-hardware-grande-120-núcleos--120-gb):
+120 núcleos e 120 GB não mudam o `m=64MiB, t=1`, porque o atacante paga a mesma
+tabela de custo que o servidor e RAM ociosa não vira CPU. O que a RAM extra
+permite é `m` maior, e isso é política de segurança, não throughput — precisa de
+medição própria no hardware alvo, não de extrapolação.
+
 **Alerta de memória passou a ser proporção.** O `/health` marcava `warning` acima
 de 200 MB fixos. Com o container em 1 GiB esse número dispararia durante o pico
 normal de logins e deixaria de significar alguma coisa. Agora o limite é lido do
