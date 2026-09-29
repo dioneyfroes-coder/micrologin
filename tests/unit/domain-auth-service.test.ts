@@ -250,3 +250,167 @@ describe('AuthService - DomainError na construção de credenciais', () => {
     }
   });
 });
+
+describe('AuthService - migração do hash no login', () => {
+  const tokenGenerator = () => ({
+    generateTokenPair: jest.fn().mockResolvedValue({
+      accessToken: 'at',
+      refreshToken: 'rt',
+      expiresIn: 900000,
+      type: 'Bearer'
+    })
+  });
+
+  it('reescreve o hash fora do padrão atual e devolve o login', async() => {
+    const logger = makeLogger();
+    const user = new User('u-1', 'alice', 'hash-bcrypt-antigo');
+    const userRepository = makeRepo({
+      findByUsername: jest.fn().mockResolvedValue(user),
+      save: jest.fn().mockImplementation(async(saved) => saved)
+    });
+    const crypto = {
+      hash: jest.fn().mockResolvedValue('$argon2id$v=19$m=19456,t=2,p=1$novo'),
+      compare: jest.fn().mockResolvedValue(true),
+      needsRehash: jest.fn().mockReturnValue(true)
+    };
+
+    const service = new AuthService(userRepository, crypto, tokenGenerator(), logger);
+    const result = await service.authenticateUser('alice', 'StrongPass123!');
+
+    expect(result.success).toBe(true);
+    expect(result.token.accessToken).toBe('at');
+    // A migração acontece depois de a senha ser provada, e com a senha em claro
+    // que o próprio usuário acabou de digitar.
+    expect(crypto.hash).toHaveBeenCalledWith('StrongPass123!');
+    expect(userRepository.save).toHaveBeenCalledTimes(1);
+    expect(user.hashedPassword).toBe('$argon2id$v=19$m=19456,t=2,p=1$novo');
+  });
+
+  it('não trata migração como troca de senha: histórico e data ficam intactos', async() => {
+    const logger = makeLogger();
+    const user = new User('u-1', 'alice', 'hash-bcrypt-antigo', new Date('2024-01-01'), new Date('2024-02-02'), ['antigo-1'], new Date('2024-03-03'));
+    const userRepository = makeRepo({
+      findByUsername: jest.fn().mockResolvedValue(user),
+      save: jest.fn().mockImplementation(async(saved) => saved)
+    });
+    const crypto = {
+      hash: jest.fn().mockResolvedValue('hash-novo'),
+      compare: jest.fn().mockResolvedValue(true),
+      needsRehash: jest.fn().mockReturnValue(true)
+    };
+
+    await new AuthService(userRepository, crypto, tokenGenerator(), logger)
+      .authenticateUser('alice', 'StrongPass123!');
+
+    // Se o hash antigo fosse para o histórico, a senha original voltaria a ser
+    // rejeitada depois da migração — e `passwordChangedAt` passaria a mentir
+    // sobre quando o usuário trocou a senha.
+    expect(user.passwordHistory).toEqual(['antigo-1']);
+    expect(user.passwordChangedAt).toEqual(new Date('2024-03-03'));
+    expect(user.updatedAt).toEqual(new Date('2024-02-02'));
+  });
+
+  it('mantém o login quando a escrita da migração falha', async() => {
+    const logger = makeLogger();
+    const user = new User('u-1', 'alice', 'hash-bcrypt-antigo');
+    const userRepository = makeRepo({
+      findByUsername: jest.fn().mockResolvedValue(user),
+      save: jest.fn().mockRejectedValue(new Error('mongo indisponível'))
+    });
+    const crypto = {
+      hash: jest.fn().mockResolvedValue('hash-novo'),
+      compare: jest.fn().mockResolvedValue(true),
+      needsRehash: jest.fn().mockReturnValue(true)
+    };
+
+    const service = new AuthService(userRepository, crypto, tokenGenerator(), logger);
+    const result = await service.authenticateUser('alice', 'StrongPass123!');
+
+    // O usuário provou a senha e o acesso é legítimo: uma falha de escrita não
+    // pode virar erro de autenticação. A migração volta no próximo login.
+    expect(result.success).toBe(true);
+    expect(result.token.accessToken).toBe('at');
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('Não foi possível migrar o hash'),
+      expect.objectContaining({ userId: 'u-1' })
+    );
+  });
+
+  it('não escreve nada quando o hash já está no padrão', async() => {
+    const logger = makeLogger();
+    const userRepository = makeRepo({
+      findByUsername: jest.fn().mockResolvedValue(new User('u-1', 'alice', 'hash-atual')),
+      save: jest.fn()
+    });
+    const crypto = {
+      hash: jest.fn(),
+      compare: jest.fn().mockResolvedValue(true),
+      needsRehash: jest.fn().mockReturnValue(false)
+    };
+
+    const result = await new AuthService(userRepository, crypto, tokenGenerator(), logger)
+      .authenticateUser('alice', 'StrongPass123!');
+
+    expect(result.success).toBe(true);
+    expect(userRepository.save).not.toHaveBeenCalled();
+  });
+
+  it('funciona com hasher que não sabe dizer quando reescrever', async() => {
+    // Os doubles que só sabem hash/compare continuam válidos: `needsRehash` é
+    // opcional justamente para não obrigar todo mundo a saber responder isso.
+    const logger = makeLogger();
+    const userRepository = makeRepo({
+      findByUsername: jest.fn().mockResolvedValue(new User('u-1', 'alice', 'hash-atual'))
+    });
+    const crypto = { compare: jest.fn().mockResolvedValue(true) };
+
+    const result = await new AuthService(userRepository, crypto, tokenGenerator(), logger)
+      .authenticateUser('alice', 'StrongPass123!');
+
+    expect(result.success).toBe(true);
+  });
+
+  it('não migra quando a senha está errada', async() => {
+    const logger = makeLogger();
+    const userRepository = makeRepo({
+      findByUsername: jest.fn().mockResolvedValue(new User('u-1', 'alice', 'hash-bcrypt-antigo'))
+    });
+    const crypto = {
+      hash: jest.fn(),
+      compare: jest.fn().mockResolvedValue(false),
+      needsRehash: jest.fn().mockReturnValue(true)
+    };
+
+    const result = await new AuthService(userRepository, crypto, tokenGenerator(), logger)
+      .authenticateUser('alice', 'StrongPass123!');
+
+    expect(result.success).toBe(false);
+    expect(crypto.hash).not.toHaveBeenCalled();
+  });
+});
+
+describe('AuthService - histórico indisponível na troca de senha', () => {
+  it('recusa com código de indisponibilidade quando o histórico não pode ser lido', async() => {
+    // Fail-open aqui significaria liberar troca de senha sem checar reuso — a
+    // resposta que o usuário quer, sem base para dar. 503 diz a verdade certa.
+    const logger = makeLogger();
+    const user = new User('u-1', 'alice', 'hash-atual', new Date(), new Date(), ['hash-antigo']);
+    const userRepository = makeRepo({ findById: jest.fn().mockResolvedValue(user) });
+    const crypto = {
+      // O hash atual não é o da senha nova; a falha vem do histórico.
+      compare: jest.fn()
+        .mockResolvedValueOnce(true)   // senha atual confere
+        .mockResolvedValueOnce(false)  // não é reuso do hash atual
+        .mockRejectedValueOnce(new Error('pepper ausente')),
+      hash: jest.fn()
+    };
+
+    const result = await new AuthService(userRepository, crypto, {}, logger)
+      .changePassword('u-1', 'StrongPass123!', 'Kf7#mQ2$vLp9!');
+
+    expect(result.success).toBe(false);
+    expect(result.code).toBe('PASSWORD_HISTORY_UNAVAILABLE');
+    expect(crypto.hash).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalled();
+  });
+});

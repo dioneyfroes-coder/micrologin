@@ -246,6 +246,81 @@ emissor aceita SEC1 também (é o mesmo par em outra embalagem, e convertê-lo v
 `node:crypto` não afrouxa nada); e um teste novo executa o script de verdade e
 assina com a chave que ele produziu — a costura que faltava.
 
+### D16 — argon2id (m=19MiB, t=2, p=1) com migração silenciosa a partir do bcrypt
+O hash de senha saiu de **bcrypt cost 12** para **argon2id** nos mínimos da
+[OWASP Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html).
+A escolha é do serviço, não do costume: a mesma máquina, no mesmo orçamento de
+produção (2.0 CPU, 512 MB), mediu **365.7 ms por hash de bcrypt 12 contra
+27.8 ms de argon2id 19MiB** — o bcrypt era 13x mais caro e ainda assim menos
+resistente, por não ser memory-hard. Medições completas em
+[`metricas.md`](metricas.md).
+
+*Recusado:* a configuração que o roadmap propunha (`m=64MiB, t=3, p=4`). Ela é
+**2.7x mais barata que o bcrypt 12 de hoje** (133.4 ms), então não é "mais
+forte que o que já rodava" em CPU — e 4 logins simultâneos pedem **326 MB de
+pico**, 64% do container e acima do limiar de 200 MB que o próprio `/health`
+usa para marcar `warning`. Trocaria latência de login por risco de OOM.
+*Recusado:* `p=4`. Dentro de 2.0 CPU derruba a latência de um hash (75 ms contra
+133 ms), mas consome 4 threads por requisição: dois logins simultâneos já
+ocupam o container. Os autores do Argon2 pedem `p=1` em servidor — `p>1` entrega
+CPU ao atacante sem ganhar defesa proporcional. `m=46MiB, t=1, p=1` (a segunda
+recomendação da OWASP) foi medida e fica em 208 MB com 4 logins: cabe, mas passa
+do limiar de alerta sem comprar defesa equivalente à de 19MiB/t=2.
+
+**Migração, sem trancar ninguém.** `compare` não recebe o algoritmo: ele lê o
+prefixo do hash guardado (`$argon2id$` ou `$2b$`) e despacha. O hash bcrypt já gravado
+continua verificável, e cada login bem-sucedido cujo hash esteja fora
+do padrão é **reescrito no mesmo instante** (`needsRehash` → `rehashPassword`).
+Sem tabela de migração, sem campo novo, sem pedir troca de senha.
+
+**Migrar não é trocar senha.** `rehashPassword` grava só o hash: não toca em
+`passwordHistory` nem em `passwordChangedAt`. Se o hash antigo fosse para o
+histórico, a senha original voltaria a ser rejeitada depois da migração; se
+`passwordChangedAt` mudasse, o sistema passaria a afirmar que o usuário trocou a
+senha quando não trocou. Há teste para os dois.
+
+**A migração não pode custar um login válido.** A reescrita é best-effort: se a
+escrita falhar, o login é entregue, o aviso vai para o log e a migração volta no
+próximo login. O usuário provou a senha; transformar falha de escrita em erro de
+autenticação seria devolver 500 para quem fez tudo certo.
+
+**Rollback:** `PASSWORD_HASH_ALGORITHM=bcrypt` volta a gravar bcrypt, e os
+hashes argon2id continuam verificáveis pelo mesmo `compare`. O caminho é
+simétrico e foi testado.
+
+**Um bug que só apareceu aqui:** o schema do Mongo validava o campo `password`
+com a política de senha em texto claro (12 a 72 caracteres). Com bcrypt (60
+caracteres) passava; o hash argon2id tem ~100 e era **recusado na gravação** —
+a migração virava 400 no registro. A política de senha vale para o que o usuário
+digita (domínio, `passwordPolicy.ts`); o campo do banco guarda hash e valida
+como hash. Corrigido com teste E2E que grava bcrypt no Mongo e prova a
+migração de ponta a ponta.
+
+### D17 — Pepper: mecanismo pronto, desligado por padrão
+O pepper (HMAC-SHA256 antes do hash) foi **medido** e **implementado**, mas
+**não vem ligado**. A decisão está no código — `PASSWORD_PEPPER` e
+`PASSWORD_PEPPER_PREVIOUS_VERSION` — e o padrão é desligado.
+
+*Por que desligar, se não custa nada:* a medição confirma que o pepper não tem
+custo mensurável (26.2 ms contra 27.8 ms; no bcrypt, diferença menor que a
+variação entre execuções). A discussão nunca foi de desempenho. É que o pepper
+só protege quando **hash e pepper não saem juntos** — e num serviço que guarda
+`passwordHistory`, pepper por hash, envelope versionado e rotação, ele amplia a
+superfície de operação (segredo a provisionar no KMS, versão a gravar, rotação a
+orquestrar) para uma defesa em profundidade que a OWASP descreve como
+"nenhuma característica de segurança adicional" quando usada sozinha. Ativar isso
+sem um KMS real e sem operação que sustente a rotação seria teatro de segurança.
+
+*O que fica pronto de verdade:* o envelope `p1:$argon2id$...` carrega a versão do
+pepper dentro do hash. Sem isso, "hash antigo" e "hash de outra versão" seriam a
+mesma coisa, e ativar ou rotacionar o pepper bloquearia todo mundo — o mesmo
+tipo de erro do incidente de provisionamento em D15. Com o envelope, ligar o
+pepper hoje é correto: hashes sem envelope continuam verificáveis (o `compare`
+tenta o pepper atual, o anterior e a senha em claro, nessa ordem) e são migrados
+no próximo login. **Versão de pepper cujo segredo não está configurado falha
+alto**, em vez de responder "senha incorreta" — mandar um usuário com senha certa
+para um reset que não resolve é pior que um erro.
+
 ---
 
 ## 7. O que este serviço não é
@@ -265,3 +340,4 @@ Cada item acima é um limite de escopo declarado, não um defeito escondido.
 - Fluxo de requisição e arquitetura: [`ARQUITETURA.md`](ARQUITETURA.md)
 - Política de revogação, sessão e senha: [`../README.md`](../README.md)
 - Dashboard de segurança: [`DASHBOARD_SEGURANCA_GUIA.md`](DASHBOARD_SEGURANCA_GUIA.md)
+- Custo medido de hash e latência de `/login`: [`metricas.md`](metricas.md)

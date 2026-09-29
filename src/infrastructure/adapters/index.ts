@@ -5,7 +5,9 @@
  * Podem ser facilmente trocados, configurados ou removidos.
  */
 
+import { Algorithm, hash as argon2Hash, verify as argon2Verify } from '@node-rs/argon2';
 import bcrypt from 'bcrypt';
+import { createHmac } from 'node:crypto';
 import type { CryptoService, Logger, UserRepository } from '../../domain/index.js';
 import { User } from '../../domain/index.js';
 import { normalizeUsername } from '../../shared/utils/usernamePolicy.js';
@@ -137,6 +139,11 @@ export class MongoUserAdapter implements UserRepository {
 /**
  * ADAPTER: Bcrypt Crypto
  * Implementa o CryptoPort
+ *
+ * Mantido para rollback imediato (`PASSWORD_HASH_ALGORITHM=bcrypt`) e como
+ * verificador do material legado: os hashes já gravados são `$2b$` e precisam
+ * continuar verificáveis durante a migração. Para gravar hash novo, use
+ * `PasswordHasher`.
  */
 export class BcryptAdapter implements CryptoService {
   private saltRounds: number;
@@ -181,6 +188,289 @@ export class ConsoleLoggerAdapter implements Logger {
 }
 
 /**
+ * Algoritmo de hash de senha em vigor.
+ *
+ * - `argon2id`: recomendado pela OWASP e memory-hard (D16). Padrão.
+ * - `bcrypt`: o que já estava em produção. Ainda grava e ainda verifica; é o
+ *   caminho de rollback e o lado verificador da migração.
+ */
+export type PasswordHashAlgorithm = 'argon2id' | 'bcrypt';
+
+/** Pepper em vigor, com a versão que fica gravada dentro do hash. */
+export interface PepperConfig {
+  /**
+   * Identificador gravado no hash (`p1$argon2id$...`). Precisa existir porque
+   * não há como distinguir "hash sem pepper" de "hash de outra versão do
+   * pepper" olhando só o valor: sem versão, ativar ou rotacionar o pepper
+   * bloquearia todos os usuários. Ver `D17`.
+   */
+  version: string;
+  secret: string;
+}
+
+export interface PasswordHasherOptions {
+  /** Algoritmo usado para gravar hash novo. Verificar é sempre automático. */
+  algorithm: PasswordHashAlgorithm;
+  argon2: {
+    /** Memória em KiB. 19456 = 19 MiB (mínimo da OWASP). */
+    memoryCost: number;
+    /** Passadas sobre a memória. */
+    timeCost: number;
+    /** Threads por hash. `1` em servidor: p>1 entrega CPU ao atacante. */
+    parallelism: number;
+  };
+  bcrypt: {
+    saltRounds: number;
+  };
+  /**
+   * Segredo externo aplicado antes do hash (HMAC-SHA256). Ausente = sem pepper.
+   *
+   * O pepper só protege se o hash *e* o pepper não saírem juntos: por isso ele
+   * vem de variável de ambiente/secret, nunca do banco. É defesa em profun-
+   * didade, não substitui senha forte.
+   */
+  pepper?: PepperConfig;
+  /**
+   * Pepper anterior, só para verificar hashes já gravados com ele. Permite
+   * trocar o pepper sem derrubar quem ainda não voltou a fazer login; cada
+   * login bem-sucedido reescreve o hash com o pepper atual (rotaçãoLazy).
+   */
+  previousPepper?: PepperConfig;
+}
+
+/** Prefixo que o argon2id grava (`$argon2id$v=19$...`). */
+const ARGON2ID_PREFIX = '$argon2id$';
+/** Prefixos do bcrypt, incluindo o `$2y$` legado de outras bibliotecas. */
+const BCRYPT_PREFIXES = ['$2a$', '$2b$', '$2y$'];
+/**
+ * Envelope do pepper: `p1:` antes do hash.
+ *
+ * O separador é `:` e não `$` porque todo hash válido (bcrypt e argon2id)
+ * começa com `$` e o argon2id não usa `:` em nenhum campo. Com `$` como
+ * separador, o resultado saía `p1$$argon2id$...`.
+ */
+const PEPPER_ENVELOPE_PATTERN = /^(p\d+):([\s\S]+)$/;
+
+/**
+ * ADAPTER: hashing de senha com migração entre algoritmos
+ *
+ * O valor gravado é opaco e carrega o próprio contexto:
+ *
+ * - `argon2id$v=19$m=19456,t=2,p=1$...` — sem pepper;
+ * - `p1:$argon2id$v=19$...` — com pepper na versão 1 (envelope).
+ *
+ * `compare` nunca recebe o algoritmo: ele lê o prefixo do hash guardado e
+ * despacha. É isso que deixa verificar material bcrypt antigo e, no mesmo
+ * caminho, material pepperado de uma versão anterior do pepper, sem campo extra
+ * no documento do usuário e sem tabela de migração.
+ */
+export class PasswordHasher implements CryptoService {
+  private readonly options: PasswordHasherOptions;
+
+  constructor(options: PasswordHasherOptions) {
+    this.options = options;
+
+    // Métodos são entregues já ligados à instância. O histórico de senha é
+    // comparado por uma função recebida de fora (`wasPasswordUsedBefore`), e
+    // um método solto perde o `this`: o `compare` explodiria dentro do try e o
+    // erro seria engolido, o que transformaria a checagem de reuso em
+    // "nunca reutilizada".
+    this.hash = this.hash.bind(this);
+    this.compare = this.compare.bind(this);
+    this.needsRehash = this.needsRehash.bind(this);
+  }
+
+  async hash(plainText: string): Promise<string> {
+    const pepper = this.options.pepper;
+    const toHash = pepper ? this.pepper(plainText, pepper.secret) : plainText;
+
+    if (this.options.algorithm === 'bcrypt') {
+      return this.envelope(await bcrypt.hash(toHash, this.options.bcrypt.saltRounds));
+    }
+
+    return this.envelope(
+      await argon2Hash(toHash, {
+        algorithm: Algorithm.Argon2id,
+        memoryCost: this.options.argon2.memoryCost,
+        timeCost: this.options.argon2.timeCost,
+        parallelism: this.options.argon2.parallelism
+      })
+    );
+  }
+
+  async compare(plainText: string, hash: string): Promise<boolean> {
+    const { value, pepperVersion } = this.unwrap(hash);
+
+    if (!this.isArgon2id(value) && !this.isBcrypt(value)) {
+      // Formato desconhecido não é "senha correta" e também não merece um 500:
+      // um hash que ninguém consegue ler é uma credencial que não confere.
+      logger.warn('Hash de senha em formato desconhecido; comparação negada', {
+        prefix: hash.slice(0, 7),
+        length: hash.length
+      });
+      return false;
+    }
+
+    for (const secret of this.pepperCandidates(pepperVersion)) {
+      const toCompare = secret === null ? plainText : this.pepper(plainText, secret);
+
+      const matches = this.isArgon2id(value)
+        ? await argon2Verify(value, toCompare)
+        : await bcrypt.compare(toCompare, value);
+
+      if (matches) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * O hash guardado está atrás do padrão atual?
+   *
+   * Três motivos, todos decididos pelo próprio valor gravado:
+   *
+   * 1. algoritmo diferente do em vigor (o caso da migração bcrypt → argon2id);
+   * 2. parâmetros mais fracos que os configurados — subir custo é uma mudança
+   *    de política que se aplica sozinha no próximo login de cada usuário;
+   * 3. pepper ausente ou de outra versão (ativação ou rotação).
+   */
+  needsRehash(hash: string): boolean {
+    const { value, pepperVersion } = this.unwrap(hash);
+    const current = this.options.pepper?.version;
+
+    if (current) {
+      if (pepperVersion !== current) {
+        return true;
+      }
+    } else if (pepperVersion) {
+      // Pepper desligado com hash pepperado: só um rehash sem pepper devolve
+      // o usuário ao estado em que o serviço consegue verificar sem segredo.
+      return true;
+    }
+
+    if (this.isBcrypt(value)) {
+      return true;
+    }
+
+    if (!this.isArgon2id(value)) {
+      return true;
+    }
+
+    return this.isWeakerArgon2(value);
+  }
+
+  /**
+   * O hash argon2id foi feito com menos memória ou menos passadas do que os
+   * parâmetros em vigor, ou com mais threads do que se quer gastar por hash.
+   *
+   * Só conta o que é mais fraco ou mais caro: parâmetros melhores que o
+   * configurado não são motivo para reescrever a senha a cada login.
+   */
+  private isWeakerArgon2(value: string): boolean {
+    const parsed = this.parseArgon2Params(value);
+    if (!parsed) {
+      return true;
+    }
+
+    const { memoryCost, timeCost, parallelism } = this.options.argon2;
+
+    if (parsed.memoryCost < memoryCost || parsed.timeCost < timeCost) {
+      return true;
+    }
+
+    return parsed.parallelism > Math.max(1, parallelism);
+  }
+
+  private parseArgon2Params(
+    value: string
+  ): { memoryCost: number; timeCost: number; parallelism: number } | null {
+    const match = /^\$argon2id\$v=\d+\$m=(\d+),t=(\d+),p=(\d+)\$/.exec(value);
+    if (!match) {
+      return null;
+    }
+
+    return {
+      memoryCost: Number(match[1]),
+      timeCost: Number(match[2]),
+      parallelism: Number(match[3])
+    };
+  }
+
+  private isArgon2id(value: string): boolean {
+    return value.startsWith(ARGON2ID_PREFIX);
+  }
+
+  private isBcrypt(value: string): boolean {
+    return BCRYPT_PREFIXES.some((prefix) => value.startsWith(prefix));
+  }
+
+  /**
+   * Quais segredos testar, em ordem, para este hash.
+   *
+   * Com envelope (`p1$...`) o segredo é o daquela versão — um só candidato. Sem
+   * envelope, são tentados o pepper atual, o anterior e a senha em claro, nessa
+   * ordem: é o que cobre o intervalo entre ativar/rotacionar o pepper e cada
+   * usuário voltar a fazer login. `null` significa "sem pepper".
+   */
+  private pepperCandidates(pepperVersion: string | undefined): (string | null)[] {
+    if (pepperVersion) {
+      if (this.options.pepper?.version === pepperVersion) {
+        return [this.options.pepper.secret];
+      }
+
+      if (this.options.previousPepper?.version === pepperVersion) {
+        return [this.options.previousPepper.secret];
+      }
+
+      // Hash pepperado numa versão cujo segredo não está mais configurado. Não
+      // dá para verificar, e dizer "senha incorreta" mandaria o usuário para
+      // um reset de senha que não resolve nada. Falhar alto é o honesto.
+      throw new Error(
+        `Versão de pepper desconhecida (${pepperVersion}): defina PASSWORD_PEPPER_PREVIOUS_VERSION ` +
+          'com o segredo anterior para verificar os hashes já gravados'
+      );
+    }
+
+    const candidates: (string | null)[] = [];
+    if (this.options.pepper) {
+      candidates.push(this.options.pepper.secret);
+    }
+    if (this.options.previousPepper) {
+      candidates.push(this.options.previousPepper.secret);
+    }
+    candidates.push(null);
+
+    return candidates;
+  }
+
+  /**
+   * Abre o envelope do pepper: qual versão foi usada e qual é o hash de verdade.
+   */
+  private unwrap(hash: string): { value: string; pepperVersion: string | undefined } {
+    const match = PEPPER_ENVELOPE_PATTERN.exec(hash);
+
+    if (match) {
+      return { value: match[2], pepperVersion: match[1] };
+    }
+
+    return { value: hash, pepperVersion: undefined };
+  }
+
+  private envelope(hash: string): string {
+    const version = this.options.pepper?.version;
+    return version ? `${version}:${hash}` : hash;
+  }
+
+  private pepper(plainText: string, secret: string): string {
+    // Base64 e não hex: o valor só volta a entrar no bcrypt/argon2, que aceitam
+    // bytes, e base64 não ocupa mais espaço que hex com os mesmos 32 bytes.
+    return createHmac('sha256', secret).update(plainText, 'utf8').digest('base64');
+  }
+}
+
+/**
  * FACTORY: Adapter Factory para Injeção de Dependência
  */
 export class AdapterFactory {
@@ -192,12 +482,22 @@ export class AdapterFactory {
     return new BcryptAdapter(saltRounds);
   }
 
-  static createCryptoService(type = 'bcrypt', options: { saltRounds?: number } = {}): BcryptAdapter {
-    if (type !== 'bcrypt') {
+  /**
+   * Hasher de senha em uso. Grava no algoritmo configurado e verifica qualquer
+   * formato legado que ainda esteja no banco (ver `D16`).
+   */
+  static createCryptoService(type = 'bcrypt', options: Partial<PasswordHasherOptions> = {}): CryptoService {
+    if (type !== 'argon2id' && type !== 'bcrypt') {
       throw new Error(`Tipo de cryptoService não suportado: ${type}`);
     }
 
-    return new BcryptAdapter(options.saltRounds || 12);
+    return new PasswordHasher({
+      algorithm: type,
+      argon2: options.argon2 ?? { memoryCost: 19456, timeCost: 2, parallelism: 1 },
+      bcrypt: options.bcrypt ?? { saltRounds: 12 },
+      pepper: options.pepper,
+      previousPepper: options.previousPepper
+    });
   }
 
   static createLogger(): ConsoleLoggerAdapter {

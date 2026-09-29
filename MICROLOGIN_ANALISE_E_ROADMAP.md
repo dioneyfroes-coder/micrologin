@@ -118,19 +118,41 @@ aparece com mensagem e stack.
 
 ## 1.2 Decisão de hash de senha: argon2id vs bcrypt raisado
 
-**Status: pendente.** bcrypt cost 12 já é decente, mas OWASP 2024 recomenda
-**argon2id**. Hashing é ativo no caminho de login/registro — a decisão precisa
-medir custo em máquina real, não só ler tabela.
+**Status: concluída.** Decidido por medição no mesmo orçamento de produção
+(2.0 CPU, 512 MB): `D16` e `D17` em `docs/SEGURANCA.md`, números completos em
+`docs/metricas.md`.
 
-- [ ] benchmark: bcrypt(cost 12) vs argon2id (m=64MiB, t=3, p=4) vs argon2id (16MiB/1/1) — tempo por hash e p95 no /login atual
-- [ ] decisão `D16` em `docs/SEGURANCA.md`: manter bcrypt **ou** migrar argon2id
-- [ ] se migrar: migration de hashes existentes (verificação bcrypt primeiro, rehash argon2id no próximo login), com `PASSWORD_POLICY`
-- [ ] avaliar **pepper** (HMAC-SHA256 antes do hash) `D17` — custo de operação vs ganho, sob KMS
-- [ ] manter limites: senha opaca, máximo em bytes, histórico 5
+- [x] benchmark: bcrypt(cost 12/13) vs argon2id em três pontos da escada OWASP
+      vs `m=64MiB, t=3, p=4` do roadmap — tempo por hash, verify, RSS de pico
+      e concorrência (`scripts/benchmark-password-hash.mjs`, `npm run bench:hash`)
+- [x] p95 de `/login` real antes e depois (`scripts/measure-login-latency.mjs`,
+      `npm run bench:login`), porque o benchmark de hash não é o endpoint
+- [x] decisão `D16`: **argon2id m=19MiB, t=2, p=1** com migração silenciosa
+- [x] migração sem quebrar usuários: verificação por prefixo do hash guardado,
+      rehash no próximo login, escrita best-effort (`PASSWORD_HASH_ALGORITHM=bcrypt`
+      como rollback)
+- [x] avaliar **pepper** `D17`: mecanismo pronto (envelope versionado `p1:$...`,
+      rotação com `PASSWORD_PEPPER_PREVIOUS`), **desligado por padrão**
+- [x] manter limites: senha opaca, máximo em bytes, histórico 5 (intactos)
+
+**O que a medição mudou em relação ao plano:** o `m=64MiB, t=3, p=4` sugerido
+aqui é **2.7x mais barato** que o bcrypt 12 que já rodava (133.4 ms contra
+365.7 ms) e pede **326 MB de pico** com 4 logins simultâneos — 64% do container.
+O bcrypt 12 era 13x mais caro que o argon2id da OWASP e menos resistente, por
+não ser memory-hard. Resultado no `/login` real: p95 de **491 ms → 45.4 ms** em
+c=1 e **1868 ms → 191 ms** em c=8, com 2.5 → 29.1 logins/s.
 
 **Definição de pronto:** decisão D16/D17 registradas com dado medido (não por
 palpite); migração sem quebrar usuários existentes (login antigo continua
-funcionando até rehash).
+funcionando até rehash). — **cumprida: 496 unit + 38 integração + 15 E2E
+(incluindo migração bcrypt→argon2id com Mongo real) + `test:infra` 10/10, todos
+verde.**
+
+**Correção que a migração exigiu:** o schema do Mongo validava o campo
+`password` com a política de senha em texto claro (12–72 caracteres). Com bcrypt
+(60) passava; argon2id (~100) era recusado na gravação, e o registro devolvia
+400. A política vale para o que o usuário digita; o campo do banco guarda hash e
+passa a validar como hash.
 
 ## 1.3 Credenciais em repouso das dependências
 

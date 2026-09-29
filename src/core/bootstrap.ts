@@ -7,6 +7,7 @@ import { AuthWebMiddleware } from '../application/middleware/AuthMiddleware.js';
 import { JWTTokenService } from '../infrastructure/external-services/jwtTokenService.js';
 import {
   securityConfig,
+  pepperConfigFor,
   validateConfiguration
 } from '../interfaces/config/appConfig.js';
 
@@ -23,9 +24,18 @@ export function bootstrapServices() {
 
   // Registrar adapters com configurações explícitas
   container.register('userRepository', () => adapterFactory.createUserRepository());
-  container.register('cryptoService', () => adapterFactory.createCryptoService('bcrypt', {
-    saltRounds: securityConfig.bcrypt.saltRounds
-  }));
+  // O hasher grava no algoritmo configurado (argon2id por padrão, D16) e
+  // verifica qualquer formato legado pelo prefixo do hash, então a migração
+  // acontece sem interromper quem ainda não voltou a fazer login.
+  container.register('cryptoService', () => adapterFactory.createCryptoService(
+    securityConfig.passwordHash.algorithm,
+    {
+      argon2: securityConfig.passwordHash.argon2,
+      bcrypt: securityConfig.bcrypt,
+      pepper: pepperConfigFor(securityConfig.passwordHash.pepper),
+      previousPepper: pepperConfigFor(securityConfig.passwordHash.previousPepper)
+    }
+  ));
 
   // ✅ NOVO: Usar JWTTokenService com suporte a refresh token
   // O Redis é injetado após a inicialização da conexão (app.js)

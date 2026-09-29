@@ -1,5 +1,3 @@
-import { logger } from './logger.js';
-
 /**
  * @fileoverview Política de senha - fonte única da verdade
  *
@@ -222,20 +220,29 @@ export function isCommonPassword(password: string): boolean {
   return COMMON_PASSWORDS.some(common => normalized.includes(common));
 }
 
-export type BcryptCompareFn = (plain: string, hash: string) => Promise<boolean>;
+/**
+ * Compara senha em claro contra um hash guardado, sem conhecer o algoritmo.
+ *
+ * Só o contrato importa aqui: quem chama precisa conseguir responder sem saber
+ * se o hash é bcrypt, argon2id ou pepperado, e sem depender de `this` (daí o
+ * `compare` do adapter ser entregue ligado à instância).
+ */
+export type PasswordCompareFn = (plain: string, hash: string) => Promise<boolean>;
 
 /**
  * A senha já foi usada antes?
  *
  * @param currentPassword - Senha sendo cadastrada agora
  * @param passwordHistory - Hashes anteriores (limite: PASSWORD_HISTORY_LIMIT)
- * @param bcryptCompare - Função de comparação
+ * @param compareHash - Função de comparação
  * @returns true se a senha consta no histórico
+ * @throws se a comparação falhar, para não responder "não usou antes" quando
+ *         a resposta é na verdade "não deu para saber"
  */
 export async function wasPasswordUsedBefore(
   currentPassword: string,
   passwordHistory: string[] | null | undefined,
-  bcryptCompare: BcryptCompareFn
+  compareHash: PasswordCompareFn
 ): Promise<boolean> {
   if (!passwordHistory || passwordHistory.length === 0) {
     return false;
@@ -245,13 +252,11 @@ export async function wasPasswordUsedBefore(
   const recent = passwordHistory.slice(-PASSWORD_HISTORY_LIMIT);
 
   for (const oldPasswordHash of recent) {
-    try {
-      const isMatch = await bcryptCompare(currentPassword, oldPasswordHash);
-      if (isMatch) {
-        return true;
-      }
-    } catch (error) {
-      logger.error('Erro ao comparar histórico de senha', error);
+    // Sem try/catch: quem engole aqui converte uma falha de comparação em
+    // "senha nunca usada", que é a resposta que o usuário quer e que a política
+    // não pode dar por acidente.
+    if (await compareHash(currentPassword, oldPasswordHash)) {
+      return true;
     }
   }
 

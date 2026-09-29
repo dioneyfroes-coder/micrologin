@@ -31,9 +31,14 @@ const UserSchema = new Schema<IUser>(
     password: {
       type: String,
       required: true,
-      minlength: [12, 'Senha deve ter pelo menos 12 caracteres (política de segurança)'],
-      // Limite do bcrypt: acima de 72 bytes o restante seria ignorado pelo hash
-      maxlength: [72, 'Senha não pode exceder 72 caracteres (limite do bcrypt)']
+      // O campo guarda um HASH, não a senha. A política de senha em texto claro
+      // (12 a 72 bytes) é do domínio, em `passwordPolicy.ts`, e vale para o que
+      // o usuário digita — repeti-la aqui validava o hash como se fosse senha.
+      // Com bcrypt (60 caracteres) isso passava despercebido; o hash argon2id
+      // tem cerca de 100 e era recusado na gravação, o que transformava a
+      // migração em erro 400 no registro.
+      minlength: [32, 'Hash de senha inválido'],
+      maxlength: [255, 'Hash de senha inválido']
     },
     // Rastreamento de alteração de senha
     passwordChangedAt: {

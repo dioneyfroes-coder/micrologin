@@ -98,7 +98,11 @@ const OUTCOME_BY_CODE: Readonly<Record<AuthEventKind, Readonly<Record<string, Au
     INVALID_PASSWORD: 'rejected',
     PASSWORD_TOO_COMMON: 'rejected',
     PASSWORD_REUSED: 'rejected',
-    USER_NOT_FOUND: 'rejected'
+    USER_NOT_FOUND: 'rejected',
+    // Não deu para consultar o histórico (comparação de hash falhou). Não é
+    // 'rejected': recusar por política contra um usuário que não fez nada de
+    // errado esconde um defeito de infraestrutura.
+    PASSWORD_HISTORY_UNAVAILABLE: 'unavailable'
   }
 };
 

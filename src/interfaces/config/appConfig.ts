@@ -183,6 +183,73 @@ const readPem = (name: string): string | undefined => {
   return undefined;
 };
 
+/**
+ * Pepper lido do ambiente: segredo + versão, ou o motivo da recusa.
+ *
+ * A forma é a que `PasswordHasher` consome (tipagem estrutural), declarada aqui
+ * para a config não depender da camada de infraestrutura. O `ok: false` existe
+ * para que uma configuração inválida vire erro de arranque reportado, e não
+ * exceção no import.
+ */
+type PepperEnvConfig =
+  | { ok: true; version: string; secret: string }
+  | { ok: false; error: string };
+
+/**
+ * Lê um pepper: segredo + versão que fica gravada dentro do hash.
+ *
+ * Diferente da chave PEM, o segredo é lido cru — pepper é bytes, não um
+ * documento. O caminho (`<NOME>_PATH`) existe pelo mesmo motivo da chave
+ * privada: em produção o segredo vem montado como secret do Docker, e
+ * `docker inspect` não deveria mostrar nada que valha.
+ *
+ * Erro de configuração NÃO é lançado aqui: este módulo é importado no topo da
+ * árvore e uma exceção nessa hora morre fora do `validateConfiguration`, que é
+ * onde as demais validações são reportadas. O problema volta como `ok: false`
+ * e o arranque recusa com a lista completa.
+ */
+const readPepper = (name: string, versionName: string, defaultVersion?: string): PepperEnvConfig | undefined => {
+  const raw = process.env[name];
+  const path = process.env[`${name}_PATH`];
+
+  let secret: string | undefined;
+  if (raw) {
+    secret = raw;
+  } else if (path) {
+    try {
+      secret = readFileSync(path, 'utf8');
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const cause = code === 'ENOENT'
+        ? 'arquivo não encontrado'
+        : code === 'EACCES'
+          ? 'sem permissão de leitura'
+          : code || 'falha desconhecida';
+      logger.error(`Falha ao ler o segredo em ${name}_PATH: ${path} — ${cause}`);
+      return { ok: false, error: `${name}_PATH não pôde ser lido: ${cause}` };
+    }
+  }
+
+  if (!secret || !secret.trim()) {
+    return undefined;
+  }
+
+  const version = process.env[versionName]?.trim() || defaultVersion;
+  if (!version) {
+    return {
+      ok: false,
+      error: `${name} está configurado mas ${versionName} não: a versão do pepper é o que ` +
+        'permite verificar hashes antigos depois de uma rotação'
+    };
+  }
+
+  if (!/^p\d+$/.test(version)) {
+    return { ok: false, error: `${versionName}="${version}" é inválido: use o formato pN (ex.: p1)` };
+  }
+
+  return { ok: true, version, secret: secret.trim() };
+};
+
 export const securityConfig = {
   jwt: {
     algorithm: jwtAlgorithm,
@@ -215,6 +282,41 @@ export const securityConfig = {
       : sessionFailOpenEnv === 'true'
   },
 
+  /**
+   * Hash de senha (D16).
+   *
+   * `algorithm` decide o que é *gravado*; a verificação é sempre automática pelo
+   * formato do hash guardado, então trocar o valor aqui migra a base sem
+   * ninguém ser trancado fora — cada usuário é reescrito no próximo login.
+   * `bcrypt` continua aceito como rollback imediato.
+   *
+   * Os padrões do argon2id são os mínimos da OWASP (m=19MiB, t=2, p=1) e foram
+   * escolhidos por medição: 4 logins simultâneos ficam em 146 MB de pico, dentro
+   * do container de 512 MB. Ver `docs/metricas.md`.
+   */
+  passwordHash: {
+    algorithm: (process.env.PASSWORD_HASH_ALGORITHM || 'argon2id') as 'argon2id' | 'bcrypt',
+    argon2: {
+      // KiB. 19456 = 19 MiB.
+      memoryCost: parseEnvNumber(process.env.ARGON2_MEMORY_COST, 19456),
+      timeCost: parseEnvNumber(process.env.ARGON2_TIME_COST, 2),
+      parallelism: parseEnvNumber(process.env.ARGON2_PARALLELISM, 1)
+    },
+    /**
+     * Pepper (HMAC-SHA256 antes do hash). Desligado por padrão: só protege se
+     * pepper e hash não saírem juntos, e o ganho é defesa em profundidade. Ver
+     * `D17` em `docs/SEGURANCA.md`.
+     */
+    pepper: readPepper('PASSWORD_PEPPER', 'PASSWORD_PEPPER_VERSION', 'p1'),
+    /**
+     * Pepper anterior, para verificar hashes já gravados durante uma rotação.
+     * Quem não voltar a fazer login não pode ser derrubado por uma rotação.
+     */
+    previousPepper: readPepper('PASSWORD_PEPPER_PREVIOUS', 'PASSWORD_PEPPER_PREVIOUS_VERSION')
+  },
+
+  // Mantido porque o caminho de rollback e o verificador do material legado
+  // ainda usam bcrypt. some após a migração terminar.
   bcrypt: {
     saltRounds: parseEnvNumber(process.env.BCRYPT_SALT_ROUNDS, 12)
   },
@@ -320,6 +422,54 @@ export function validateConfiguration(): boolean {
     }
   }
 
+  // --- Hash de senha -----------------------------------------------------------
+  // Uma configuração errada aqui não degrada a proteção, ela a remove: custo
+  // zero de argon2 (m=0) ou `p` alto transformam o hash em algotrivial de
+  // quebrar. Por isso os limites são recusados na largada, não avisados.
+  const passwordHash = securityConfig.passwordHash;
+
+  if (!['argon2id', 'bcrypt'].includes(passwordHash.algorithm)) {
+    errors.push(
+      `PASSWORD_HASH_ALGORITHM deve ser argon2id ou bcrypt (recebido: ${passwordHash.algorithm})`
+    );
+  }
+
+  if (passwordHash.algorithm === 'argon2id') {
+    const { memoryCost, timeCost, parallelism } = passwordHash.argon2;
+
+    if (memoryCost < 8192) {
+      errors.push('ARGON2_MEMORY_COST deve ser pelo menos 8192 KiB (8 MiB): abaixo disso o hash não é memory-hard');
+    }
+    if (timeCost < 1) {
+      errors.push('ARGON2_TIME_COST deve ser pelo menos 1');
+    }
+    if (parallelism < 1) {
+      errors.push('ARGON2_PARALLELISM deve ser pelo menos 1');
+    }
+    // 4 logins simultâneos a 128 MiB passam de 640 MB e matam o container de
+    // 512 MB. O teto é a memória do serviço, não um dogma de parâmetro.
+    if (memoryCost * Math.max(4, parallelism) > 131072) {
+      errors.push(
+        `ARGON2_MEMORY_COST/ARGON2_PARALLELISM altos demais: ${Math.max(4, parallelism)} logins ` +
+        `simultâneos pediriam ${(memoryCost * Math.max(4, parallelism) / 1024).toFixed(0)} MiB, ` +
+        'acima do que o container de 512 MB comporta (veja docs/metricas.md)'
+      );
+    }
+  }
+
+  if (securityConfig.bcrypt.saltRounds < 10) {
+    errors.push('BCRYPT_SALT_ROUNDS deve ser pelo menos 10');
+  }
+
+  // Pepper mal configurado impede a verificação dos hashes já gravados. Recusar
+  // no arranque é melhor do que descobrir isso no primeiro login de um usuário
+  // que não mudou de senha — e cujo hash pepperado ninguém consegue ler.
+  for (const pepper of [passwordHash.pepper, passwordHash.previousPepper]) {
+    if (pepper && !pepper.ok) {
+      errors.push(pepper.error);
+    }
+  }
+
   // Validações obrigatórias
   if (environmentConfig.isProduction && !securityConfig.dashboardToken) {
     errors.push('SECURITY_DASHBOARD_TOKEN é obrigatório em produção');
@@ -352,6 +502,19 @@ export function validateConfiguration(): boolean {
   }
 
   return true;
+}
+
+/**
+ * Pepper pronto para o adapter, ou `undefined` se não houver.
+ *
+ * A extração acontece aqui porque a validação de formato já ocorreu na leitura
+ * (D17): o `validateConfiguration` recusa o arranque antes de este valor ser
+ * usado, então o que sobra é sempre `{ version, secret }` ou nada.
+ */
+export function pepperConfigFor(
+  value: ReturnType<typeof readPepper>
+): { version: string; secret: string } | undefined {
+  return value && value.ok ? { version: value.version, secret: value.secret } : undefined;
 }
 
 /**
@@ -397,6 +560,12 @@ export function getConfigSummary() {
         es256: securityConfig.jwt.algorithm === 'ES256'
       },
       dashboardTokenConfigured: Boolean(securityConfig.dashboardToken),
+      passwordHash: {
+        algorithm: securityConfig.passwordHash.algorithm,
+        argon2: securityConfig.passwordHash.argon2,
+        pepperConfigured: Boolean(securityConfig.passwordHash.pepper),
+        previousPepperConfigured: Boolean(securityConfig.passwordHash.previousPepper)
+      },
       bcrypt: securityConfig.bcrypt.saltRounds
     },
     session: {

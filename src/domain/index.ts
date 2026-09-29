@@ -69,10 +69,20 @@ export interface UserRepository {
 
 /**
  * Porta de criptografia (CryptoPort)
+ *
+ * `needsRehash` é opcional de propósito: quem só sabe `hash` e `compare` (os
+ * doubles de teste, o console) continua válido, e o login só migra hash quando
+ * o adapter sabe dizer que o hash guardado ficou atrás do padrão atual.
  */
 export interface CryptoService {
   hash(plainText: string): Promise<string>;
   compare(plainText: string, hash: string): Promise<boolean>;
+  /**
+   * O hash guardado foi produzido com outro algoritmo, outros parâmetros ou
+   * outra versão de pepper, e portanto deveria ser reescrito agora que a senha
+   * em claro está disponível (foi provada no login).
+   */
+  needsRehash?(hash: string): boolean;
 }
 
 /**
@@ -194,6 +204,27 @@ export class User {
     this.hashedPassword = newHashedPassword;
     this.passwordChangedAt = new Date();
     this.updatedAt = this.passwordChangedAt;
+  }
+
+  /**
+   * Reescreve apenas o hash, sem tocar em `passwordHistory` nem em
+   * `passwordChangedAt`.
+   *
+   * Migrar de algoritmo não é troca de senha: o usuário não trocou nada, e a
+   * senha que ele conhece é a mesma. Se o hash antigo fosse para o histórico,
+   * uma senha antiga voltaria a ser rejeitada depois da migração; se
+   * `passwordChangedAt` fosse atualizado, o sistema passaria a afirmar que a
+   * senha mudou quando ela não mudou. `updatedAt` também fica: o perfil do
+   * usuário não mudou.
+   *
+   * @param newHashedPassword - Hash no padrão atual
+   */
+  rehashPassword(newHashedPassword: string): void {
+    if (!newHashedPassword) {
+      throw new DomainError('INVALID_PASSWORD', 'Senha é obrigatória');
+    }
+
+    this.hashedPassword = newHashedPassword;
   }
 
   isValidUsername(username: string): boolean {
@@ -389,6 +420,14 @@ export class AuthService {
         return AuthResult.failure('Senha incorreta');
       }
 
+      // Migração transparente: o hash guardado pode ter sido feito com outro
+      // algoritmo, outros parâmetros ou outra versão de pepper. Este é o único
+      // momento em que a senha em claro está disponível de novo, então é aqui
+      // que ela é reescrita — sem esperar um pedido de troca de senha.
+      if (this.crypto.needsRehash?.(user.hashedPassword)) {
+        await this.migrateHash(user, credentials.plainPassword);
+      }
+
       // Gerar token
       const tokens = await this.tokenGenerator.generateTokenPair({
         id: user.id as string,
@@ -405,6 +444,32 @@ export class AuthService {
         domainFailureMessage(error, 'Não foi possível autenticar o usuário'),
         (error as { code?: string }).code ?? null
       );
+    }
+  }
+
+  /**
+   * Reescreve o hash do usuário no padrão atual, best-effort.
+   *
+   * Falhar aqui não pode transformar um login válido em erro: o usuário provou
+   * a senha, o acesso é legítimo, e o hash antigo continua verificável. A
+   * migração volta a ser tentada no próximo login.
+   */
+  private async migrateHash(user: User, plainPassword: string): Promise<void> {
+    try {
+      const rehashed = await this.crypto.hash(plainPassword);
+      user.rehashPassword(rehashed);
+      await this.userRepository.save(user);
+
+      this.logger.info('Hash de senha migrado para o padrão atual', {
+        userId: user.id,
+        username: user.username
+      });
+    } catch (error) {
+      this.logger.warn('Não foi possível migrar o hash de senha; login mantido', {
+        userId: user.id,
+        username: user.username,
+        error: (error as Error).message
+      });
     }
   }
 
@@ -518,7 +583,27 @@ export class AuthService {
 
       // Reuso da senha atual ou de qualquer senha do histórico
       const reusedCurrent = await this.crypto.compare(newPassword, user.hashedPassword);
-      const reusedHistory = await wasPasswordUsedBefore(newPassword, user.passwordHistory, this.crypto.compare);
+      // Arrow, não o método solto: quem recebe a função precisa continuar
+      // vendo o `this` do serviço de criptografia.
+      let reusedHistory: boolean;
+      try {
+        reusedHistory = await wasPasswordUsedBefore(
+          newPassword,
+          user.passwordHistory,
+          (plain, stored) => this.crypto.compare(plain, stored)
+        );
+      } catch (error) {
+        // A pergunta "esta senha já foi usada?" ficou sem resposta. Deixar
+        // passar é escolher fail-open numa checagem de segurança: o usuário
+        // troca a senha e o histórico deixa de valer. Recusar com 503 diz a
+        // verdade certa — não foi o usuário que errou, e dá para repetir.
+        this.logger.error('Falha ao consultar o histórico de senha', error);
+        return {
+          success: false,
+          error: 'Não foi possível verificar o histórico de senhas agora',
+          code: 'PASSWORD_HISTORY_UNAVAILABLE'
+        };
+      }
       if (reusedCurrent || reusedHistory) {
         return { success: false, error: 'A nova senha não pode ser uma senha já utilizada', code: 'PASSWORD_REUSED' };
       }

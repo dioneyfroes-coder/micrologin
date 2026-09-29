@@ -302,7 +302,14 @@ export class AuthWebController {
         return;
       }
 
-      const statusCode = result.code === 'CURRENT_PASSWORD_INVALID' ? 401 : 400;
+      // 401 = a senha que ele disse estar usando está errada; 503 = o serviço
+      // não conseguiu responder, e o cliente precisa poder repetir. Um 400 aqui
+      // faria o usuário acreditar que a senha nova era o problema.
+      const statusCode = result.code === 'CURRENT_PASSWORD_INVALID'
+        ? 401
+        : result.code === 'PASSWORD_HISTORY_UNAVAILABLE'
+          ? 503
+          : 400;
       next(new HttpError(statusCode, result.code || 'PASSWORD_CHANGE_FAILED', result.error || 'Falha ao alterar a senha'));
 
     } catch (error) {

@@ -160,16 +160,36 @@ describe('wasPasswordUsedBefore - histórico de senhas', () => {
     expect(compare).toHaveBeenCalledTimes(PASSWORD_HISTORY_LIMIT);
   });
 
-  it('ignora erros de comparação e continua avaliando o histórico', async() => {
+  it('propaga o erro de comparação em vez de seguir como se nada tivesse sido reutilizado', async() => {
+    // O comportamento antigo (ignorar e continuar) respondia `false` mesmo sem
+    // ter comparádo: o usuário podia trocar a senha para uma que já constava no
+    // histórico. Em caso de falha, a resposta honesta é "não deu para saber",
+    // e quem decide o que fazer com isso é o caso de uso.
     const compare = jest.fn()
       .mockRejectedValueOnce(new Error('boom'))
       .mockResolvedValueOnce(false);
-    const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
 
-    const result = await wasPasswordUsedBefore('StrongPass123!', ['hash-1', 'hash-2'], compare);
+    await expect(wasPasswordUsedBefore('StrongPass123!', ['hash-1', 'hash-2'], compare))
+      .rejects.toThrow('boom');
+    expect(compare).toHaveBeenCalledTimes(1);
+  });
+});
 
-    expect(result).toBe(false);
-    expect(compare).toHaveBeenCalledTimes(2);
-    consoleSpy.mockRestore();
+describe('wasPasswordUsedBefore - a pergunta não pode ficar sem resposta', () => {
+  it('propaga a falha de comparação em vez de responder "não usou antes"', async() => {
+    // Responder `false` aqui permitiria trocar a senha para uma que já foi
+    // usada: a checagem estaria dizendo "liberado" sem ter comparado nada.
+    const compare = jest.fn().mockRejectedValue(new Error('pepper ausente'));
+
+    await expect(wasPasswordUsedBefore('NovaSenha#1', ['hash-antigo'], compare))
+      .rejects.toThrow('pepper ausente');
+  });
+
+  it('não compara nada quando não há histórico', async() => {
+    const compare = jest.fn();
+
+    await expect(wasPasswordUsedBefore('NovaSenha#1', [], compare)).resolves.toBe(false);
+    await expect(wasPasswordUsedBefore('NovaSenha#1', null, compare)).resolves.toBe(false);
+    expect(compare).not.toHaveBeenCalled();
   });
 });

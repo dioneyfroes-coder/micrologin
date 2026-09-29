@@ -275,3 +275,110 @@ describe('política de revogação com Redis indisponível', () => {
     expect((getConfigSummary() as unknown as { session: { failOpen: boolean } }).session.failOpen).toBe(true);
   });
 });
+
+describe('configuração de hash de senha', () => {
+  it('usa argon2id nos mínimos da OWASP por padrão', async() => {
+    const { securityConfig } = await loadConfig();
+
+    expect(securityConfig.passwordHash.algorithm).toBe('argon2id');
+    expect(securityConfig.passwordHash.argon2).toEqual({ memoryCost: 19456, timeCost: 2, parallelism: 1 });
+    // Pepper desligado por padrão (D17).
+    expect(securityConfig.passwordHash.pepper).toBeUndefined();
+  });
+
+  it('recusa memória de argon2 baixa demais para ser memory-hard', async() => {
+    process.env.ARGON2_MEMORY_COST = '1024';
+
+    const { validateConfiguration } = await loadConfig();
+
+    // Não é aviso: argon2 com m=1024 é barato de quebrar, e a validação
+    // silenciosa devolveria um serviço no ar sem a proteção que ele promete.
+    expect(() => validateConfiguration()).toThrow(/ARGON2_MEMORY_COST/);
+  });
+
+  it('recusa configuração que estouraria a memória do container', async() => {
+    process.env.ARGON2_MEMORY_COST = '131072';
+    process.env.ARGON2_PARALLELISM = '4';
+
+    const { validateConfiguration } = await loadConfig();
+
+    expect(() => validateConfiguration()).toThrow(/512/);
+  });
+
+  it('assume p1 quando o pepper atual não declara versão', async() => {
+    process.env.PASSWORD_PEPPER = 'segredo-com-tamanho-suficiente';
+    process.env.PASSWORD_PEPPER_VERSION = '';
+
+    const { securityConfig, pepperConfigFor, validateConfiguration } = await loadConfig();
+
+    // Primeira ativação não deveria exigir pensar em versão: `p1` é o
+    // grounded truth e vai gravado dentro do hash. Quem rotacionar depois
+    // declara `p2` + o anterior, que é onde a versão é obrigatória.
+    expect(validateConfiguration()).toBe(true);
+    expect(pepperConfigFor(securityConfig.passwordHash.pepper)?.version).toBe('p1');
+  });
+
+  it('recusa versão de pepper fora do formato pN', async() => {
+    process.env.PASSWORD_PEPPER = 'segredo-com-tamanho-suficiente';
+    process.env.PASSWORD_PEPPER_VERSION = 'v1';
+
+    const { validateConfiguration } = await loadConfig();
+
+    expect(() => validateConfiguration()).toThrow(/formato pN/);
+  });
+
+  it('recusa pepper anterior sem versão própria', async() => {
+    process.env.PASSWORD_PEPPER = 'segredo-novo';
+    process.env.PASSWORD_PEPPER_VERSION = 'p2';
+    process.env.PASSWORD_PEPPER_PREVIOUS = 'segredo-antigo';
+
+    const { validateConfiguration } = await loadConfig();
+
+    // O pepper anterior não tem versão padrão: adivinar `p1` aqui transformaria
+    // uma rotação em bloqueio de quem ainda não voltou a fazer login.
+    expect(() => validateConfiguration()).toThrow(/PASSWORD_PEPPER_PREVIOUS_VERSION/);
+  });
+
+  it('lê pepper com versão e aceita o anterior para rotação', async() => {
+    process.env.PASSWORD_PEPPER = 'segredo-novo-com-tamanho';
+    process.env.PASSWORD_PEPPER_VERSION = 'p2';
+    process.env.PASSWORD_PEPPER_PREVIOUS = 'segredo-antigo';
+    process.env.PASSWORD_PEPPER_PREVIOUS_VERSION = 'p1';
+
+    const { securityConfig, pepperConfigFor, validateConfiguration } = await loadConfig();
+
+    expect(validateConfiguration()).toBe(true);
+    expect(pepperConfigFor(securityConfig.passwordHash.pepper))
+      .toEqual({ version: 'p2', secret: 'segredo-novo-com-tamanho' });
+    expect(pepperConfigFor(securityConfig.passwordHash.previousPepper))
+      .toEqual({ version: 'p1', secret: 'segredo-antigo' });
+  });
+
+  it('o resumo de configuração expõe o algoritmo sem vazar segredo', async() => {
+    process.env.PASSWORD_PEPPER = 'segredo-que-nao-pode-vazar';
+
+    const { getConfigSummary } = await loadConfig();
+    const summary = JSON.stringify(getConfigSummary());
+
+    expect(summary).toContain('argon2id');
+    expect(summary).toContain('pepperConfigured');
+    expect(summary).not.toContain('segredo-que-nao-pode-vazar');
+  });
+
+  it('aceita bcrypt como rollback e ainda valida a configuração', async() => {
+    process.env.PASSWORD_HASH_ALGORITHM = 'bcrypt';
+
+    const { securityConfig, validateConfiguration } = await loadConfig();
+
+    expect(securityConfig.passwordHash.algorithm).toBe('bcrypt');
+    expect(validateConfiguration()).toBe(true);
+  });
+
+  it('recusa algoritmo desconhecido em vez de assumir o padrão', async() => {
+    process.env.PASSWORD_HASH_ALGORITHM = 'scrypt';
+
+    const { validateConfiguration } = await loadConfig();
+
+    expect(() => validateConfiguration()).toThrow(/PASSWORD_HASH_ALGORITHM/);
+  });
+});
