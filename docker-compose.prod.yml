@@ -5,10 +5,19 @@
 #
 # Simplificado (igual ao dev, decidido na fase P3): removido o nginx
 # (apontava para nginx/nginx-prod.conf e nginx/ssl inexistentes) e as 3
-# instâncias hardcoded. MongoDB/Redis são serviços gerenciados/externos
-# (Atlas, ElastiCache etc.) — configure as URLs no .env.prod.
+# instâncias hardcoded.
+#
+# MongoDB e Redis entram como serviço do proprio compose desde a Fase 1.3: sem
+# `requirepass`/ACL e sem usuário de aplicação no Mongo, o conteúdo do banco
+# (hashes de senha) e do cache (blacklist de JWT, contadores de rate limit)
+# ficava legível por qualquer processo que alcançasse a rede do container. A
+# alternativa gerenciada (Atlas, ElastiCache) continua valendo — apague os
+# serviços `mongodb` e `redis` e aponte URI_MONGODB/REDIS_URL no host
+# gerenciado, com TLS. O que não pode voltar é a conexão sem credencial: em
+# produção o app recusa o arranque (decisão D18, docs/SEGURANCA.md).
 #
 # Uso:
+#   scripts/generate-dependency-secrets.sh ./secrets/deps --for-container
 #   IMAGE_REF=ghcr.io/dioneyfroes-coder/micrologin@sha256:... \
 #     docker compose --env-file .env.prod -f docker-compose.prod.yml up -d
 #
@@ -48,6 +57,20 @@ services:
       #   scripts/generate-jwt-keys.sh <JWT_ES256_KEYS_DIR> <kid> --for-container
       JWT_ES256_PRIVATE_KEY_PATH: /run/secrets/jwt-es256-private.pem
       JWT_ES256_PUBLIC_KEY_PATH: /run/secrets/jwt-es256-public.pem
+      # --- Credenciais das dependências (Fase 1.3, D18) ---
+      # Mesma razão da chave ES256, agora com mais a perder: a senha do Mongo
+      # dá acesso aos hashes de senha, e a do Redis à blacklist de tokens.
+      #   scripts/generate-dependency-secrets.sh <DEPENDENCY_SECRETS_DIR> --for-container
+      MONGODB_PASSWORD_PATH: /run/secrets/deps/mongo-app-password
+      REDIS_PASSWORD_PATH: /run/secrets/deps/redis-password
+      # A decisão de transporte da D18 escrita em código: o app liga para as
+      # dependências pela rede dedicada `deps-network`, que é `internal` (sem
+      # gateway e sem rota para fora do host) e não publica porta nenhuma. TLS
+      # aqui seria o mesmo dado em texto claro atravessando o loopback do host —
+      # o que protege é o isolamento, não a criptografia. Ao apontar para um
+      # serviço gerenciado, troque por MONGODB_TLS=true / REDIS_TLS=true, que é
+      # a outra metade da decisão.
+      DEPENDENCY_NETWORK_ISOLATED: "true"
     volumes:
       # Chave de assinatura: somente leitura. O diretório do host vem do
       # .env.prod (JWT_ES256_KEYS_DIR), de um secret do Docker ou de um volume
@@ -56,12 +79,26 @@ services:
         source: ${JWT_ES256_KEYS_DIR:-./secrets}
         target: /run/secrets
         read_only: true
+      # Senhas de Mongo e Redis. O app lê a senha do Mongo e a do Redis; a
+      # senha do root do Mongo e o arquivo de ACL NÃO são legíveis por este
+      # container (dono 999, modo 600) — o uid 1001 não os abre. É a diferença
+      # entre o serviço ter acesso aos dados e ter acesso à administração deles.
+      - type: bind
+        source: ${DEPENDENCY_SECRETS_DIR:-./secrets/deps}
+        target: /run/secrets/deps
+        read_only: true
     # Porta do HOST vem do .env.prod (fonte da verdade). Se estiver em uso,
     # some +1 via scripts/next-port.sh --env .env.prod.
     ports:
       - "${APP_PORT:-3000}:3000"
     networks:
       - auth-network
+      - deps-network
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     restart: unless-stopped
     # Limites de recursos (aplicados pelo Docker, mesmo fora de swarm)
     cpus: 2.0
@@ -85,9 +122,108 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  mongodb:
+    image: mongo:7-jammy
+    # O root e a senha da aplicação entram por ARQUIVO (`_FILE`), nunca por
+    # variável: o entrypoint do Mongo le o valor de um arquivo e o exporta só
+    # dentro do container, sem passar por `docker inspect`.
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-root}
+      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/deps/mongo-root-password
+      # O init script cria o usuário da aplicação com `readWrite` apenas sobre o
+      # banco do serviço, em authSource=admin (docker/mongo/10-app-user.sh).
+      MONGO_APP_USER: ${MONGO_APP_USER:-auth-service}
+      MONGO_APP_DB: ${MONGO_APP_DB:-auth_prod}
+      MONGO_APP_PASSWORD_PATH: /run/secrets/deps/mongo-app-password
+    volumes:
+      - mongo-data:/data/db
+      - type: bind
+        source: ${DEPENDENCY_SECRETS_DIR:-./secrets/deps}
+        target: /run/secrets/deps
+        read_only: true
+      - type: bind
+        source: ./docker/mongo/10-app-user.sh
+        target: /docker-entrypoint-initdb.d/10-app-user.sh
+        read_only: true
+    # Sem `ports`: o banco não é publicado no host. Quem precisa falar com ele
+    # está na deps-network; um `mongo` aberto em 0.0.0.0 seria alcançável por
+    # qualquer coisa que o host aceite na interface.
+    networks:
+      - deps-network
+    restart: unless-stopped
+    mem_limit: 1g
+    # Health check com o usuário da aplicação, não com o root: um health check
+    # que autentica como root é uma credencial administrativa em mais um lugar.
+    # `ping` é aceito para qualquer usuário autenticado, então a prova continua
+    # valendo sem privilégio de admin.
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --host 127.0.0.1 --username \"$$MONGO_APP_USER\" --password \"$$(cat $$MONGO_APP_PASSWORD_PATH)\" --authenticationDatabase admin --eval 'quit(db.adminCommand(\"ping\").ok ? 0 : 1)'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
+
+  redis:
+    image: redis:7-alpine
+    # A ACL vem de arquivo (`--aclfile`), com `user default off` e o usuário da
+    # aplicação com `+@all -@admin -@dangerous`. `requirepass` na linha de
+    # comando colocaria a senha no `docker inspect` e em `ps`, e ligaria a senha
+    # no usuário `default`, que não é atribuível a ninguém e não gira sem derrubar
+    # quem está conectado.
+    #
+    # Sem persistência: cache e blacklist são reconstruíveis, e um volume aqui
+    # só traria de volta o estado que o restart apaga de propósito.
+    command: redis-server --aclfile /etc/redis/users.acl --save "" --appendonly no
+    volumes:
+      - type: bind
+        source: ${DEPENDENCY_SECRETS_DIR:-./secrets/deps}/redis-app.acl
+        target: /etc/redis/users.acl
+        read_only: true
+      # A senha em texto claro entra só para o health check. O arquivo de ACL,
+      # que é o que o servidor usa para autenticar, guarda o hash; o texto claro
+      # é do cliente que precisa provar a senha.
+      - type: bind
+        source: ${DEPENDENCY_SECRETS_DIR:-./secrets/deps}/redis-password
+        target: /run/secrets/redis-password
+        read_only: true
+    networks:
+      - deps-network
+    restart: unless-stopped
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$(cat /run/secrets/redis-password)\" redis-cli --no-auth-warning --user auth-service ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
+
 networks:
   auth-network:
     driver: bridge
     ipam:
       config:
         - subnet: 172.20.0.0/16
+  # Rede dedicada das dependências: `internal` corta o gateway e a rota de saída,
+  # então Mongo e Redis não alcançam a internet e nada fora do host os alcança.
+  # É a segunda metade da decisão D18 — a outra metade é TLS no caminho, para o
+  # caso de serviço gerenciado, que fica fora deste arquivo.
+  deps-network:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16
+
+volumes:
+  mongo-data:
+    driver: local

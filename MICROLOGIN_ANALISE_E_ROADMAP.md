@@ -180,21 +180,39 @@ então virou escolha do serviço.
 
 ## 1.3 Credenciais em repouso das dependências
 
-**Status: pendente.** Redis e Mongo hoje não pedem senha.
+**Status: concluída.** Redis e Mongo passam a exigir credencial, e o app recusa
+o arranque em produção sem ela (decisão D18 em `docs/SEGURANCA.md`).
 
-- [ ] Redis: `requirepass`/ACL no compose prod + `REDIS_PASSWORD` no `connection.ts` e no URL
-- [ ] Mongo: criar usuário próprio do serviço (`authSource=admin`), sem privilégio além do necessário
-- [ ] TLS entre auth-service e Redis/Mongo em prod (ou rede interna dedicada, decisão explícita)
-- [ ] segredos via variável/arquivo de secrets, nunca no compose versionado
-- [ ] nomes de usuário de aplicação não admin no Mongo
+- [x] Redis: ACL por arquivo (`user default off` + usuário `auth-service` com
+  `+@all -@admin -@dangerous`) no compose prod; `REDIS_USERNAME`/`REDIS_PASSWORD_PATH`
+  no `redisConfig.ts`, com precedência da URL e conflito recusado
+- [x] Mongo: usuário próprio do serviço (`authSource=admin`, `readWrite` só sobre
+  o banco do serviço) criado por `docker/mongo/10-app-user.sh` na primeira
+  inicialização do volume
+- [x] transporte: rede `deps-network` `internal` sem porta publicada (ou
+  `MONGODB_TLS`/`REDIS_TLS`/`rediss://`/`mongodb+srv://` para serviço gerenciado);
+  `DEPENDENCY_NETWORK_ISOLATED` declara a primeira, e produção recusa sem nenhuma
+- [x] segredos por arquivo, fora do repositório: `scripts/generate-dependency-secrets.sh`
+  gera com modo 600/640 e dono ajustado por `--for-container` (app uid 1001,
+  deps uid 999); nada de senha no `.env` versionado
+- [x] nomes de usuário de aplicação não admin no Mongo (o `root` só cria o usuário)
 
 **Definição de pronto:** `docker-compose.prod.yml` sobe Mongo/Redis exigindo
 credencial; app autentica; teste de infra valida que sem credencial a conexão
-falha (composição isolada).
+falha (composição isolada). — **cumprida: `test:infra` 11/11 com o stack de
+produção autenticado, provando `NOAUTH`/`WRONGPASS` no Redis, leitura anônima
+recusada no Mongo, o app lendo só as próprias senhas, e a reconexão/restart
+seguindo intactos.**
+
+**Correção que a implementação expôs:** o marcador de hash da ACL do Redis é
+`#<sha256>`, sem `>` (medido com `ACL LIST`). `>#<sha256>` é aceito sem erro e
+tratado como senha em texto claro — o serviço sobe, o health check responde e a
+primeira operação que precisa de dado falha com `WRONGPASS`. O script recusa o
+marcador errado e o teste de unidade recalcula o SHA-256 por fora.
 
 ## 1.4 Ciclo de vida de chaves e segredos
 
-- [ ] ROTAÇÃO documentada e testada para: JWT ES256 (1.1), pepper (se aceitar), senhas de Mongo/Redis
+- [ ] ROTAÇÃO documentada e testada para: JWT ES256 (1.1), pepper (se aceitar), senhas de Mongo/Redis (D18)
 - [ ] guarda da chave privada ES256 fora do repositório (secrets manager/KMS)
 - [ ] gitleaks + audit contínuo já existem; validar que as chaves novas não caem em `.env*` versionado
 
@@ -225,12 +243,12 @@ Redis = tokens revogados voltam a valer e rate limit reseta** (controle de
 sessão amnésico até expirar). Decisões:
 
 - [ ] persistência explícita: AOF `fsync=everysec` + RDB snapshot no compose prod (hoje só AOF default)
-- [ ] política quando Redis some de vez (falha de disco): fail-closed derruba revogação? ou religa e aceita janela curta? decidir `D18`
+- [ ] política quando Redis some de vez (falha de disco): fail-closed derruba revogação? ou religa e aceita janela curta? decidir `D19`
 - [ ] backup de Redis **intencionalmente não é o objetivo primário**: re-registrar sessões revogadas é inviável; documentar que o Redis é regenerável (login novo) e o Mongo é a fonte de verdade
 - [ ] snapshots de Redis (por fora) só para diagnóstico forense, não para restore de serviço
 
 **Definição de pronto:** RPO/RTO documentados separando Mongo (restaurável do
-dump) de Redis (regenerável por design); decisão D18 registrada.
+dump) de Redis (regenerável por design); decisão D19 registrada.
 
 ## 2.3 Backup da configuração e da versão em vigor
 

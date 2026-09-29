@@ -25,6 +25,13 @@ const configureProduction = (token: string) => {
   process.env.JWT_SECRET = 'test-secret-key-with-at-least-32-chars-123';
   process.env.JWT_REFRESH_SECRET = 'test-refresh-secret-with-32-chars-min!!';
   process.env.URI_MONGODB = 'mongodb://localhost:27017/test-db';
+  // A partir da Fase 1.3 produção exige credencial nas dependências e transporte
+  // dedicado. A rede isolada é o caminho que não precisa de certificado aqui.
+  process.env.MONGODB_USER = 'auth-service';
+  process.env.MONGODB_PASSWORD = 'senha-mongo-de-teste';
+  process.env.REDIS_USERNAME = 'auth-service';
+  process.env.REDIS_PASSWORD = 'senha-redis-de-teste';
+  process.env.DEPENDENCY_NETWORK_ISOLATED = 'true';
   process.env.SECURITY_DASHBOARD_TOKEN = token;
   const { privateKeyEnv, publicKeyEnv } = es256Pair();
   process.env.JWT_ES256_PRIVATE_KEY = privateKeyEnv;
@@ -402,6 +409,95 @@ describe('configuração de hash de senha', () => {
     const { securityConfig, validateConfiguration } = await loadConfig();
 
     expect(securityConfig.passwordHash.algorithm).toBe('argon2id');
+    expect(validateConfiguration()).toBe(true);
+  });
+});
+
+describe('credenciais das dependências em produção (Fase 1.3)', () => {
+  it('aceita credencial separada com rede isolada', async() => {
+    configureProduction('a'.repeat(32));
+
+    const { validateConfiguration } = await loadConfig();
+
+    expect(validateConfiguration()).toBe(true);
+  });
+
+  it('recusa MongoDB sem credencial: banco aberto não vai para produção', async() => {
+    configureProduction('a'.repeat(32));
+    delete process.env.MONGODB_USER;
+    delete process.env.MONGODB_PASSWORD;
+
+    const { validateConfiguration } = await loadConfig();
+
+    expect(() => validateConfiguration()).toThrow(/MongoDB sem credencial/);
+  });
+
+  it('recusa Redis sem senha: cache aberto aceita qualquer cliente', async() => {
+    configureProduction('a'.repeat(32));
+    delete process.env.REDIS_USERNAME;
+    delete process.env.REDIS_PASSWORD;
+
+    const { validateConfiguration } = await loadConfig();
+
+    expect(() => validateConfiguration()).toThrow(/Redis sem senha/);
+  });
+
+  it('recusa credencial na URI junto com as variáveis separadas', async() => {
+    configureProduction('a'.repeat(32));
+    process.env.URI_MONGODB = 'mongodb://user:senha@localhost:27017/test-db';
+
+    const { validateConfiguration } = await loadConfig();
+
+    // Duas fontes para a mesma conexão: o driver escolhe uma e o operador
+    // acredita na outra. É recusado, não resolvido em silêncio.
+    expect(() => validateConfiguration()).toThrow(/URI_MONGODB já traz credencial/);
+  });
+
+  it('recusa credencial pela metade', async() => {
+    configureProduction('a'.repeat(32));
+    delete process.env.MONGODB_PASSWORD;
+
+    const { validateConfiguration } = await loadConfig();
+
+    expect(() => validateConfiguration()).toThrow(/MONGODB_USER exige MONGODB_PASSWORD/);
+  });
+
+  it('recusa variável e arquivo do mesmo segredo ao mesmo tempo', async() => {
+    configureProduction('a'.repeat(32));
+    process.env.MONGODB_PASSWORD_PATH = '/tmp/nao-importa';
+
+    const { validateConfiguration } = await loadConfig();
+
+    expect(() => validateConfiguration()).toThrow(/MONGODB_PASSWORD e MONGODB_PASSWORD_PATH/);
+  });
+
+  it('recusa produção sem TLS e sem rede isolada', async() => {
+    configureProduction('a'.repeat(32));
+    delete process.env.DEPENDENCY_NETWORK_ISOLATED;
+
+    const { validateConfiguration } = await loadConfig();
+
+    expect(() => validateConfiguration()).toThrow(/sem TLS em produção/);
+  });
+
+  it('aceita TLS explícito no lugar da rede isolada', async() => {
+    configureProduction('a'.repeat(32));
+    delete process.env.DEPENDENCY_NETWORK_ISOLATED;
+    process.env.MONGODB_TLS = 'true';
+    process.env.REDIS_TLS = 'true';
+
+    const { validateConfiguration } = await loadConfig();
+
+    expect(validateConfiguration()).toBe(true);
+  });
+
+  it('não exige credencial nem transporte fora de produção', async() => {
+    process.env.NODE_ENV = 'development';
+    process.env.JWT_SECRET = 'test-secret-key-with-at-least-32-chars-123';
+    process.env.URI_MONGODB = 'mongodb://localhost:27017/test-db';
+
+    const { validateConfiguration } = await loadConfig();
+
     expect(validateConfiguration()).toBe(true);
   });
 });

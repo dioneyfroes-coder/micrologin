@@ -10,6 +10,7 @@ server.key
 keys/
 secrets/
 .resilience-keys/
+.resilience-deps/
 *.pem
 
 dist

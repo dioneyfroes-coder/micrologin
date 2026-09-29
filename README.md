@@ -226,7 +226,10 @@ Principais campos:
 
 - `PORT`, `NODE_ENV`
 - `URI_MONGODB`, `MONGODB_MAX_POOL_SIZE`
-- `REDIS_URL` (preferida: `redis://:senha@host:6379/0`) ou o fallback `REDIS_HOST`/`REDIS_PORT`/`REDIS_PASSWORD`/`REDIS_DB`
+- `MONGODB_USER`, `MONGODB_PASSWORD` (ou `MONGODB_PASSWORD_PATH`), `MONGODB_AUTH_SOURCE`, `MONGODB_TLS` — credencial das dependências por arquivo (Fase 1.3; obrigatória em produção)
+- `REDIS_URL` (preferida: `redis://host:6379/0`, com a senha vinda de arquivo) ou o fallback `REDIS_HOST`/`REDIS_PORT`/`REDIS_PASSWORD`/`REDIS_DB`
+- `REDIS_USERNAME`, `REDIS_PASSWORD_PATH`, `REDIS_TLS` — usuário de ACL e senha por arquivo
+- `DEPENDENCY_NETWORK_ISOLATED` (`true` declara rede dedicada sem porta publicada como transporte; no lugar de `MONGODB_TLS`/`REDIS_TLS`)
 - `JWT_SECRET`, `JWT_REFRESH_SECRET` (obrigatório e **diferente** de `JWT_SECRET` em produção; sem fallback silencioso), `JWT_EXPIRES`, `JWT_REFRESH_EXPIRES`
 - `SESSION_FAIL_OPEN` (política de revogação sem Redis; padrão `false` em produção)
 - `ALLOWED_ORIGINS`
@@ -235,7 +238,7 @@ Principais campos:
 - `SECURITY_DASHBOARD_TOKEN` (obrigatório em produção; envia-se no header `X-Security-Token`)
 - `RATE_LIMIT_*_POINTS` (pontos por janela)
 
-Nenhuma credencial real fica versionada: apenas exemplos (`.env.example` e `.env.prod.example`) são commitados; `.env` e `.env.prod` ficam no `.gitignore`.
+Nenhuma credencial real fica versionada: apenas exemplos (`.env.example` e `.env.prod.example`) são commitados; `.env` e `.env.prod` ficam no `.gitignore`. Os segredos das dependências são gerados por `scripts/generate-dependency-secrets.sh <dir> --for-container` (Mongo/Redis) e `scripts/generate-jwt-keys.sh <dir> <kid> --for-container` (ES256), e nunca entram no repositório.
 
 ## Testes
 
@@ -254,12 +257,15 @@ imagem de produção, para o Redis no meio do teste e reinicia o container,
 observando o serviço por HTTP:
 
 ```text
-Redis para → 503 REVOCATION_UNAVAILABLE no login (não 401, não 429),
-             liveness 200, readiness 200 e degradado, container sem restart
+credenciais → Redis recusa anônimo (NOAUTH) e senha errada (WRONGPASS),
+              Mongo recusa leitura anônima, e o container do app lê as próprias
+              senhas mas não a do root do Mongo
+Redis para  → 503 REVOCATION_UNAVAILABLE no login (não 401, não 429),
+              liveness 200, readiness 200 e degradado, container sem restart
 Redis volta → autenticação e rate limit compartilhado restaurados sem
-             reiniciar o processo
+              reiniciar o processo
 restart     → o container encerra em ~1s e volta a autenticar, mesmo com o
-             Redis fora (o shutdown não depende de dependência disponível)
+              Redis fora (o shutdown não depende de dependência disponível)
 ```
 
 O pipeline de CI usa `test:unit:fast`, `test:integration:app` e

@@ -392,6 +392,78 @@ para um reset que não resolve é pior que um erro.
 
 ---
 
+### D18 — Dependências autenticadas, credencial em arquivo, e transporte por rede dedicada ou TLS
+
+Antes desta decisão, Mongo e Redis subiam abertos: sem `requirepass`, sem ACL e
+sem usuário de aplicação no Mongo. Qualquer processo que alcançasse a rede dos
+containers — outro container, um processo no host, um bind acidental de porta —
+lia o banco inteiro. O que está lá não é dado público: `passwordHistory` e
+`passwordHash` (material de quebra offline), a blacklist de `jti` (o fail-closed
+de D1 depende de ela existir) e os contadores de rate limit (o limite por conta
+de D13 depende de eles serem confiáveis). Banco aberto anula decisões que já
+estavam tomadas em outros lugares.
+
+*Credencial por arquivo, não por variável de ambiente.* `URI_MONGODB` é logada,
+e o driver inclui a credencial na mensagem de erro de autenticação; variável de
+ambiente também aparece em `docker inspect` e em dump de crash. As senhas nascem
+em `scripts/generate-dependency-secrets.sh`, com modo 600 (ou 640 nas duas que o
+app e a dependência leem juntas), dono ajustado por `--for-container` para os
+uids reais das imagens (o app roda como uid 1001, Mongo e Redis como 999). Sem
+o ajuste de dono, o modo 600 vira arquivo ilegível dentro do container e o
+serviço recusa arrancar dizendo que falta senha — quando o que falta é
+permissão. O app lê `MONGODB_PASSWORD_PATH` e `REDIS_PASSWORD_PATH`; o caminho
+do root do Mongo e o arquivo de ACL (dono 999, 600) **não** são legíveis pelo
+uid 1001, que é a diferença entre o serviço acessar os dados e acessar a
+administração deles. A prova disso está no teste de infraestrutura: ele confirma
+que o container do app lê as próprias senhas e falha ao ler a do root.
+
+*Usuário de menor privilégio no Mongo.* `docker/mongo/10-app-user.sh` roda uma
+vez, na criação do volume, e cria o usuário da aplicação em `authSource=admin`
+com papel `readWrite` apenas sobre o banco do serviço. A senha do `root` existe
+só para criar esse usuário; o app nunca a vê. Um dump do processo do
+auth-service entrega o acesso aos dados de um banco, não `root` do cluster.
+
+*ACL no Redis, não `requirepass`.* `requirepass` liga a senha no usuário
+`default`, que não é atribuível a ninguém e não gira sem derrubar quem está
+conectado. A ACL usa `user default off` — a conexão anônima é recusada — mais um
+usuário nomeado com `+@all -@admin -@dangerous`. O corte tira `CONFIG`, `ACL`,
+`FLUSHALL`, `KEYS`, `MONITOR` e `SHUTDOWN` sem tirar o que o serviço usa:
+`GET`/`SET`/`EXPIRE`/`INCR`/`SCAN` e os `EVAL`/`EVALSHA` do rate-limiter, que
+estão em `@scripting` e não em `@dangerous` (medido com `ACL CAT dangerous`, não
+suposto). O hash vai no formato `#<sha256>`, medido com `ACL LIST`: `>#<sha256>`
+é aceito sem erro e significa "senha em texto claro igual a `#<sha256>`" — o
+serviço sobe, o health check responde e a primeira operação que precisa de dado
+falha com `WRONGPASS`. O script recusa esse marcador, e o teste de unidade
+recalcula o SHA-256 por fora para não depender da autoconferência do próprio
+script.
+
+*Transporte: rede dedicada ou TLS, nunca nenhum dos dois.* Em produção o app
+recusa o arranque sem credencial e sem um dos dois. No compose padrão, as
+dependências ficam numa rede `internal` (sem gateway e sem rota para fora do
+host) e sem porta publicada — o dado não sai da pilha, e por isso o TLS não é
+exigido: ele seria o mesmo dado em texto claro atravessando o loopback do host.
+Ao apontar para Atlas, ElastiCache ou outro serviço gerenciado, a rede dedicada
+deixa de valer e a outra metade da decisão entra: `MONGODB_TLS=true` /
+`REDIS_TLS=true` (ou `mongodb+srv://`, que já implica TLS). `DEPENDENCY_NETWORK_ISOLATED`
+existe para declarar a primeira metade; as duas ao mesmo tempo não são erro, mas
+nenhuma das duas não arranca.
+
+*Ambiguidade é recusada, não resolvida.* Credencial na URI **e** nas variáveis
+separadas ao mesmo tempo não é redundância: é a chance de o operador rotacionar
+uma e o app continuar autenticando com a outra. O mesmo vale para
+`X` e `X_PATH` definidos juntos. Nos dois casos a validação recusa, e a mensagem
+diz qual das duas ignorar. Credencial pela metade (usuário sem senha ou senha
+sem usuário) também é recusada: ela não autentica ninguém, e o sintoma só
+apareceria no primeiro acesso que falhasse.
+
+*A prova.* `scripts/infra-resilience-test.sh` sobe o stack de produção e conecta
+anônimo e com senha errada em cada serviço real: Redis responde `NOAUTH` e
+`WRONGPASS`, o Mongo recusa leitura anônima, e o container do app não abre a
+senha do root. Um health check verde não provaria nada disso — o app estaria
+saudável com o banco aberto.
+
+---
+
 ## 7. O que este serviço não é
 
 - Não é MFA, recuperação de conta, verificação de e-mail nem federação.

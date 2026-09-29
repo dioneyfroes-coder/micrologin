@@ -221,6 +221,17 @@ As duas últimas linhas são o limite honesto do desenho: com PM2 em cluster sã
 cópias, não uma. O manifesto de `GET /observability` reporta o agregado do
 processo que respondeu, e por isso ele é por processo.
 
+Nenhum desses estados é alcançável sem credencial (decisão `D18` em
+[SEGURANCA.md](SEGURANCA.md)). O Mongo autentica com um usuário `readWrite`
+restrito ao banco do serviço (`authSource=admin`), criado na primeira
+inicialização do volume; o Redis usa ACL com `user default off` e um usuário
+nomeado sem `@admin`/`@dangerous`. As senhas chegam por arquivo
+(`MONGODB_PASSWORD_PATH`/`REDIS_PASSWORD_PATH`), não pela URI, e em produção o
+arranque recusa sem credencial e sem `MONGODB_TLS`/`REDIS_TLS` ou
+`DEPENDENCY_NETWORK_ISOLATED=true` — a rede `deps-network` `internal` do compose
+não publica porta e não dá rota para fora do host, que é a outra forma de o dado
+não trafegar em claro.
+
 ---
 
 ## 9. Projeção em hardware grande (120 núcleos / 120 GB)

@@ -23,6 +23,11 @@
 #      encerrar em segundos (o timer de reconexão do Redis segura o processo
 #      se não for cancelado) e voltar a autenticar de ponta a ponta.
 #
+# E prova o item de maior risco da Fase 1.3: as dependências exigem credencial
+# de verdade. O app saudável não prova isso (o banco poderia estar aberto), por
+# isso o teste conecta anônimo e com senha errada em cada serviço real, e mostra
+# que o container da aplicação lê as próprias senhas mas não a do root do Mongo.
+#
 # Uso:
 #   scripts/infra-resilience-test.sh [--keep] [--skip-build]
 #
@@ -81,7 +86,7 @@ BLUE='\033[0.34m'
 NC='\033[0m'
 
 STEP=0
-TOTAL_STEPS=10
+TOTAL_STEPS=11
 
 log_step()  { STEP=$((STEP + 1)); echo -e "\n${BLUE}[${STEP}/${TOTAL_STEPS}] $1${NC}"; }
 log_info()  { echo -e "${BLUE}ℹ️  $1${NC}"; }
@@ -118,6 +123,14 @@ RESILIENCE_JWT_KID="${RESILIENCE_JWT_KID:-resilience-v1}"
 export RESILIENCE_JWT_KID
 KEYS_GENERATED=0
 
+# Segredos das dependências (Fase 1.3): mesmo contrato do par de chaves — nascem
+# nesta máquina, o dono é ajustado para os uids das imagens, e são apagados no
+# teardown. Sem eles o stack não sobe: a validação de produção recusa dependência
+# sem credencial, que é justamente o que a fase passou a exigir.
+RESILIENCE_DEPS_DIR="${RESILIENCE_DEPS_DIR:-${ROOT_DIR}/.resilience-deps}"
+export RESILIENCE_DEPS_DIR
+DEPS_GENERATED=0
+
 RUN_ID="$(date +%s)-$$"
 USERNAME="resil-${RUN_ID}"
 PASSWORD="R3sil-Test-${RUN_ID}-Aa!"
@@ -132,12 +145,18 @@ cleanup() {
         if [ "$KEYS_GENERATED" -eq 1 ]; then
             echo "  rm -rf ${RESILIENCE_KEYS_DIR}   # par ES256 do teste"
         fi
+        if [ "$DEPS_GENERATED" -eq 1 ]; then
+            echo "  rm -rf ${RESILIENCE_DEPS_DIR}   # senhas das dependências"
+        fi
         return
     fi
     log_info "Destruindo o stack de teste..."
     "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
     if [ "$KEYS_GENERATED" -eq 1 ]; then
         rm -rf "$RESILIENCE_KEYS_DIR"
+    fi
+    if [ "$DEPS_GENERATED" -eq 1 ]; then
+        rm -rf "$RESILIENCE_DEPS_DIR"
     fi
 }
 trap cleanup EXIT
@@ -332,6 +351,16 @@ bash "${SCRIPT_DIR}/generate-jwt-keys.sh" "$RESILIENCE_KEYS_DIR" "$RESILIENCE_JW
 KEYS_GENERATED=1
 log_info "par ES256 efêmero gerado em ${RESILIENCE_KEYS_DIR} (kid ${RESILIENCE_JWT_KID})"
 
+# Segredos das dependências pelo mesmo motivo das chaves: um diretório montado e
+# vazio derruba o container na validação (Mongo sem credencial em produção), e a
+# falha apareceria como "readiness nunca ficou pronto", longe da causa.
+# `--skip-verify` porque a prova ao vivo da ACL é feita pelo próprio stack: o
+# teste abaixo conecta anônimo, com senha errada e com a senha certa.
+rm -rf "$RESILIENCE_DEPS_DIR"
+bash "${SCRIPT_DIR}/generate-dependency-secrets.sh" "$RESILIENCE_DEPS_DIR" --for-container --skip-verify >/dev/null
+DEPS_GENERATED=1
+log_info "senhas das dependências geradas em ${RESILIENCE_DEPS_DIR} (Mongo e Redis autenticados)"
+
 if [ "$SKIP_BUILD" -eq 1 ]; then
     log_info "--skip-build: usando a imagem micrologin-resilience:local existente"
     "${COMPOSE[@]}" up -d --no-build >/dev/null
@@ -380,7 +409,53 @@ expect_status 200 "perfil autenticado"
 log_pass "autentica de ponta a ponta com tudo no ar (usuário ${USERNAME})"
 
 # ============================================================
-# 3. Redis cai
+# 3. As credenciais são exigidas de verdade (Fase 1.3)
+# ============================================================
+log_step "As dependências recusam quem não tem credencial"
+
+# O app estar saudável não prova que o banco exige senha: ele poderia estar
+# aberto, com o app autenticando por acaso. Estas perguntas vêm de fora do app,
+# contra os serviços reais, com o cliente oficial de cada um.
+
+REDIS_ANON=$(docker exec micrologin-resilience-redis \
+    redis-cli --no-auth-warning ping 2>&1 || true)
+case "$REDIS_ANON" in
+    *NOAUTH*) ;;
+    *) fail "o Redis aceitou conexão anônima (resposta: ${REDIS_ANON})" ;;
+esac
+
+REDIS_WRONG=$(printf 'AUTH auth-service senha-errada\nPING\n' \
+    | docker exec -i micrologin-resilience-redis redis-cli --no-auth-warning 2>&1 || true)
+case "$REDIS_WRONG" in
+    *WRONGPASS*) ;;
+    *) fail "o Redis não recusou a senha errada (resposta: ${REDIS_WRONG})" ;;
+esac
+log_pass "Redis: anônimo → NOAUTH, senha errada → WRONGPASS"
+
+# `db.adminCommand('ping')` responderia anônimo — o ping é liberado antes da
+# autenticação. Uma leitura de dado, não: é ela que prova que sem credencial
+# não se chega ao conteúdo do banco.
+if docker exec micrologin-resilience-mongo mongosh --quiet --host 127.0.0.1 \
+    --eval 'db.getSiblingDB("auth_resilience").smoke.findOne()' >/dev/null 2>&1; then
+    fail "o Mongo aceitou leitura anônima: o banco não está exigindo credencial"
+fi
+log_pass "Mongo: leitura anônima recusada"
+
+# Controle positivo e negativo do isolamento dos segredos dentro do app. O
+# negativo (não ler a senha do root) só significa alguma coisa se o positivo
+# (ler as próprias senhas) for verdade: um bind mount que não montou nada
+# também falharia em ler a do root, e passaria como se fosse isolamento.
+docker exec micrologin-resilience-app sh -c \
+    'test -r /run/secrets/deps/mongo-app-password && test -r /run/secrets/deps/redis-password' \
+    || fail "o app não consegue ler as senhas que deveria usar"
+if docker exec micrologin-resilience-app sh -c \
+    'cat /run/secrets/deps/mongo-root-password' >/dev/null 2>&1; then
+    fail "o app leu a senha do root do Mongo: o segredo do root não está isolado do processo"
+fi
+log_pass "app lê só as próprias senhas; a do root do Mongo fica fora do alcance dele"
+
+# ============================================================
+# 4. Redis cai
 # ============================================================
 log_step "Derrubando o Redis com a aplicação no ar"
 
@@ -394,7 +469,7 @@ RESTARTS_BEFORE=$(restart_count)
 log_pass "health check parou de dizer 'Redis disponível' com o Redis no chão"
 
 # ============================================================
-# 4. O comportamento sob Redis fora (fail-closed)
+# 5. O comportamento sob Redis fora (fail-closed)
 # ============================================================
 log_step "Redis fora: o serviço se recusa a autenticar, e diz por quê"
 
@@ -440,7 +515,7 @@ log_pass "token pré-queda não é aceito (não vira fail-open na prática)"
 log_pass "container não reiniciou (RestartCount segue ${RESTARTS_BEFORE})"
 
 # ============================================================
-# 5. Redis volta
+# 6. Redis volta
 # ============================================================
 log_step "Religando o Redis: o app precisa voltar sozinho"
 
@@ -463,7 +538,7 @@ wait_for "$WAIT_RECOVER_TIMEOUT" "rate limiting voltar ao armazenamento comparti
 log_pass "rate limiting voltou ao Redis (limite compartilhado entre processos)"
 
 # ============================================================
-# 6. Estado restaurado
+# 7. Estado restaurado
 # ============================================================
 log_step "Autenticação completa depois da queda"
 
@@ -479,7 +554,7 @@ expect_status 200 "logout após recuperação"
 log_pass "login, refresh e logout funcionando novamente"
 
 # ============================================================
-# 7. Restart do container
+# 8. Restart do container
 # ============================================================
 log_step "Reiniciando o container da aplicação"
 
@@ -500,7 +575,7 @@ wait_for "$WAIT_READY_TIMEOUT" "readiness após restart" is_ready
 log_pass "readiness 200 depois do restart"
 
 # ============================================================
-# 8. O serviço volta a autenticar
+# 9. O serviço volta a autenticar
 # ============================================================
 log_step "O container reiniciado autentica de verdade"
 
@@ -513,7 +588,7 @@ SMOKE_BASE="$BASE_URL" bash "${SCRIPT_DIR}/smoke-test.sh" "$BASE_URL" \
 log_pass "smoke test completo passou na instância reiniciada"
 
 # ============================================================
-# 9. Segundo restart, com o Redis fora
+# 10. Segundo restart, com o Redis fora
 # ============================================================
 log_step "Reiniciar o container com o Redis fora não pode ser deadlock"
 
@@ -533,7 +608,7 @@ wait_for "$WAIT_RECOVER_TIMEOUT" "o container novo reconectar sozinho ao Redis" 
 log_pass "processo novo religou a saúde do Redis sozinho"
 
 # ============================================================
-# 10. Diagnóstico
+# 11. Diagnóstico
 # ============================================================
 log_step "Diagnóstico final"
 
@@ -552,4 +627,6 @@ echo -e "${GREEN}🎉 Resiliência de infraestrutura verificada.${NC}"
 echo -e "${GREEN}   • Redis caiu: 503 REVOCATION_UNAVAILABLE, sem 429, sem fail-open${NC}"
 echo -e "${GREEN}   • Redis voltou: autenticação e rate limit compartilhado restaurados${NC}"
 echo -e "${GREEN}   • Container reiniciou: saiu rápido e voltou a autenticar${NC}"
+echo -e "${GREEN}   • Dependências autenticadas: anônimo e senha errada recusados${NC}"
+echo -e "${GREEN}   • App lê só as próprias senhas; a do root do Mongo fica fora do alcance${NC}"
 echo -e "${GREEN}══════════════════════════════════════════════════════════════${NC}"

@@ -11,6 +11,7 @@ import './env.js';
 import os from 'os';
 import { readFileSync } from 'fs';
 import { parseEnvNumber } from './rateLimitConfig.js';
+import { getMongoConfig } from './mongoConfig.js';
 import { getRedisConfig } from './redisConfig.js';
 import { logger } from '../../shared/utils/logger.js';
 
@@ -98,14 +99,10 @@ export const serverConfig = {
  * Configurações de banco de dados
  */
 export const databaseConfig = {
-  mongodb: {
-    uri: process.env.URI_MONGODB,
-    options: {
-      maxPoolSize: parseEnvNumber(process.env.MONGODB_MAX_POOL_SIZE, 10),
-      serverSelectionTimeoutMS: parseEnvNumber(process.env.MONGODB_TIMEOUT, 5000),
-      socketTimeoutMS: parseEnvNumber(process.env.MONGODB_SOCKET_TIMEOUT, 45000)
-    }
-  },
+  // `mongoConfig` é a fonte única: pool, timeouts, credencial e TLS saem de lá
+  // para `mongoose.connect` (connection.ts). Declarar as mesmas opções aqui
+  // criava um segundo lugar para a mesma verdade, e um lugar que ninguém lia.
+  mongodb: getMongoConfig(),
 
   redis: {
     ...getRedisConfig()
@@ -379,6 +376,80 @@ export const environmentConfig = {
 };
 
 /**
+ * Credenciais e transporte das dependências (Fase 1.3, decisão D18).
+ *
+ * Em produção, o app recusa o arranque quando o Mongo ou o Redis aceitam
+ * conexão anônima. A justificativa é a mesma do ES256 e do argon2id:
+ * configuração errada aqui não degrada a proteção, ela a remove — banco e cache
+ * sem senha são abertos para qualquer processo que alcance a rede, e o que o
+ * serviço guarda neles (hashes de senha, blacklist de JWT, contadores de rate
+ * limit) é justamente o que não pode ser lido por terceiro.
+ *
+ * O transporte é a outra metade da decisão, e ela é binária de propósito:
+ *
+ *   - TLS no caminho (MONGODB_TLS/REDIS_TLS, ou `rediss://`/`mongodb+srv://`);
+ *   - ou rede dedicada e sem porta publicada, com o operador assumindo isso por
+ *     escrito em `DEPENDENCY_NETWORK_ISOLATED=true`.
+ *
+ * "Ambas" nunca é a resposta certain: sem TLS e com a rede compartilhada, a
+ * senha das dependências atravessa o mesmo caminho em texto claro.
+ */
+function validateDependencyCredentials(): string[] {
+  const errors: string[] = [];
+  const mongo = databaseConfig.mongodb;
+  const redis = databaseConfig.redis;
+
+  // Segredo ilegível é falha de provisionamento, e vale em qualquer ambiente:
+  // quem provisionou achou que configurou a senha.
+  if (mongo.authError) {
+    errors.push(mongo.authError);
+  }
+  if (redis.passwordError) {
+    errors.push(redis.passwordError);
+  }
+
+  // Duas fontes de credencial para a mesma conexão: o driver escolhe uma e o
+  // operador acredita na outra.
+  if (mongo.credentialsConflict) {
+    errors.push('URI_MONGODB já traz credencial e MONGODB_USER/MONGODB_PASSWORD também estão definidas: use uma forma só');
+  }
+  if (redis.credentialsConflict) {
+    errors.push('REDIS_URL já traz credencial e REDIS_USERNAME/REDIS_PASSWORD também estão definidas: use uma forma só');
+  }
+
+  // Credencial pela metade: usuário sem senha (ou senha sem usuário) não
+  // autentica ninguém, e o sintoma só apareceria no primeiro acesso que falhasse.
+  if (process.env.MONGODB_USER && !mongo.auth) {
+    errors.push('MONGODB_USER exige MONGODB_PASSWORD (ou MONGODB_PASSWORD_PATH)');
+  }
+  if (process.env.MONGODB_PASSWORD && !mongo.auth) {
+    errors.push('MONGODB_PASSWORD exige MONGODB_USER');
+  }
+
+  if (!environmentConfig.isProduction) {
+    return errors;
+  }
+
+  if (mongo.uri && !mongo.auth && !mongo.uriHasCredentials) {
+    errors.push('MongoDB sem credencial não é permitido em produção: defina MONGODB_USER e MONGODB_PASSWORD (ou MONGODB_PASSWORD_PATH), ou credencial na URI');
+  }
+
+  if (redis.enabled && !redis.password && !redis.urlHasCredentials) {
+    errors.push('Redis sem senha não é permitido em produção: defina REDIS_PASSWORD (ou REDIS_PASSWORD_PATH) com REDIS_USERNAME, ou credencial na REDIS_URL');
+  }
+
+  const internalNetwork = process.env.DEPENDENCY_NETWORK_ISOLATED === 'true';
+  if (mongo.uri && !mongo.tls && !internalNetwork) {
+    errors.push('Conexão com o MongoDB sem TLS em produção: use MONGODB_TLS=true, uma URI mongodb+srv://, ou DEPENDENCY_NETWORK_ISOLATED=true assumindo rede dedicada sem porta publicada');
+  }
+  if (redis.enabled && !redis.tls && !internalNetwork) {
+    errors.push('Conexão com o Redis sem TLS em produção: use REDIS_TLS=true, uma URL rediss://, ou DEPENDENCY_NETWORK_ISOLATED=true assumindo rede dedicada sem porta publicada');
+  }
+
+  return errors;
+}
+
+/**
  * Validação de configurações obrigatórias
  */
 export function validateConfiguration(): boolean {
@@ -490,6 +561,8 @@ export function validateConfiguration(): boolean {
   if (!databaseConfig.mongodb.uri) {
     errors.push('URI_MONGODB é obrigatório');
   }
+
+  errors.push(...validateDependencyCredentials());
 
   // Validações de cluster
   if (serverConfig.cluster.workers < 1) {
