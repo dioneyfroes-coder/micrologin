@@ -297,12 +297,28 @@ describe('configuração de hash de senha', () => {
   });
 
   it('recusa configuração que estouraria a memória do container', async() => {
+    // 128 MiB × 8 logins = 1 GiB, acima do orçamento de 768 MiB que sobra
+    // dos 1 GiB do container. O que é recusado é a conta inteira, não o
+    // número de um hash sozinho: um hash que cabe, repetido, não cabe.
     process.env.ARGON2_MEMORY_COST = '131072';
-    process.env.ARGON2_PARALLELISM = '4';
+    process.env.ARGON2_PARALLELISM = '1';
 
     const { validateConfiguration } = await loadConfig();
 
-    expect(() => validateConfiguration()).toThrow(/512/);
+    expect(() => validateConfiguration()).toThrow(/768 MiB/);
+  });
+
+  it('aceita m=46MiB, que é o que o orçamento de 1 GiB permite', async() => {
+    // 46 MiB × 8 logins = 368 MiB, dentro do orçamento. Foi recusado no
+    // container de 512 MB e cabe agora: por isso o teto é lido do mem_limit
+    // em vez de fixado no código.
+    process.env.ARGON2_MEMORY_COST = '47104';
+    process.env.ARGON2_PARALLELISM = '1';
+
+    const { validateConfiguration, securityConfig } = await loadConfig();
+
+    expect(validateConfiguration()).toBe(true);
+    expect(securityConfig.passwordHash.argon2.memoryCost).toBe(47104);
   });
 
   it('assume p1 quando o pepper atual não declara versão', async() => {

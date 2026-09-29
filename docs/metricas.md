@@ -34,7 +34,48 @@ processo separado que só executou aquele candidato, para 1 e para 4 logins
 simultâneos. Medir no próprio processo do benchmark daria sempre ~0 MB: a
 memória do argon2 já voltou ao pool quando o `await` termina.
 
-### Dentro do orçamento de produção (2.0 CPU, 512 MB)
+### Dentro de 1 GiB / 2.0 CPU (teto atual de produção)
+
+| candidato | hash p50 | verify p50 | login (verify+rehash) p95 | pico RSS x1 | pico RSS x4 |
+| --- | --- | --- | --- | --- | --- |
+| argon2id OWASP forte (m=46MiB, t=1, p=1) | 36.7 ms | 42.8 ms | 137.6 ms | 111 MB | 239 MB |
+| argon2id OWASP mínimo (m=19MiB, t=2, p=1) | 22.9 ms | 24.7 ms | 48.9 ms | 86 MB | 145 MB |
+| argon2id OWASP mínimo + pepper | 19.6 ms | 21.0 ms | 42.7 ms | 86 MB | 145 MB |
+| argon2id OWASP econômico (m=12MiB, t=3, p=1) | 20.8 ms | 21.9 ms | 45.5 ms | 79 MB | 115 MB |
+| argon2id 64MiB (m=64MiB, t=3, p=1) | 115.9 ms | 148.4 ms | 256.8 ms | 131 MB | 325 MB |
+| argon2id 64MiB t=3 p=4 (roadmap) | 90.8 ms | 223.8 ms | 373.0 ms | 131 MB | 325 MB |
+
+Login concorrente, dentro de 1 GiB / 2.0 CPU:
+
+| candidato | c=1 p95 | c=4 p95 | logins/s em c=4 | logins/s em c=8 |
+| --- | --- | --- | --- | --- |
+| argon2id OWASP forte (m=46MiB, t=1, p=1) | 77.5 ms | 157.6 ms | 45 | 164 |
+| argon2id OWASP mínimo (m=19MiB, t=2, p=1) | 49.7 ms | 35.6 ms | 137 | 271 |
+| argon2id OWASP econômico (m=12MiB, t=3, p=1) | 48.0 ms | 39.9 ms | 133 | 260 |
+| argon2id 64MiB (m=64MiB, t=3, p=1) | 297.2 ms | 203.1 ms | 23 | 47 |
+| argon2id 64MiB t=3 p=4 (roadmap) | 305.0 ms | 315.0 ms | 18 | 41 |
+
+**O que o teto maior mudou: nada no throughput.** O `m=64MiB` caberia folgado
+em 1 GiB e continua pedindo 325 MB de pico e ~1/6 dos logins/s do mínimo OWASP.
+A memória deixou de ser restrição sem virar bottleneck.
+
+**O gargalo é CPU, e a conta bate.** Quando o serviço está limitado por CPU, o
+teto de throughput é `núcleos ÷ tempo_por_hash`. Medido em 4 vCPU:
+
+| candidato | p50 | `4 ÷ p50` (teórico) | medido em c=4 |
+| --- | --- | --- | --- |
+| m=19MiB, t=2, p=1 | 26.3 ms | 152/s | 100/s |
+| m=46MiB, t=1, p=1 | 34.6 ms | 116/s | 92/s |
+| m=64MiB, t=3, p=1 | 133.4 ms | 30/s | 29/s |
+| m=64MiB, t=3, p=4 | 112.2 ms | 36/s | 20/s |
+
+Onde a previsão bate com a medição, o limite é CPU. O caso do `p=4` é o mais
+instrutivo: 4 threads por hash **não** são 4 CPUs extras, é o mesmo CPU
+dividido — e por isso o `p=4` entrega 20/s contra 29/s do `p=1` no mesmo
+parâmetro. Mais memória (4 GB em vez de 1) e mais CPU (4 vCPU em vez de 2) não
+melhoram esse número.
+
+### Antes: orçamento de 512 MB / 2.0 CPU (primeira medição)
 
 | candidato | hash p50 | verify p50 | login (verify+rehash) p95 | pico RSS x1 | pico RSS x4 |
 | --- | --- | --- | --- | --- | --- |
@@ -90,21 +131,34 @@ candidatos dentro da mesma execução, não o decimal.
 
 `k6` não está instalado neste ambiente, então o p95 de `/login` é medido com
 `node` e `fetch`, contra o stack real (`docker-compose.prod.yml`, 2.0 CPU,
-512 MB, 4 workers):
+1 GiB, 4 workers):
 
 ```bash
 # o limitador de /login de produção é 5 req/15 min, então a medição sobe o
 # orçamento. Sem isso a própria medição toma 429 e mede o limiter, não o login.
-RATE_LIMIT_PROD_LOGIN_POINTS=100000 RATE_LIMIT_PROD_LOGIN_DURATION=60 \
-  RATE_LIMIT_PROD_LOGIN_BLOCK_DURATION=1 \
-  docker compose --env-file .env.prod -f docker-compose.prod.yml \
+# O limite de IP também precisa subir: em c=8 o limite por IP (100/min) corta a
+# medição antes do limite por login. Ambos voltam ao valor normal depois — e
+# as chaves de rate limit no Redis são apagadas, senão o orçamento inflado
+# continua valendo e o próximo teste mede 429.
+cp .env.prod /tmp/env.prod.bak
+printf 'RATE_LIMIT_PROD_LOGIN_POINTS=100000\nRATE_LIMIT_PROD_LOGIN_DURATION=60\n\
+RATE_LIMIT_PROD_LOGIN_BLOCK_DURATION=1\nRATE_LIMIT_PROD_IP_POINTS=100000\n\
+RATE_LIMIT_PROD_IP_DURATION=60\n' >> .env.prod
+docker compose --env-file .env.prod -f docker-compose.prod.yml \
   up -d --no-deps --force-recreate auth-service
 
 node scripts/measure-login-latency.mjs --url http://localhost:3100 \
-  --user mede_bench --password "$SENHA" --requests 30 --concurrency 1,4,8
+  --user mede_bench --password "$SENHA" --requests 25 --concurrency 1,4,8
+
+# devolve o orçamento de rate limit
+cp /tmp/env.prod.bak .env.prod
+docker compose --env-file .env.prod -f docker-compose.prod.yml \
+  up -d --no-deps --force-recreate auth-service
+docker exec redis-prod redis-cli -n 1 --scan --pattern 'rl_*' \
+  | xargs -r -n1 docker exec redis-prod redis-cli -n 1 DEL
 ```
 
-Credenciais válidas, 30 logins por nível, 1 de aquecimento. O tempo é medido do
+Credenciais válidas, 25 logins por nível, 1 de aquecimento. O tempo é medido do
 lado de quem pediu, e o token emitido a cada resposta é descartado.
 
 | `/login` | p50 | p95 | max | logins/s |
@@ -127,10 +181,32 @@ depois, com `passwordHistory` vazio — o login reescreveu sem trocar a senha do
 usuário. Foi a única vez que a base teve material bcrypt: o algoritmo foi removido
 em seguida, e hoje o `compare` entende apenas argon2id.
 
+### Remedição no teto de 1 GiB
+
+Mesma medição, mesmo script, depois de subir o `mem_limit` de 512 MB para 1 GiB:
+
+| `/login` (argon2id 19MiB) | p50 | p95 | max | logins/s |
+| --- | --- | --- | --- | --- |
+| c=1 | 44.1 ms | 61.8 ms | 75.9 ms | 22.1 |
+| c=4 | 112.0 ms | 219.8 ms | 241.1 ms | 32.8 |
+| c=8 | 215.3 ms | 305.1 ms | 355.4 ms | 33.3 |
+
+Subir a memória **piorou** os números do `/login` (c=1: 45.4 ms → 61.8 ms de
+p95). Não é o hash ficando mais lento — os parâmetros são os mesmos, e o
+benchmark isolado mediu 22.9 ms de p50 para `m=19MiB` no teto novo contra 27.8 ms
+no antigo. É a CPU da máquina, que agora divide 4 vCPU com o resto do que roda
+nela (Mongo, Redis, Portainer, outro projeto), enquanto a primeira medição teve
+CPU mais livre. **Em servidor compartilhado o número que decide é o do endpoint,
+não o do benchmark isolado** — e o endpoint diz que o teto de memória não era o
+que limitava o login.
+
+Consumo do container: 112 MB de RSS em repouso, ~200 MB no pico medido com 8
+logins simultâneos, contra o limite de 1 GiB.
+
 ### Limite de 4 workers
 
 Com 4 workers e 2.0 CPU, o custo por hash continua sendo o gargalo, mas em
-c=1 o serviço entrega 29 logins/s: o `/login` deixou de ser o caminho crítico
+c=1 o serviço entrega ~22 logins/s: o `/login` deixou de ser o caminho crítico
 e a próxima temporada de latência deve ser medida em outro lugar (Mongo,
 Redis, TLS). K6 continua sendo a ferramenta certa para isso; o script de
 medição cobre o caso de um acesso pontual e reproduzível.

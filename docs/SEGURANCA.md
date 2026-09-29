@@ -258,15 +258,17 @@ em c=1 e de **1868 ms para 191 ms** em c=8. Medições completas em
 
 *Recusado:* a configuração que o roadmap propunha (`m=64MiB, t=3, p=4`). Era
 **2.7x mais barata que o bcrypt 12 de hoje** (133.4 ms), então não era "mais
-forte que o que já rodava" em CPU — e 4 logins simultâneos pedem **326 MB de
-pico**, 64% do container e acima do limiar de 200 MB que o próprio `/health` usa
-para marcar `warning`. Trocaria latência de login por risco de OOM.
-*Recusado:* `p=4`. Dentro de 2.0 CPU derruba a latência de um hash (75 ms contra
-133 ms), mas consome 4 threads por requisição: dois logins simultâneos já
-ocupam o container. Os autores do Argon2 pedem `p=1` em servidor — `p>1` entrega
-CPU ao atacante sem ganhar defesa proporcional. `m=46MiB, t=1, p=1` (a segunda
-recomendação da OWASP) foi medida e fica em 208 MB com 4 logins: cabe, mas passa
-do limiar de alerta sem comprar defesa equivalente à de 19MiB/t=2.
+forte que o que já rodava" em CPU. Com o teto de 512 MB, 4 logins simultâneos
+pediam **326 MB de pico** — 64% do container. Trocaria latência de login por
+risco de OOM.
+*Recusado:* `p=4`. E o ponto onde a medição desmentiu o argumento que eu tinha.
+A justificativa costumeira ("4 threads por requisição faz 2 logins ocuparem o
+container") é inválida como explicação: o paralelismo do Argon2 não é CPU extra,
+é **o mesmo CPU compartilhado**, e medir no servidor com 4 vCPU deu 20 logins/s
+para `p=4` contra 29 para `p=1` no mesmo `m=64MiB`. Pior com mais CPU, não
+melhor. O argumento que sobra é o dos autores do Argon2: `p>1` entrega poder
+computacional ao atacante sem devolver defesa proporcional, e em servidor esse
+poder sai do orçamento de latência em vez de entrar.
 
 **O bcrypt saiu do projeto.** A primeira versão desta decisão o mantinha como
 verificador do material legado e como rollback. Em ambiente de laboratório, sem
@@ -297,6 +299,46 @@ quando não trocou. Há teste para os dois.
 falhar, o login é entregue, o aviso vai para o log e a reescrita volta no
 próximo login. O usuário provou a senha; transformar falha de escrita em erro de
 autenticação seria devolver 500 para quem fez tudo certo.
+
+**O orçamento de memória é medido, não suposto.** O `mem_limit` subiu de 512 MB
+para **1 GiB** depois que o hardware foi identificado (server01: i5-7200U, 4 vCPU,
+12 GB). A primeira versão desta decisão tinha validado o argon2id contra um
+`mem_limit` que ninguém tinha medido contra a máquina — era um número escolhido no
+compose, e tratar um número arbitrário como "orçamento real de produção" é o
+erro de método que a medição existia para evitar. O que a medição no teto novo
+mostrou:
+
+| candidato | hash p50 | pico RSS ×4 | logins/s em c=4 (2.0 CPU) |
+| --- | --- | --- | --- |
+| m=19MiB, t=2, p=1 | 22.9 ms | 145 MB | 137 |
+| m=46MiB, t=1, p=1 | 36.7 ms | 239 MB | 45 |
+| m=64MiB, t=3, p=1 | 115.9 ms | 325 MB | 23 |
+| m=64MiB, t=3, p=4 | 90.8 ms | 325 MB | 18 |
+
+Mais memória disponível **não** comprou throughput: com 4 GB em vez de 512 MB, o
+`m=64MiB` continuou pedindo 325 MB de pico e continuou entregando ~1/6 dos
+logins/s do mínimo da OWASP. O padrão da tabela confirma o motivo — o teto medido
+de throughput bate com `núcleos ÷ tempo_por_hash`, então o serviço está limitado
+por **CPU**, não por RAM. Memória de sobra não ajuda um hash que já é memory-hard;
+aumentar `m` aumenta o custo de CPU junto, e é esse custo que o atacante paga
+também.
+
+`m=46MiB, t=1, p=1` (a segunda recomendação da OWASP) é o candidato que ficou de
+fora por falta de memória no primeiro orçamento: 239 MB com 4 logins. Cabe folgado
+nos 1 GiB, e é uma troca legítima **se** a latência de login importar menos que a
+resistência. Não é o padrão porque custa 1.8x a CPU do mínimo e devolve 1/3 do
+throughput (45 contra 137 logins/s) — em 2.0 CPU de orçamento, essa é a decisão
+que mantém o serviço responsivo. Para o que a métrica decide: se o objetivo do
+serviço for resistir a ataque de dicionário com GPU, subir para 46 MiB; se for throughput de
+login, manter 19 MiB.
+
+**Alerta de memória passou a ser proporção.** O `/health` marcava `warning` acima
+de 200 MB fixos. Com o container em 1 GiB esse número dispararia durante o pico
+normal de logins e deixaria de significar alguma coisa. Agora o limite é lido do
+cgroup (`memory.max` v2 / `memory.limit_in_bytes` v1) e o alerta é **65% do
+teto** — ~680 MB num container de 1 GiB, bem acima dos ~200 MB medidos em 8
+logins concorrentes. Um número absoluto erra nas duas direções: alerta cedo demais
+num container grande, nunca num pequeno.
 
 **Um bug que a troca expôs:** o schema do Mongo validava o campo `password` com
 a política de senha em texto claro (12 a 72 caracteres). O hash argon2id tem

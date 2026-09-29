@@ -3,6 +3,7 @@
  * Project: Micrologin
  * Provenance-ID: ML-7F2A
  */
+import { readFileSync } from 'node:fs';
 import mongoose from 'mongoose';
 import { getRedisClient, performHealthCheck as performRedisHealthCheck } from '../../infrastructure/cache/connection.js';
 
@@ -83,6 +84,47 @@ const checkRedis = async(): Promise<CheckResult> => {
 };
 
 /**
+ * Fração do `mem_limit` do container acima da qual a memória vira `warning`.
+ *
+ * O alerta é proporção, não MB fixo: um número absoluto erra nas duas
+ * direções. Com o container em 1 GiB (`docker-compose.prod.yml`), 65% dá
+ * ~680 MB — bem acima do pico medido de 8 logins com argon2id m=19MiB
+ * (~200 MB), então o alerta só aparece quando algo está realmente fora do
+ * previsto. Num container menor o alerta baixa junto, o que é o que se quer.
+ *
+ * O limite do Docker continua sendo quem mata o processo; este é só o sinal
+ * que chega antes, pelo /health.
+ */
+const MEMORY_WARNING_RATIO = 0.65;
+
+/**
+ * Limite de memória do container, em bytes, lido do cgroup.
+ *
+ * O Docker aplica `mem_limit` em cgroup v2 (`memory.max`) ou v1
+ * (`memory.limit_in_bytes`). Lemos o cgroup porque é onde o valor que vale
+ * está: o `mem_limit` do compose é uma intenção, e o que o processo precisa
+ * saber é o teto que ele próprio tem. Fora de container (dev, PM2 direto) o
+ * cgroup não existe e devolve 0, que o chamador trata como "sem limite".
+ */
+const cgroupMemoryLimit = (): number => {
+  const readNumber = (path: string): number => {
+    try {
+      const raw = readFileSync(path, 'utf8').trim();
+      // cgroup v2 reporta "max" quando não há limite.
+      if (raw === 'max' || raw === '') {
+        return 0;
+      }
+      const value = Number(raw);
+      return Number.isFinite(value) && value > 0 ? value : 0;
+    } catch {
+      return 0;
+    }
+  };
+
+  return readNumber('/sys/fs/cgroup/memory.max') || readNumber('/sys/fs/cgroup/memory/memory.limit_in_bytes');
+};
+
+/**
  * Verifica uso de memória
  */
 const checkMemory = (): CheckResult => {
@@ -90,15 +132,19 @@ const checkMemory = (): CheckResult => {
   const totalMB = Math.round(usage.rss / 1024 / 1024);
   const heapMB = Math.round(usage.heapUsed / 1024 / 1024);
 
-  // Alerta se passar de 200MB
-  const status = totalMB > 200 ? 'warning' : 'healthy';
+  const limitMB = Math.round(cgroupMemoryLimit() / 1024 / 1024);
+  const warningMB = Math.round(limitMB * MEMORY_WARNING_RATIO);
+  const status = limitMB > 0 && totalMB > warningMB ? 'warning' : 'healthy';
 
   return {
     status,
     memory: {
       total: `${totalMB}MB`,
       heap: `${heapMB}MB`,
-      external: `${Math.round(usage.external / 1024 / 1024)}MB`
+      external: `${Math.round(usage.external / 1024 / 1024)}MB`,
+      limit: limitMB > 0 ? `${limitMB}MB` : 'sem limite',
+      warningAbove: limitMB > 0 ? `${warningMB}MB` : null,
+      ratio: limitMB > 0 ? Number((totalMB / limitMB).toFixed(2)) : null
     }
   };
 };

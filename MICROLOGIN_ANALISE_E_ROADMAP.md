@@ -138,12 +138,32 @@ aparece com mensagem e stack.
       rotação com `PASSWORD_PEPPER_PREVIOUS`), **desligado por padrão**
 - [x] manter limites: senha opaca, máximo em bytes, histórico 5 (intactos)
 
+**Hardware medido (server01):** Intel Core i5-7200U, 4 vCPU, 12 GB de RAM,
+GT940MX de 4 GB. O `mem_limit` do container de produção é 1 GiB e o limite de
+CPU é 2.0 (metade dos núcleos da máquina). A GT940MX não entra: argon2 é CPU.
+
 **O que a medição mudou em relação ao plano:** o `m=64MiB, t=3, p=4` sugerido
 aqui é **2.7x mais barato** que o bcrypt 12 que já rodava (133.4 ms contra
 365.7 ms) e pede **326 MB de pico** com 4 logins simultâneos — 64% do container.
 O bcrypt 12 era 13x mais caro que o argon2id da OWASP e menos resistente, por
 não ser memory-hard. Resultado no `/login` real: p95 de **491 ms → 45.4 ms** em
 c=1 e **1868 ms → 191 ms** em c=8, com 2.5 → 29.1 logins/s.
+
+**Segunda rodada, depois de identificar o hardware:** o `mem_limit` subiu de
+512 MB para **1 GiB**, e a conclusão sobre `p=4` mudou. O argumento costumeiro
+("4 threads por requisição faz 2 logins ocuparem o container") não se sustenta:
+o paralelismo do Argon2 é o mesmo CPU compartilhado, e medir no servidor deu 20
+logins/s para `p=4` contra 29 do `p=1` no mesmo `m=64MiB` — pior com mais CPU,
+não melhor. O que sobra é o argumento dos autores do Argon2: `p>1` entrega poder
+computacional ao atacante sem devolver defesa proporcional.
+
+Também mediu-se que **mais memória não compra throughput**: com 4 GB, o `m=64MiB`
+continua pedindo 325 MB de pico e continua entregando ~1/6 dos logins/s do mínimo
+OWASP. O teto medido bate com `núcleos ÷ tempo_por_hash`, ou seja, o serviço está
+limitado por CPU. `m=46MiB, t=1, p=1` (segunda recomendação da OWASP) cabe
+folgado nos 1 GiB e é uma troca legítima entre resistência e latência, mas custa
+1.8x a CPU e devolve 1/3 do throughput (45 contra 137 logins/s) — mantida a
+19 MiB por enquanto.
 
 **Definição de pronto:** decisão D16/D17 registradas com dado medido (não por
 palpite), e reescrita sem quebrar quem já tem conta (login antigo continua

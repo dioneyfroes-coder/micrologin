@@ -65,7 +65,11 @@ services:
     restart: unless-stopped
     # Limites de recursos (aplicados pelo Docker, mesmo fora de swarm)
     cpus: 2.0
-    mem_limit: 512m
+    # 1 GiB, medido contra o host real (server01: i5-7200U, 4 vCPU, 12 GB).
+    # Subir de 512m não muda o custo do hash — o gargalo é CPU, medido em
+    # docs/metricas.md — mas dá folga para o pico de 4 logins simultâneos e
+    # para a folga de framework que o /health mede.
+    mem_limit: 1g
     # Readiness, e não /health: o health check completo responde 503 quando a
     # memória passa do limiar, o que marcaria o container como unhealthy sem
     # que ele tenha deixado de conseguir atender tráfego.

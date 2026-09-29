@@ -122,6 +122,21 @@ describe('performHealthCheck - health checks de sistema', () => {
     expect(result.services?.memory.status).toBeDefined();
     expect(result.services?.uptime.pid).toBe(process.pid);
   });
+
+  it('reporta a memória contra o limite do container, não um teto arbitrário', async() => {
+    mongodb.connection.readyState = 0;
+    redisUp();
+
+    const result = await performHealthCheck();
+    const memory = result.services?.memory.memory as Record<string, unknown>;
+
+    // O alerta de memória é fração do `mem_limit` (lido do cgroup), porque um
+    // MB fixo erra nas duas direções: no container de 1 GiB ele dispararia
+    // durante o pico normal de logins, e num container maior nunca dispararia.
+    expect(memory).toHaveProperty('limit');
+    expect(memory).toHaveProperty('warningAbove');
+    expect(typeof memory.ratio === 'number' || memory.ratio === null).toBe(true);
+  });
 });
 
 describe('performReadinessCheck - o startup não é tráfego válido', () => {

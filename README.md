@@ -12,6 +12,7 @@ Projeto de portfólio em Node.js para demonstrar uma API de autenticação com a
 - fluxo HTTP completo de renovação/revogação: `POST /refresh` e `POST /logout`
 - política única de username: 3 a 30 caracteres, apenas letras, números, `_` e `-` (fonte única em `shared/utils/usernamePolicy.ts`)
 - hash de senha em **argon2id** (m=19MiB, t=2, p=1 — mínimos da OWASP), único algoritmo do projeto, com reescrita silenciosa quando os parâmetros sobem
+- parâmetros do hash validados contra o `mem_limit` do container no arranque, e alerta de memória do `/health` como fração desse mesmo teto
 - política de senha forte em fonte única (12+ caracteres, máximo de 72 bytes, composição, lista de senhas comuns) e troca de senha com step-up, histórico de 5 hashes e encerramento das sessões
 - rate limiting por IP e por login, com backend Redis e fallback em memória quando o Redis está indisponível
 - monitoramento auxiliar de segurança com limites de memória (auditoria e anomalias sem crescimento ilimitado)

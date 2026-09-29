@@ -116,6 +116,27 @@ export const databaseConfig = {
  * Configurações de segurança
  */
 
+/**
+ * Logins simultâneos que o serviço precisa absorver sem trocar de hash.
+ *
+ * É o número que decide o teto de memória do argon2id: `memoryCost` KiB por
+ * hash, vezes logins concorrentes, tem que caber no container. Não é uma
+ * constante arbitrária — é a concorrência que o serviço já o serviço entrega sem
+ * fila perceptível (medido em `docs/metricas.md`), e o que passar disso é
+ * traffic shaping, não parameter de hash.
+ */
+const MAX_CONCURRENT_LOGINS = 8;
+
+/**
+ * Memória disponível para hashes do argon2id, em KiB.
+ *
+ * 1 GiB (`mem_limit` do compose) menos 256 MiB de folga para o runtime Node,
+ * conexões, buffer de request e o que o /health considera estrutura do
+ * processo. Medido: em repouso o serviço fica em ~52 MiB, e 8 logins com
+ * `m=19MiB` sobem para ~200 MiB.
+ */
+const ARGON2_MEMORY_BUDGET_KIB = 786432;
+
 // `isProduction` é derivado aqui (antes de `environmentConfig`) porque a
 // política de revogação depende do ambiente já na leitura das configs.
 const isProductionEnv = (process.env.NODE_ENV || 'development') === 'production';
@@ -432,13 +453,16 @@ export function validateConfiguration(): boolean {
   if (parallelism < 1) {
     errors.push('ARGON2_PARALLELISM deve ser pelo menos 1');
   }
-  // 4 logins simultâneos a 128 MiB passam de 640 MB e matam o container de
-  // 512 MB. O teto é a memória do serviço, não um dogma de parâmetro.
-  if (memoryCost * Math.max(4, parallelism) > 131072) {
+  // 4 logins simultâneos consumem o mesmo teto que 1 login consome o dobro:
+  // o que importa é memória × concorrência caber no container, não o número
+  // de um hash sozinho. O teto vem do `mem_limit` do compose (1 GiB) menos a
+  // folga que o framework precisa, e não de um dogma de parâmetro.
+  if (memoryCost * MAX_CONCURRENT_LOGINS > ARGON2_MEMORY_BUDGET_KIB) {
     errors.push(
-      `ARGON2_MEMORY_COST/ARGON2_PARALLELISM altos demais: ${Math.max(4, parallelism)} logins ` +
-      `simultâneos pediriam ${(memoryCost * Math.max(4, parallelism) / 1024).toFixed(0)} MiB, ` +
-      'acima do que o container de 512 MB comporta (veja docs/metricas.md)'
+      `ARGON2_MEMORY_COST/ARGON2_PARALLELISM altos demais: ${MAX_CONCURRENT_LOGINS} logins ` +
+      `simultâneos pediriam ${(memoryCost * MAX_CONCURRENT_LOGINS / 1024).toFixed(0)} MiB, ` +
+      `acima do orçamento de ${(ARGON2_MEMORY_BUDGET_KIB / 1024).toFixed(0)} MiB do container ` +
+      '(veja docs/metricas.md)'
     );
   }
 
