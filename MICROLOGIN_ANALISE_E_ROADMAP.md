@@ -20,7 +20,7 @@ automatizadas** de que ele sobrevive a roubo de credenciais e a DDoS.
 | Área | Hoje | Onde |
 | --- | --- | --- |
 | Assinatura JWT | **HS256** simétrico (`jsonwebtoken`), access 15m / refresh 7d, `jti` + `sv` | `src/infrastructure/external-services/jwtTokenService.ts` |
-| Hash de senha | **argon2id** m=19MiB/t=2/p=1, política 12–72 bytes, histórico 5, blacklist de comuns (bcrypt removido na 1.2) | `src/shared/utils/passwordPolicy.ts`, `appConfig.ts` |
+| Hash de senha | **argon2id** m=64MiB/t=1/p=1, política 12–72 bytes, histórico 5, blacklist de comuns (bcrypt removido na 1.2) | `src/shared/utils/passwordPolicy.ts`, `appConfig.ts` |
 | Redis | v7, AOF `appendonly yes`, **sem senha/ACL**, **sem réplica**, blacklist por `jti` com `SET NX` | `docker-compose.yml`, `connection.ts` |
 | MongoDB | v7 **single node, sem auth, sem backup configurado** | `docker-compose.yml`, `models/User.ts` |
 | Escala | vertical PM2 (4 instâncias) OU cluster module (4/8) OU compose 1 réplica com `container_name` + bind | `ecosystem.config.cjs`, `src/app.ts`, compose |
@@ -127,7 +127,7 @@ aparece com mensagem e stack.
       e concorrência (`scripts/benchmark-password-hash.mjs`, `npm run bench:hash`)
 - [x] p95 de `/login` real antes e depois (`scripts/measure-login-latency.mjs`,
       `npm run bench:login`), porque o benchmark de hash não é o endpoint
-- [x] decisão `D16`: **argon2id m=19MiB, t=2, p=1**
+- [x] decisão `D16`: **argon2id m=64MiB, t=1, p=1** (medido: 3.4x a memória por tentativa do atacante com a mesma latência de login)
 - [x] reescrita sem quebrar usuários: `compare` lê os parâmetros do hash
       guardado, rehash no próximo login, escrita best-effort
 - [x] **bcrypt removido do projeto** (laboratório, sem usuários antigos):

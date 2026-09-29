@@ -181,9 +181,78 @@ depois, com `passwordHistory` vazio — o login reescreveu sem trocar a senha do
 usuário. Foi a única vez que a base teve material bcrypt: o algoritmo foi removido
 em seguida, e hoje o `compare` entende apenas argon2id.
 
-### Remedição no teto de 1 GiB
+### Escolha do parâmetro: o recurso escasso de cada lado
 
-Mesma medição, mesmo script, depois de subir o `mem_limit` de 512 MB para 1 GiB:
+Com o teto de 1 GiB medido, a escada de candidatos fecha o argumento. O critério
+não é "mais parâmetro é melhor": é em qual recurso **cada lado** gasta, porque
+os dois pagam o mesmo custo por tentativa e o que separa atacante de servidor é
+o que **sobra** na mão de um e não do outro.
+
+- Atacante com GPU: FLOPS em abundância, VRAM escassa e cara. `m` é o gargalo.
+- Atacante com ASIC: custo linear em `t`, custo alto em `m` (silício de memória).
+- Servidor (2.0 CPU, medido): limitado por **CPU**, nunca por RAM.
+
+CPU é o recurso que os dois têm de sobra, então o esforço vai para `m` e `t`
+fica no mínimo. Medido no server01, 20 iterações por amostra, dentro do
+container de 1 GiB e 2.0 CPU:
+
+| candidato | mem/tentativa | CPU/tentativa | hash p50 | pico RSS ×4 | p95 c=1 | logins/s c=4 | 8 conc. |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| m=19MiB, t=2, p=1 | 1.0x | 1.0x | 30.2 ms | 145 MB | 84.2 ms | 76 | 152 MiB |
+| m=32MiB, t=2, p=1 | 1.7x | 1.7x | 40.0 ms | 197 MB | 131.0 ms | 66 | 256 MiB |
+| m=46MiB, t=1, p=1 | 2.4x | 1.2x | 38.0 ms | 207 MB | 84.2 ms | 88 | 368 MiB |
+| m=46MiB, t=2, p=1 | 2.4x | 2.4x | 66.1 ms | 253 MB | 244.4 ms | 37 | 368 MiB |
+| **m=64MiB, t=1, p=1** | **3.4x** | **1.7x** | **36.0 ms** | **301 MB** | **81.1 ms** | **72** | **512 MiB** |
+| m=64MiB, t=2, p=1 | 3.4x | 3.4x | 80.2 ms | 325 MB | 173.4 ms | 40 | 512 MiB |
+| m=64MiB, t=3, p=1 | 3.4x | 5.1x | 128.2 ms | 325 MB | 359.5 ms | 24 | 512 MiB |
+| m=96MiB, t=1, p=1 | 5.1x | 2.5x | 77.4 ms | 355 MB | 310.3 ms | 40 | 768 MiB |
+| m=96MiB, t=2, p=1 | 5.1x | 5.1x | 130.6 ms | 453 MB | 364.0 ms | 21 | 768 MiB |
+
+**`m=64MiB, t=1, p=1` é a escolha.** O dado que decide é a coluna de latência:
+3.4x a memória por tentativa do atacante com p95 de login de **81.1 ms contra
+84.2 ms** do mínimo da OWASP. Não há regressão perceptível para ganhar 3.4x o
+custo de memória de quem ataca.
+
+`m=96MiB` fecha a conta de memória exatamente (96 × 8 = 768 MiB, o orçamento
+inteiro) e passa na validação de arranque porque o guard compara com `>`. Fica
+fora do padrão de propósito: sem folga para o runtime, qualquer coisa que o Node
+retenha além do argon2 compete com o hash. Com 64 MiB sobram ~33% de folga.
+**O maior valor que cabe não é o melhor valor.**
+
+`m=46MiB, t=1` (a segunda recomendação da OWASP) é a escolha se o objetivo fosse
+só bater a OWASP com folga; entrega 2.4x de memória a p95 de 84.2 ms. Fica atrás
+porque 64 MiB entrega mais defesa **e** a mesma latência.
+
+### Endpoint real com o parâmetro escolhido (m=64MiB, t=1)
+
+O benchmark isolado é o do hash. O número que decide é o do `/login`, medido no
+serviço em produção (server01, 2.0 CPU, 1 GiB, `m=64MiB, t=1, p=1`), com o
+rate limit de produção elevado **só** durante a medição e restaurado depois:
+
+| `/login` (argon2id 64MiB, t=1) | p50 | p95 | max | logins/s |
+| --- | --- | --- | --- | --- |
+| c=1 (n=40) | 47.4 ms | 78.7 ms | 119.1 ms | 21.1 |
+| c=4 | 107.6 ms | 120.4 ms | 120.4 ms | 37.2 |
+| c=8 | 344.0 ms | 409.1 ms | 409.1 ms | 23.3 |
+
+O p95 de 78.7 ms em c=1 é a linha que fecha a decisão: o benchmark isolado
+prometia 81.1 ms e o endpoint entregou 78.7 ms. Os dois concordam, e ambos estão
+no mesmo patamar do mínimo da OWASP (84.2 ms) — 3.4x a memória por tentativa do
+atacante sem custo de latência.
+
+`c=1` foi medido com 40 amostras de propósito: com 9 amostras o p95 é o máximo
+da amostra, e um outlier de fila vira "p95" sem significar nada.
+
+O `c=8` piora (409 ms) porque 8 logins de 64 MiB somam 512 MiB e o container
+tem 1 GiB: o pico cabe, mas a alocação compete com o resto do processo. É o
+teto de `MAX_CONCURRENT_LOGINS` fazendo o que foi feito para fazer, e a latência
+de 8 logins simultâneos é o preço honesto de segurar 512 MiB de hash ao mesmo
+tempo.
+
+### Remediação no teto de 1 GiB (m=19MiB, antes desta mudança)
+
+Mesma medição, mesmo script, depois de subir o `mem_limit` de 512 MB para 1 GiB,
+ainda com `m=19MiB, t=2`:
 
 | `/login` (argon2id 19MiB) | p50 | p95 | max | logins/s |
 | --- | --- | --- | --- | --- |
@@ -191,17 +260,14 @@ Mesma medição, mesmo script, depois de subir o `mem_limit` de 512 MB para 1 Gi
 | c=4 | 112.0 ms | 219.8 ms | 241.1 ms | 32.8 |
 | c=8 | 215.3 ms | 305.1 ms | 355.4 ms | 33.3 |
 
-Subir a memória **piorou** os números do `/login` (c=1: 45.4 ms → 61.8 ms de
-p95). Não é o hash ficando mais lento — os parâmetros são os mesmos, e o
+Subir a memória **piorou** os números do `/login` (c=1: p95 de 45.4 ms para
+61.8 ms). Não é o hash ficando mais lento — os parâmetros são os mesmos, e o
 benchmark isolado mediu 22.9 ms de p50 para `m=19MiB` no teto novo contra 27.8 ms
 no antigo. É a CPU da máquina, que agora divide 4 vCPU com o resto do que roda
 nela (Mongo, Redis, Portainer, outro projeto), enquanto a primeira medição teve
 CPU mais livre. **Em servidor compartilhado o número que decide é o do endpoint,
-não o do benchmark isolado** — e o endpoint diz que o teto de memória não era o
-que limitava o login.
-
-Consumo do container: 112 MB de RSS em repouso, ~200 MB no pico medido com 8
-logins simultâneos, contra o limite de 1 GiB.
+não o do benchmark isolado** — e o endpoint dizia que o teto de memória não era
+o que limitava o login.
 
 ### Limite de 4 workers
 

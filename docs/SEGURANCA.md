@@ -246,22 +246,49 @@ emissor aceita SEC1 também (é o mesmo par em outra embalagem, e convertê-lo v
 `node:crypto` não afrouxa nada); e um teste novo executa o script de verdade e
 assina com a chave que ele produziu — a costura que faltava.
 
-### D16 — argon2id (m=19MiB, t=2, p=1), único algoritmo do projeto
-O hash de senha é **argon2id** nos mínimos da
-[OWASP Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html).
-A escolha saiu de medição, não de costume: na mesma máquina, no mesmo orçamento
-de produção (2.0 CPU, 512 MB), o bcrypt cost 12 que rodava custava **365.7 ms
-por hash contra 27.8 ms de argon2id 19MiB** — 13x mais caro e menos resistente,
-por não ser memory-hard. No `/login` real o p95 caiu de **491 ms para 45.4 ms**
-em c=1 e de **1868 ms para 191 ms** em c=8. Medições completas em
+### D16 — argon2id (m=64MiB, t=1, p=1), único algoritmo do projeto
+O hash de senha é **argon2id** com 64 MiB de memória e 1 passada. A escolha saiu
+de medição, não de costume: na mesma máquina, no mesmo orçamento de produção
+(2.0 CPU, 1 GiB), o bcrypt cost 12 que rodava custava **365.7 ms por hash
+contra 27.8 ms de argon2id 19MiB** — 13x mais caro e menos resistente, por não
+ser memory-hard. No `/login` real o p95 caiu de **491 ms para 45.4 ms** em c=1 e
+de **1868 ms para 191 ms** em c=8. Medições completas em
 [`metricas.md`](metricas.md).
 
-*Recusado:* a configuração que o roadmap propunha (`m=64MiB, t=3, p=4`). Era
-**2.7x mais barata que o bcrypt 12 de hoje** (133.4 ms), então não era "mais
-forte que o que já rodava" em CPU. Com o teto de 512 MB, 4 logins simultâneos
-pediam **326 MB de pico** — 64% do container. Trocaria latência de login por
-risco de OOM.
-*Recusado:* `p=4`. E o ponto onde a medição desmentiu o argumento que eu tinha.
+**O critério não é "mais parâmetro é melhor" — é em qual recurso escasso cada
+lado gasta.** O atacante com GPU tem FLOPS em abundância e VRAM escassa; o atacante
+com ASIC tem custo linear em `t` e custo alto em `m`. CPU é o recurso que os dois têm de sobra. Portanto o esforço vai para `m`, e `t` fica no mínimo: subir
+`t` dobra o custo dos dois lados, mas o atacante engole esse dobro no que já
+abunda, enquanto o servidor paga em latência de login. É a assimetria que justifica `t=1`.
+
+Com esse critério, a escada medida no server01 (2.0 CPU, 1 GiB) fecha assim:
+
+| candidato | mem/tentativa vs 19MiB | CPU/tentativa vs 19MiB | p95 c=1 | 8 conc. | veredito |
+| --- | --- | --- | --- | --- | --- |
+| m=19MiB, t=2, p=1 | 1.0x | 1.0x | 84.2 ms | 152 MiB | mínimo da OWASP |
+| m=32MiB, t=2, p=1 | 1.7x | 1.7x | 131.0 ms | 256 MiB | latência demais |
+| **m=64MiB, t=1, p=1** | **3.4x** | **1.7x** | **81.1 ms** | **512 MiB** | **escolhido** |
+| m=64MiB, t=2, p=1 | 3.4x | 3.4x | 173.4 ms | 512 MiB | latência demais |
+| m=64MiB, t=3, p=1 | 3.4x | 5.1x | 359.5 ms | 512 MiB | latência demais |
+| m=96MiB, t=1, p=1 | 5.1x | 2.5x | 310.3 ms | 768 MiB | fecha a conta sem folga |
+| m=96MiB, t=2, p=1 | 5.1x | 5.1x | 364.0 ms | 768 MiB | latência demais |
+
+**`m=64MiB, t=1` é o ponto de melhor troca da curva**, e o dado que decide é a
+coluna de latência: 3.4x a memória por tentativa do atacante com p95 de login de
+**81.1 ms contra 84.2 ms** do mínimo da OWASP. Não há regressão perceptível
+para ganhar 3.4x o custo de memória do atacante. Subir para `t=2` dobra o custo
+de CPU dos dois lados e empurra o p95 para 173 ms — o dobro de latência por um
+ganho que o atacante absorve no recurso que ele tem de sobra.
+
+*Recusado:* `m=96MiB`. Fecha a conta de memória exatamente (96 × 8 = 768 MiB, o
+orçamento inteiro) e passa na validação porque o guard compara com `>`. É
+preciso dizer por que não é o padrão: **o maior valor que cabe não é o melhor
+valor**. Sem folga para o runtime, qualquer coisa que o Node retenha além do
+argon2 (heap, buffer de request, conexão) competindo com o hash. Com 64 MiB
+sobram ~33% de folga, e é por isso que o guard tem teste para os dois lados do
+boundary.
+
+*Recusado:* `p>1`. E o ponto onde a medição desmentiu o argumento que eu tinha.
 A justificativa costumeira ("4 threads por requisição faz 2 logins ocuparem o
 container") é inválida como explicação: o paralelismo do Argon2 não é CPU extra,
 é **o mesmo CPU compartilhado**, e medir no servidor com 4 vCPU deu 20 logins/s
@@ -269,6 +296,9 @@ para `p=4` contra 29 para `p=1` no mesmo `m=64MiB`. Pior com mais CPU, não
 melhor. O argumento que sobra é o dos autores do Argon2: `p>1` entrega poder
 computacional ao atacante sem devolver defesa proporcional, e em servidor esse
 poder sai do orçamento de latência em vez de entrar.
+
+*Recusado:* o `m=64MiB, t=3, p=4` que o roadmap propunha original. Medido aqui: 359.5 ms de p95 e 5.1x o custo de CPU dos dois lados, com o mesmo 3.4x de
+memória do `t=1`. É estritamente pior que a escolha feita.
 
 **O bcrypt saiu do projeto.** A primeira versão desta decisão o mantinha como
 verificador do material legado e como rollback. Em ambiente de laboratório, sem
@@ -283,11 +313,11 @@ argon2id, e qualquer outro valor é tratado como credencial ilegível (resposta
 
 **O que continua de pé.** O reescritor (`needsRehash` → `rehashPassword`) não
 dependia do bcrypt: ele cobre o caso real daqui em diante, que é **subir os
-parâmetros**. Um hash gravado com m=19MiB continua verificável depois de a
-configuração ir para 46MiB, e cada login bem-sucedido reescreve o hash nos
-parâmetros em vigor, na mesma requisição. Sem tabela de migração, sem campo novo,
-sem pedir troca de senha. O E2E cobre exatamente esse caminho gravando um hash
-fraco direto no Mongo.
+parâmetros** — e foi exatamente o que esta mudança fez. Um hash gravado com
+m=19MiB continua verificável depois de a configuração ir para 64MiB, e cada login
+bem-sucedido reescreve o hash nos parâmetros em vigor, na mesma requisição. Sem
+tabela de migração, sem campo novo, sem pedir troca de senha. O E2E cobre
+exatamente esse caminho gravando um hash fraco direto no Mongo.
 
 **Reescrever não é trocar senha.** `rehashPassword` grava só o hash: não toca em
 `passwordHistory` nem em `passwordChangedAt`. Se o hash anterior fosse para o
@@ -305,49 +335,29 @@ para **1 GiB** depois que o hardware foi identificado (server01: i5-7200U, 4 vCP
 12 GB). A primeira versão desta decisão tinha validado o argon2id contra um
 `mem_limit` que ninguém tinha medido contra a máquina — era um número escolhido no
 compose, e tratar um número arbitrário como "orçamento real de produção" é o
-erro de método que a medição existia para evitar. O que a medição no teto novo
-mostrou:
+erro de método que a medição existia para evitar. Duas conclusões que a medição
+no teto novo deu, e que contrariam o que eu tinha escrito antes:
 
-| candidato | hash p50 | pico RSS ×4 | logins/s em c=4 (2.0 CPU) |
-| --- | --- | --- | --- |
-| m=19MiB, t=2, p=1 | 22.9 ms | 145 MB | 137 |
-| m=46MiB, t=1, p=1 | 36.7 ms | 239 MB | 45 |
-| m=64MiB, t=3, p=1 | 115.9 ms | 325 MB | 23 |
-| m=64MiB, t=3, p=4 | 90.8 ms | 325 MB | 18 |
+**Mais memória não comprou throughput.** Com 4 GB em vez de 512 MB, o `m=64MiB`
+continuou pedindo 325 MB de pico e continuou entregando ~1/6 dos logins/s do
+mínimo da OWASP. O teto medido bate com `núcleos ÷ tempo_por_hash`, que é a
+assinatura de limite de **CPU**, não de RAM. Isso é o que justifica `t=1`: com o
+servidor limitado por CPU, tempo é o recurso que não há.
 
-Mais memória disponível **não** comprou throughput: com 4 GB em vez de 512 MB, o
-`m=64MiB` continuou pedindo 325 MB de pico e continuou entregando ~1/6 dos
-logins/s do mínimo da OWASP. O padrão da tabela confirma o motivo — o teto medido
-de throughput bate com `núcleos ÷ tempo_por_hash`, então o serviço está limitado
-por **CPU**, não por RAM. Memória de sobra não ajuda um hash que já é memory-hard;
-aumentar `m` aumenta o custo de CPU junto, e é esse custo que o atacante paga
-também.
-
-`m=46MiB, t=1, p=1` (a segunda recomendação da OWASP) é o candidato que ficou de
-fora por falta de memória no primeiro orçamento: 239 MB com 4 logins. Cabe folgado
-nos 1 GiB, e é uma troca legítima **se** a latência de login importar menos que a
-resistência. Não é o padrão porque custa 1.8x a CPU do mínimo e devolve 1/3 do
-throughput (45 contra 137 logins/s) — em 2.0 CPU de orçamento, essa é a decisão
-que mantém o serviço responsivo. Para o que a métrica decide: se o objetivo do
-serviço for resistir a ataque de dicionário com GPU, subir para 46 MiB; se for throughput de
-login, manter 19 MiB.
+**Subir a memória piorou o `/login`.** p95 foi de 45.4 para 61.8 ms em c=1 sem
+que o hash tivesse ficado mais lento — os parâmetros eram os mesmos e o
+benchmark isolado mediu 22.9 ms de p50 no teto novo contra 27.8 ms no antigo. É
+a CPU da máquina, agora dividida com Mongo, Redis, Portainer e outro projeto. Em
+servidor compartilhado, **quem decide é o número do endpoint, não o do benchmark
+isolado** — e ele dizia que o teto de memória nunca foi o limite do login.
 
 **Alerta de memória passou a ser proporção.** O `/health` marcava `warning` acima
 de 200 MB fixos. Com o container em 1 GiB esse número dispararia durante o pico
 normal de logins e deixaria de significar alguma coisa. Agora o limite é lido do
 cgroup (`memory.max` v2 / `memory.limit_in_bytes` v1) e o alerta é **65% do
-teto** — ~680 MB num container de 1 GiB, bem acima dos ~200 MB medidos em 8
-logins concorrentes. Um número absoluto erra nas duas direções: alerta cedo demais
-num container grande, nunca num pequeno.
-
-**Um bug que a troca expôs:** o schema do Mongo validava o campo `password` com
-a política de senha em texto claro (12 a 72 caracteres). O hash argon2id tem
-~100 e era **recusado na gravação** — registro devolvia 400. A política de senha
-vale para o que o usuário digita (domínio, `passwordPolicy.ts`); o campo do banco
-guarda hash e valida como hash. O teto de 72 bytes deixou de ser herança do
-bcrypt: o argon2id não trunca, então ele virou escolha do serviço, mantido para
-não deixar a entrada desnecessariamente grande.
-
+teto** — ~680 MB num container de 1 GiB, bem acima dos ~512 MB que 8 logins
+concorrentes com `m=64MiB` podem pedir. Um número absoluto erra nas duas
+direções: alerta cedo demais num container grande, e nunca num pequeno.
 ### D17 — Pepper: mecanismo pronto, desligado por padrão
 O pepper (HMAC-SHA256 antes do hash) foi **medido** e **implementado**, mas
 **não vem ligado**. A decisão está no código — `PASSWORD_PEPPER` e

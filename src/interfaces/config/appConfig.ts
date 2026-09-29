@@ -133,7 +133,7 @@ const MAX_CONCURRENT_LOGINS = 8;
  * 1 GiB (`mem_limit` do compose) menos 256 MiB de folga para o runtime Node,
  * conexões, buffer de request e o que o /health considera estrutura do
  * processo. Medido: em repouso o serviço fica em ~52 MiB, e 8 logins com
- * `m=19MiB` sobem para ~200 MiB.
+ * `m=64MiB` sobem para ~512 MiB.
  */
 const ARGON2_MEMORY_BUDGET_KIB = 786432;
 
@@ -310,16 +310,17 @@ export const securityConfig = {
    * formato do hash guardado, então subir o custo migra a base sem ninguém ser
    * trancado fora: cada usuário é reescrito no próximo login.
    *
-   * Os padrões do argon2id são os mínimos da OWASP (m=19MiB, t=2, p=1) e foram
-   * escolhidos por medição: 4 logins simultâneos ficam em 146 MB de pico, dentro
-   * do container de 512 MB. Ver `docs/metricas.md`.
+   * Os padrões do argon2id foram escolhidos por medição no server01 (i5-7200U,
+   * 2.0 CPU, 1 GiB): m=64MiB, t=1, p=1. Isso é 3.4x a memória por tentativa que
+   * um atacante precisa gastar em relação aos m=19MiB, t=2 da OWASP, e entrega
+   * a mesma latência de login (p95 de 81 ms contra 84 ms). Ver `docs/metricas.md`.
    */
   passwordHash: {
     algorithm: 'argon2id' as const,
     argon2: {
-      // KiB. 19456 = 19 MiB.
-      memoryCost: parseEnvNumber(process.env.ARGON2_MEMORY_COST, 19456),
-      timeCost: parseEnvNumber(process.env.ARGON2_TIME_COST, 2),
+      // KiB. 65536 = 64 MiB.
+      memoryCost: parseEnvNumber(process.env.ARGON2_MEMORY_COST, 65536),
+      timeCost: parseEnvNumber(process.env.ARGON2_TIME_COST, 1),
       parallelism: parseEnvNumber(process.env.ARGON2_PARALLELISM, 1)
     },
     /**
@@ -453,10 +454,12 @@ export function validateConfiguration(): boolean {
   if (parallelism < 1) {
     errors.push('ARGON2_PARALLELISM deve ser pelo menos 1');
   }
-  // 4 logins simultâneos consumem o mesmo teto que 1 login consome o dobro:
+  // 8 logins simultâneos consomem o mesmo teto que 1 login consome o dobro:
   // o que importa é memória × concorrência caber no container, não o número
   // de um hash sozinho. O teto vem do `mem_limit` do compose (1 GiB) menos a
-  // folga que o framework precisa, e não de um dogma de parâmetro.
+  // folga que o framework precisa, e não de um dogma de parâmetro. Com o
+  // padrão de 64 MiB, 8 logins usam 512 MiB dos 768 MiB: sobra ~33% de folga
+  // para o runtime, e 96 MiB seria recusado aqui.
   if (memoryCost * MAX_CONCURRENT_LOGINS > ARGON2_MEMORY_BUDGET_KIB) {
     errors.push(
       `ARGON2_MEMORY_COST/ARGON2_PARALLELISM altos demais: ${MAX_CONCURRENT_LOGINS} logins ` +

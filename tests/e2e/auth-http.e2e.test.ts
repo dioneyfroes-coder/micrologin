@@ -595,8 +595,15 @@ describe('E2E HTTP - fluxo completo contra infra real (compose)', () => {
     expect(loginBody.data?.accessToken).toBeTruthy();
 
     const after = await UserModel.findOne({ user: unique }).select('+passwordHistory');
-    // O hash foi reescrito nos parâmetros em vigor, sem troca de senha.
-    expect(after?.password).toMatch(/^\$argon2id\$v=19\$m=19456,t=2,p=1\$/);
+    // O hash foi reescrito nos parâmetros em vigor, sem troca de senha. Os
+    // parâmetros vêm do config e não de um literal aqui: o alvo do rehash é
+    // "o que está em vigor agora", então duplicar o número neste teste faria
+    // ele passar com um default errado e falhar com um default certo.
+    const { securityConfig } = await import('../../src/interfaces/config/appConfig.js');
+    const { memoryCost, timeCost, parallelism } = securityConfig.passwordHash.argon2;
+    expect(after?.password).toMatch(
+      new RegExp(`^\\$argon2id\\$v=19\\$m=${memoryCost},t=${timeCost},p=${parallelism}\\$`)
+    );
     expect(after?.password).not.toBe(legacyHash);
     // Reescrever não é trocar senha: histórico e data de troca ficam como estavam.
     expect(after?.passwordHistory ?? []).toEqual(before?.passwordHistory ?? []);

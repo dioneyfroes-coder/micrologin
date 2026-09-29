@@ -277,11 +277,13 @@ describe('política de revogação com Redis indisponível', () => {
 });
 
 describe('configuração de hash de senha', () => {
-  it('usa argon2id nos mínimos da OWASP por padrão', async() => {
+  it('usa argon2id com 64MiB por padrão, o ponto de melhor custo para o atacante', async() => {
     const { securityConfig } = await loadConfig();
 
     expect(securityConfig.passwordHash.algorithm).toBe('argon2id');
-    expect(securityConfig.passwordHash.argon2).toEqual({ memoryCost: 19456, timeCost: 2, parallelism: 1 });
+    // m=64MiB, t=1: 3.4x a memória por tentativa dos m=19MiB da OWASP com a
+    // mesma latência de login. Ver a tabela em docs/metricas.md.
+    expect(securityConfig.passwordHash.argon2).toEqual({ memoryCost: 65536, timeCost: 1, parallelism: 1 });
     // Pepper desligado por padrão (D17).
     expect(securityConfig.passwordHash.pepper).toBeUndefined();
   });
@@ -296,10 +298,10 @@ describe('configuração de hash de senha', () => {
     expect(() => validateConfiguration()).toThrow(/ARGON2_MEMORY_COST/);
   });
 
-  it('recusa configuração que estouraria a memória do container', async() => {
-    // 128 MiB × 8 logins = 1 GiB, acima do orçamento de 768 MiB que sobra
-    // dos 1 GiB do container. O que é recusado é a conta inteira, não o
-    // número de um hash sozinho: um hash que cabe, repetido, não cabe.
+  it('recusa m=128MiB, que estouraria a memória do container', async() => {
+    // 128 MiB × 8 logins = 1 GiB, acima do orçamento de 768 MiB que sobra dos
+    // 1 GiB do container. O que é recusado é a conta inteira, não o número de
+    // um hash sozinho: um hash que cabe, repetido 8 vezes, não cabe.
     process.env.ARGON2_MEMORY_COST = '131072';
     process.env.ARGON2_PARALLELISM = '1';
 
@@ -308,17 +310,27 @@ describe('configuração de hash de senha', () => {
     expect(() => validateConfiguration()).toThrow(/768 MiB/);
   });
 
-  it('aceita m=46MiB, que é o que o orçamento de 1 GiB permite', async() => {
-    // 46 MiB × 8 logins = 368 MiB, dentro do orçamento. Foi recusado no
-    // container de 512 MB e cabe agora: por isso o teto é lido do mem_limit
-    // em vez de fixado no código.
-    process.env.ARGON2_MEMORY_COST = '47104';
+  it('aceita o padrão de 64MiB com folga para o runtime', async() => {
+    // 64 MiB × 8 logins = 512 MiB, dentro do orçamento de 768 MiB, com ~33%
+    // de folga para o runtime. Este é o motivo do padrão não ser 96 MiB.
+    const { validateConfiguration, securityConfig } = await loadConfig();
+
+    expect(validateConfiguration()).toBe(true);
+    expect(securityConfig.passwordHash.argon2.memoryCost).toBe(65536);
+  });
+
+  it('aceita m=96MiB, que fecha a conta exatamente com o orçamento', async() => {
+    // 96 MiB × 8 logins = 768 MiB exatos. Passa porque o guard compara com
+    // `>`, e isso é intencional: 96 MiB é o maior valor que ainda cabe, mas
+    // não deixa folga nenhuma para o runtime. Por isso o padrão é 64 MiB e
+    // não o máximo teórico — o maior valor que cabe não é o melhor valor.
+    process.env.ARGON2_MEMORY_COST = '98304';
     process.env.ARGON2_PARALLELISM = '1';
 
     const { validateConfiguration, securityConfig } = await loadConfig();
 
     expect(validateConfiguration()).toBe(true);
-    expect(securityConfig.passwordHash.argon2.memoryCost).toBe(47104);
+    expect(securityConfig.passwordHash.argon2.memoryCost).toBe(98304);
   });
 
   it('assume p1 quando o pepper atual não declara versão', async() => {
