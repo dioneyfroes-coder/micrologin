@@ -110,6 +110,12 @@ export RESILIENCE_PORT
 # mediria "chave trocada" em vez de "serviço voltou".
 RESILIENCE_KEYS_DIR="${RESILIENCE_KEYS_DIR:-${ROOT_DIR}/.resilience-keys}"
 export RESILIENCE_KEYS_DIR
+# O `kid` mora aqui, e não só no compose, porque o teste afirma no token real
+# que saiu a chave deste par. Se os dois lados tivessem o valor escrito por
+# conta própria, a asserção passaria para qualquer `kid` que o compose aceitasse
+# — isto é, ela não provaria nada.
+RESILIENCE_JWT_KID="${RESILIENCE_JWT_KID:-resilience-v1}"
+export RESILIENCE_JWT_KID
 KEYS_GENERATED=0
 
 RUN_ID="$(date +%s)-$$"
@@ -316,6 +322,16 @@ log_step "Subindo o stack de teste (build da imagem de produção inclusa)"
 # errada.
 "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
 
+# O par ES256 é gerado aqui, e não versionado, porque o app em produção recusa
+# subir sem ele: um diretório de chaves montado e vazio derruba o container no
+# `validateConfiguration` — o teste falharia esperando um readiness que nunca
+# viria, sem dizer por quê. `generate-jwt-keys.sh` recusa sobrescrever um par
+# existente, então um resto de execução anterior é removido antes.
+rm -rf "$RESILIENCE_KEYS_DIR"
+bash "${SCRIPT_DIR}/generate-jwt-keys.sh" "$RESILIENCE_KEYS_DIR" "$RESILIENCE_JWT_KID" --for-container >/dev/null
+KEYS_GENERATED=1
+log_info "par ES256 efêmero gerado em ${RESILIENCE_KEYS_DIR} (kid ${RESILIENCE_JWT_KID})"
+
 if [ "$SKIP_BUILD" -eq 1 ]; then
     log_info "--skip-build: usando a imagem micrologin-resilience:local existente"
     "${COMPOSE[@]}" up -d --no-build >/dev/null
@@ -348,6 +364,16 @@ request POST "/login" "{\"user\":\"${USERNAME}\",\"password\":\"${PASSWORD}\"}"
 expect_status 200 "login"
 ACCESS_TOKEN=$(json_field "$BODY" data.accessToken)
 [ -n "$ACCESS_TOKEN" ] || fail "login sem data.accessToken: ${BODY:0:300}"
+
+# A configuração de assinatura precisa ser a que vai para produção, não uma que
+# apenas funciona. Lê o header do token REAL emitido pelo container: um stack
+# que assinasse HS256 passaria todas as etapas abaixo (o token verifica, o
+# login funciona, o restart funciona) e não estaria testando nada de ES256.
+expect_eq "$(jwt_header_claim "$ACCESS_TOKEN" alg)" "ES256" \
+    "algoritmo do token emitido (o stack deveria assinar em ES256)"
+expect_eq "$(jwt_header_claim "$ACCESS_TOKEN" kid)" "$RESILIENCE_JWT_KID" \
+    "kid do token emitido (tem de ser a chave deste par)"
+log_pass "token real saiu assinado em ES256 com o kid ${RESILIENCE_JWT_KID}"
 
 request GET "/profile" "" "$ACCESS_TOKEN"
 expect_status 200 "perfil autenticado"

@@ -43,7 +43,9 @@ services:
       # A chave privada entra como ARQUIVO montado (Docker secret / volume do
       # orquestrador), nunca como valor de ambiente: variável de ambiente vaza
       # em `docker inspect`, em dump de crash e em log de configuração.
-      # Gere o par com scripts/generate-jwt-keys.sh e aponte o caminho do host.
+      # Gere o par no diretorio do HOST com --for-container, que deixa o
+      # material legivel pelo uid 1001 do nodeuser sem abrir o modo 600:
+      #   scripts/generate-jwt-keys.sh <JWT_ES256_KEYS_DIR> <kid> --for-container
       JWT_ES256_PRIVATE_KEY_PATH: /run/secrets/jwt-es256-private.pem
       JWT_ES256_PUBLIC_KEY_PATH: /run/secrets/jwt-es256-public.pem
     volumes:

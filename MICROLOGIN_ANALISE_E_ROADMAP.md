@@ -71,7 +71,7 @@ quando o ataque para.
 
 ## 1.1 Assinar JWT com curva elíptica (HS256 → ES256)
 
-**Status: pendente.**
+**Status: concluído em 2026-09-29.**
 
 Trocar a assinatura simétrica por **ES256 (ECDSA P-256)** com `jose`:
 
@@ -83,18 +83,38 @@ Trocar a assinatura simétrica por **ES256 (ECDSA P-256)** com `jose`:
 
 Tarefas:
 
-- [ ] comparar `jsonwebtoken`(HS256) vs `jose`(ES256) e registrar decisão `D15` em `docs/SEGURANCA.md`
-- [ ] gerar par de chaves (development e production) e documentar provisão por KMS/secrets manager
-- [ ] `JWTTokenService` assina com privada e verifica com pública, `algorithms: ['ES256']`
-- [ ] claim `kid` obrigatória; validar token sem `kid` como erro de verificação
-- [ ] rotação: suportar 2 chaves simultâneas em produção (nova assina, antiga ainda é aceita verificar; prazo curto e agendado)
-- [ ] `validateConfiguration`: produção exige chaves reais (não placeholder) e recusa HS256
-- [ ] testes: assinar/verificar, token com `kid` errado, chave antiga durante a janela de rotação, token sem `kid`
-- [ ] E2E e `test:infra` verdes com o novo esquema (o smoke de deploy assina e verifica de ponta a ponta)
+- [x] comparar `jsonwebtoken`(HS256) vs `jose`(ES256) e registrar decisão `D15` em `docs/SEGURANCA.md`
+- [x] gerar par de chaves (development e production) e documentar provisão por KMS/secrets manager
+- [x] `JWTTokenService` assina com privada e verifica com pública, `algorithms: ['ES256']`
+- [x] claim `kid` obrigatória; validar token sem `kid` como erro de verificação
+- [x] rotação: suportar 2 chaves simultâneas em produção (nova assina, antiga ainda é aceita verificar; prazo curto e agendado)
+- [x] `validateConfiguration`: produção exige chaves reais (não placeholder) e recusa HS256
+- [x] testes: assinar/verificar, token com `kid` errado, chave antiga durante a janela de rotação, token sem `kid`
+- [x] E2E e `test:infra` verdes com o novo esquema (o smoke de deploy assina e verifica de ponta a ponta)
 
 **Definição de pronto:** verificação usa chave pública em todos os ambientes; a
 chave privada não é necessária em verificador; teste de rotação cobre janela de
 tolerância; produção valida `kid` presente.
+
+**Estado:** implementado. `src/infrastructure/external-services/jwtSigner.ts`
+tem `Hs256Signer` (dev/test) e `Es256Signer` (produção) atrás de `TokenSigner`;
+o `JWTTokenService` perdeu a assinatura direta e delega. `algorithm` (e o bloqueio
+de HS256 em produção) vive em `validateConfiguration`, coberto por
+`security-config.test.ts`. **Provas executadas:** `test:infra` verde com uma
+asserção nova que lê o header do token real emitido pelo container (`alg=ES256`,
+`kid` do par do teste); `test:e2e` verde rodando o app em **ES256** (14 testes),
+também conferindo `alg`/`kid` no login.
+
+**Incidente pago no caminho:** `generate-jwt-keys.sh` emitia a privada em SEC1
+(`openssl ecparam -genkey`) e o `jose` só importa PKCS#8 — o container subia, o
+health respondia, e **todo login devolvia 401 de credencial inválida** porque a
+assinatura falhava; o erro real sumia no log (o `logger` espalhava `Error` com
+spread e `message`/`stack` são não-enumeráveis). Corrigido nas três pontas: o
+script emite PKCS#8 e confere o formato; o emissor aceita SEC1 (conversão via
+`node:crypto`); o `logger` serializa `Error` de verdade. Dois testes novos
+travam a costura: `tests/unit/jwt-key-provisioning.test.ts` executa o script real
+e assina com a chave que ele produziu, e `logger.test.ts` garante que a falha
+aparece com mensagem e stack.
 
 ## 1.2 Decisão de hash de senha: argon2id vs bcrypt raisado
 

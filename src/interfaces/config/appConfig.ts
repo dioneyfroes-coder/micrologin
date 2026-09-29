@@ -163,8 +163,19 @@ const readPem = (name: string): string | undefined => {
   if (path) {
     try {
       return readFileSync(path, 'utf8');
-    } catch {
-      logger.error(`Falha ao ler a chave em ${name}_PATH: ${path}`);
+    } catch (error) {
+      // A causa importa e não é sempre "não configurado": um arquivo montado
+      // pelo Docker com o dono do host em modo 600 é, para o processo que roda
+      // como outro usuário, ilegível. Dizer "é obrigatório" nesse caso manda o
+      // operador atrás da variável de ambiente enquanto o defeito é permissão
+      // no arquivo.
+      const code = (error as NodeJS.ErrnoException).code;
+      const cause = code === 'ENOENT'
+        ? 'arquivo não encontrado'
+        : code === 'EACCES'
+          ? 'sem permissão de leitura (no container, o dono do arquivo é o do host: use scripts/generate-jwt-keys.sh --for-container)'
+          : code || 'falha desconhecida';
+      logger.error(`Falha ao ler a chave em ${name}_PATH: ${path} — ${cause}`);
       return undefined;
     }
   }

@@ -209,6 +209,43 @@ indisponibilidade no contador de força bruta — o alerta que treina o time a
 ignorar o alerta que importa. O corpo público continua genérico; só o **status**
 carrega o diagnóstico.
 
+### D15 — JWT assimétrico (ES256/ECDSA P-256) com `kid`, e `jose` como biblioteca
+A assinatura saiu de HS256 para **ES256**. A chave privada só existe em quem
+emite; a pública (não-secreta) verifica. O header carrega `kid` e o verificador
+recusa token sem `kid` ou com `kid` desconhecido. Produção recusa HS256 no
+arranque. HS256 permanece apenas em dev/test, implementado por `jsonwebtoken`,
+para os testes que fabricam token legado.
+*Recusado:* manter HS256. HS256 é simétrico: todo processo que verifica um
+token — o próprio serviço em outra réplica, um gateway, o dashboard — precisa do
+segredo que assina, o que transforma cada verificador em um emissor. Um dump de
+memória de qualquer um deles vira forja de token. A rotação, sem `kid`, obrigaria
+o verificador a "testar todas as chaves" ou a aceitar apenas a mais recente —
+derrubando todo mundo logado a cada troca.
+*Recusado:* escolher a chave pela ordem de preferência em vez do `kid`. Seria
+reabrir, na verificação, a ambiguidade que o `kid` fecha.
+
+**Custo pago, registrado:** ES256 compartilha o par entre access e refresh, então
+a única separação entre os dois passa a ser a claim `token_type`. Um refresh
+aceito como access seria escalada de privilégio (7 dias no lugar de 15 minutos).
+Por isso o `JWTTokenService` confere a claim no caminho ES256, e `verify` decide
+pelo tipo — coberto em teste.
+
+**Incidente de provisionamento (por que D15 tem este parágrafo):** a primeira
+versão de `scripts/generate-jwt-keys.sh` gerava a privada com
+`openssl ecparam -genkey` (**SEC1**, `BEGIN EC PRIVATE KEY`), enquanto o
+`jose/importPKCS8` só importa **PKCS#8** (`BEGIN PRIVATE KEY`). O par estava
+correto — a pública derivava da privada e o script se autoconferia —, o
+container subia, o health check respondia, e o **primeiro login devolvia `401`
+de credencial inválida** porque a assinatura é que falhava; o erro real saía
+como "Erro na autenticação" sem stack (o logger espalhava o `Error` com
+spread, e `message`/`stack` não são enumeráveis — D15 também corrige isso).
+A suíte unitária passava porque gerava chaves com `jose.generateKeyPairSync`
+(PKCS#8): provisionamento e consumo nunca se encontravam em um teste. A correção
+tem três partes: o script passou a emitir PKCS#8 e a conferir o formato; o
+emissor aceita SEC1 também (é o mesmo par em outra embalagem, e convertê-lo via
+`node:crypto` não afrouxa nada); e um teste novo executa o script de verdade e
+assina com a chave que ele produziu — a costura que faltava.
+
 ---
 
 ## 7. O que este serviço não é

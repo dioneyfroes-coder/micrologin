@@ -49,7 +49,10 @@ services:
       # que vai para produção: um teste que valida HS256 não diz nada sobre a
       # configuração que realmente roda.
       JWT_ALGORITHM: ES256
-      JWT_ES256_KID: resilience-v1
+      # O `kid` vem do ambiente porque o script gera o par com esse mesmo nome
+      # e depois afirma, no token real, que saiu a chave deste par. Hardcodar
+      # aqui e no script daria uma asserção que passaria para qualquer chave.
+      JWT_ES256_KID: ${RESILIENCE_JWT_KID:-resilience-v1}
       JWT_ES256_PRIVATE_KEY_PATH: /run/secrets/jwt-es256-private.pem
       JWT_ES256_PUBLIC_KEY_PATH: /run/secrets/jwt-es256-public.pem
       SECURITY_DASHBOARD_TOKEN: resilience-test-dashboard-token-22222

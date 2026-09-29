@@ -31,6 +31,31 @@ interface LogEntry {
   [key: string]: unknown;
 }
 
+/**
+ * Serializa um `Error` para o log.
+ *
+ * Existe porque `Error.message` e `Error.stack` não são propriedades enumeráveis:
+ * espalhar o erro com `{...error}` — o caminho óbvio — produz `{}` e some com o
+ * diagnóstico inteiro. Foi assim que uma falha de assinatura ES256 apareceu no
+ * log como "Erro na autenticação" sem uma linha sequer de motivo, enquanto o
+ * cliente recebia 401 de credencial inválida. `code` entra junto porque é ele
+ * que separa, por exemplo, indisponibilidade de revogação de erro de token.
+ */
+const serializeError = (error: Error): Record<string, unknown> => {
+  const code = (error as Error & { code?: unknown }).code;
+
+  return {
+    error: {
+      name: error.name,
+      message: error.message,
+      // `code` costuma vir de `Object.assign(new Error(...), { code })` ou de
+      // erro de biblioteca, e vive em campo próprio enumerável.
+      ...(typeof code === 'string' ? { code } : {}),
+      ...(error.stack ? { stack: error.stack } : {})
+    }
+  };
+};
+
 const write = (level: LogLevel, message: string, meta?: unknown): void => {
   if (!shouldLog(level)) {
     return;
@@ -41,14 +66,26 @@ const write = (level: LogLevel, message: string, meta?: unknown): void => {
     level,
     pid: process.pid,
     message,
-    ...(meta && typeof meta === 'object'
-      ? meta as Record<string, unknown>
-      : meta !== undefined ? { error: String(meta) } : {})
+    ...(meta instanceof Error
+      ? serializeError(meta)
+      : meta && typeof meta === 'object'
+        ? meta as Record<string, unknown>
+        : meta !== undefined ? { error: String(meta) } : {})
   };
 
+  // No formato console o detalhe do erro entra na própria linha: o modo console
+  // é o padrão e é onde a pessoa olha primeiro quando o serviço falha.
   const output = isStructured()
     ? JSON.stringify(entry)
-    : `[${entry.timestamp}] ${level.toUpperCase()} ${entry.pid} ${message}`;
+    : [
+      `[${entry.timestamp}] ${level.toUpperCase()} ${entry.pid} ${message}`,
+      ...(meta instanceof Error
+        ? [
+          `  ↳ ${meta.name}: ${meta.message}`,
+          ...(meta.stack ? meta.stack.split('\n').slice(1).map(line => `    ${line.trim()}`) : [])
+        ]
+        : [])
+    ].join('\n');
 
   if (level === 'error') {
     console.error(output);

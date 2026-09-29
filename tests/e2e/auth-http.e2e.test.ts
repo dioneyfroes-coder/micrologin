@@ -12,8 +12,13 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from '@jest/globals';
 import type { Server } from 'http';
+import { generateKeyPairSync } from 'node:crypto';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import mongoose from 'mongoose';
+import { decodeProtectedHeader } from 'jose';
 import { disconnectRedis } from '../../src/infrastructure/cache/connection.js';
 
 const E2E_PORT = 3400;
@@ -23,6 +28,10 @@ const MONGO_PORT = Number(process.env.E2E_MONGO_PORT || 27020);
 const REDIS_PORT = Number(process.env.E2E_REDIS_PORT || 6380);
 const BASE_URL = `http://127.0.0.1:${E2E_PORT}`;
 const SECURITY_DASHBOARD_TOKEN = 'e2e-security-dashboard-token-with-32-chars';
+// `kid` do par efêmero do teste. O token precisa sair com este valor no header:
+// sem o `kid`, o verificador teria que testar todas as chaves, que é
+// exatamente o que a rotação veio para evitar.
+const E2E_KID = 'e2e-v1';
 
 const waitForPort = async(port: number, timeoutMs: number): Promise<void> => {
   const deadline = Date.now() + timeoutMs;
@@ -95,6 +104,9 @@ const rawGet = (path: string, requestId: string): Promise<string> => new Promise
 
 describe('E2E HTTP - fluxo completo contra infra real (compose)', () => {
   let server: Server | null = null;
+  let keysDir: string | null = null;
+  let privateKeyPath = '';
+  let publicKeyPath = '';
 
   beforeAll(async() => {
     // Ambiente ANTES de importar o app (appConfig lê env na importação)
@@ -106,6 +118,29 @@ describe('E2E HTTP - fluxo completo contra infra real (compose)', () => {
     process.env.JWT_SECRET = process.env.JWT_SECRET || 'e2e-secret-key-with-at-least-32-chars!!';
     process.env.SECURITY_DASHBOARD_TOKEN = SECURITY_DASHBOARD_TOKEN;
     process.env.LOG_LEVEL = 'error';
+
+    // A assinatura é a de produção: ES256. Um E2E em HS256 validaria um caminho
+    // que produção recusa no arranque, e foi exatamente essa distância que
+    // deixou passar um par de chaves no formato errado — o serviço subia,
+    // passava no health check e devolvia 401 de credencial inválida no primeiro
+    // login, porque a assinatura é que falhava. `E2E_JWT_ALGORITHM=HS256`
+    // reexecuta a suíte no caminho legado quando for isso que se quer medir.
+    process.env.JWT_ALGORITHM = process.env.E2E_JWT_ALGORITHM || 'ES256';
+    if (process.env.JWT_ALGORITHM === 'ES256') {
+      const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+      keysDir = mkdtempSync(join(tmpdir(), 'e2e-jwt-keys-'));
+      privateKeyPath = join(keysDir, 'jwt-es256-private.pem');
+      publicKeyPath = join(keysDir, 'jwt-es256-public.pem');
+      writeFileSync(privateKeyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 });
+      writeFileSync(publicKeyPath, publicKey.export({ type: 'spki', format: 'pem' }), { mode: 0o644 });
+
+      process.env.JWT_ES256_KID = E2E_KID;
+      // Por arquivo, como em produção: chave privada em variável de ambiente é
+      // texto de configuração, e texto de configuração vaza em log, em dump e
+      // em `docker inspect`.
+      process.env.JWT_ES256_PRIVATE_KEY_PATH = privateKeyPath;
+      process.env.JWT_ES256_PUBLIC_KEY_PATH = publicKeyPath;
+    }
     // Limites folgados: o E2E exercita vários logins por IP e não deve
     // depender do orçamento de rate limit (a política é testada em unidade).
     process.env.RATE_LIMIT_PROD_LOGIN_POINTS = process.env.RATE_LIMIT_PROD_LOGIN_POINTS || '500';
@@ -132,6 +167,10 @@ describe('E2E HTTP - fluxo completo contra infra real (compose)', () => {
     }
     await mongoose.disconnect();
     await disconnectRedis();
+    if (keysDir) {
+      rmSync(keysDir, { recursive: true, force: true });
+      keysDir = null;
+    }
   }, 15000);
 
   it('health reporta mongo e redis operacionais', async() => {
@@ -224,6 +263,17 @@ describe('E2E HTTP - fluxo completo contra infra real (compose)', () => {
     const refreshToken = loginBody.data?.refreshToken as string;
     expect(accessToken).toBeTruthy();
     expect(refreshToken).toBeTruthy();
+
+    // O token que o serviço devolve tem que sair no esquema que ele declara.
+    // A checagem é do header, sem verificar assinatura: o que se prova aqui é
+    // que o par configurado é o que assinou. Um token que o serviço não
+    // consegue assinar vira, para o cliente, 401 de credencial inválida.
+    if ((process.env.JWT_ALGORITHM || 'ES256') === 'ES256') {
+      const header = decodeProtectedHeader(accessToken);
+      expect(header.alg).toBe('ES256');
+      expect(header.kid).toBe(E2E_KID);
+      expect(decodeProtectedHeader(refreshToken).kid).toBe(E2E_KID);
+    }
 
     // 3. Profile lê o usuário autenticado
     const profileRes = await getJson('/profile', bearer(accessToken));

@@ -24,6 +24,7 @@
  */
 
 import jwt, { type SignOptions } from 'jsonwebtoken';
+import { createPrivateKey } from 'node:crypto';
 import { SignJWT, jwtVerify, importPKCS8, importSPKI, decodeJwt, type CryptoKey } from 'jose';
 
 /**
@@ -142,6 +143,36 @@ export interface Es256Keys {
 }
 
 /**
+ * Importa a chave privada aceitando os dois formatos de PEM que aparecem no
+ * mundo real para a mesma chave.
+ *
+ * PKCS#8 é o formato nativo do `jose` e o que a provisionação deve emitir. SEC1
+ * (`BEGIN EC PRIVATE KEY`) é o que `openssl ecparam -genkey` produz, e o que
+ * many KMS e operadores já têm em disco. Recusá-lo não é segurança: é o mesmo
+ * par em outra embalagem, e a recusa cobra o preço no lugar errado — o par
+ * passa pela conferência de quem provisionou, o processo sobe, e a assinatura
+ * quebra no **primeiro login**, respondendo 401 de credencial inválida. Falha
+ * de infraestrutura vestida de erro de usuário.
+ *
+ * A conversão usa o próprio `node:crypto` (que entende os dois formatos) para
+ * reexportar em PKCS#8, sem depender do ASN.1 na mão.
+ */
+const importPrivateKey = async(pem: string): Promise<CryptoKey> => {
+  try {
+    return await importPKCS8(pem, 'ES256');
+  } catch (error) {
+    try {
+      const reexported = createPrivateKey(pem).export({ type: 'pkcs8', format: 'pem' }).toString();
+      return await importPKCS8(reexported, 'ES256');
+    } catch {
+      // A exceção que interessa é a primeira, sobre a chave recebida: a segunda
+      // é sobre a tentativa de conversão e não ajuda ninguém a corrigir.
+      throw error;
+    }
+  }
+};
+
+/**
  * ES256 (ECDSA P-256).
  *
  * A chave de assinatura e as chaves de verificação são importadas uma vez e
@@ -185,7 +216,7 @@ export class Es256Signer implements TokenSigner {
       verification.set(this.config.previousKid, await importSPKI(this.config.previousPublicKeyPem, 'ES256'));
     }
 
-    const signing = await importPKCS8(this.config.privateKeyPem, 'ES256');
+    const signing = await importPrivateKey(this.config.privateKeyPem);
     return { signing, verification };
   }
 
