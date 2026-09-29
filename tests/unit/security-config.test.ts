@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
+import { generateKeyPairSync } from 'crypto';
 
 const originalEnv = { ...process.env };
 
@@ -7,12 +8,28 @@ const loadConfig = async() => {
   return import('../../src/interfaces/config/appConfig.js');
 };
 
+/** Par EC P-256 em PEM, no formato que um `.env` consegue representar. */
+const es256Pair = () => {
+  const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+  return {
+    kid: 'v1',
+    // `\n` literal: é assim que PEM costuma aparecer dentro de variável de
+    // ambiente, e é o que a leitura de configuração precisa normalizar.
+    privateKeyEnv: privateKey.export({ type: 'pkcs8', format: 'pem' }).toString().replace(/\n/g, '\\n'),
+    publicKeyEnv: publicKey.export({ type: 'spki', format: 'pem' }).toString().replace(/\n/g, '\\n')
+  };
+};
+
 const configureProduction = (token: string) => {
   process.env.NODE_ENV = 'production';
   process.env.JWT_SECRET = 'test-secret-key-with-at-least-32-chars-123';
   process.env.JWT_REFRESH_SECRET = 'test-refresh-secret-with-32-chars-min!!';
   process.env.URI_MONGODB = 'mongodb://localhost:27017/test-db';
   process.env.SECURITY_DASHBOARD_TOKEN = token;
+  const { privateKeyEnv, publicKeyEnv } = es256Pair();
+  process.env.JWT_ES256_PRIVATE_KEY = privateKeyEnv;
+  process.env.JWT_ES256_PUBLIC_KEY = publicKeyEnv;
+  process.env.JWT_ES256_KID = 'v1';
 };
 
 afterEach(() => {
@@ -46,9 +63,10 @@ describe('configuração do dashboard de segurança', () => {
   });
 });
 
-describe('configuração dos segredos JWT', () => {
+describe('configuração dos segredos JWT (HS256 legado)', () => {
   it('exige JWT_REFRESH_SECRET em produção (sem fallback para JWT_SECRET)', async() => {
     configureProduction('a'.repeat(32));
+    process.env.JWT_ALGORITHM = 'HS256';
     delete process.env.JWT_REFRESH_SECRET;
 
     const { validateConfiguration } = await loadConfig();
@@ -58,6 +76,7 @@ describe('configuração dos segredos JWT', () => {
 
   it('exige JWT_REFRESH_SECRET com pelo menos 32 caracteres', async() => {
     configureProduction('a'.repeat(32));
+    process.env.JWT_ALGORITHM = 'HS256';
     process.env.JWT_REFRESH_SECRET = 'curto';
 
     const { validateConfiguration } = await loadConfig();
@@ -67,6 +86,7 @@ describe('configuração dos segredos JWT', () => {
 
   it('rejeita JWT_REFRESH_SECRET igual a JWT_SECRET em produção', async() => {
     configureProduction('a'.repeat(32));
+    process.env.JWT_ALGORITHM = 'HS256';
     process.env.JWT_REFRESH_SECRET = process.env.JWT_SECRET;
 
     const { validateConfiguration } = await loadConfig();
@@ -75,16 +95,23 @@ describe('configuração dos segredos JWT', () => {
   });
 
   it('aceita segredos distintos e não os expõe no resumo', async() => {
-    configureProduction('a'.repeat(32));
+    // Fora de produção: o resumo precisa dizer que há segredo sem dizer qual é.
+    // Em produção o caminho é ES256, verificado nos testes abaixo.
+    process.env.NODE_ENV = 'development';
+    process.env.JWT_SECRET = 'test-secret-key-with-at-least-32-chars-123';
+    process.env.JWT_REFRESH_SECRET = 'test-refresh-secret-with-32-chars-min!!';
+    process.env.URI_MONGODB = 'mongodb://localhost:27017/test-db';
+    delete process.env.JWT_ALGORITHM;
 
     const { validateConfiguration, getConfigSummary } = await loadConfig();
 
     expect(validateConfiguration()).toBe(true);
     const summary = getConfigSummary() as unknown as {
-      security: { jwt: boolean; refreshJwt: boolean };
+      security: { jwt: { algorithm: string; symmetricSecret: boolean; refreshJwt: boolean } };
     };
-    expect(summary.security.jwt).toBe(true);
-    expect(summary.security.refreshJwt).toBe(true);
+    expect(summary.security.jwt.algorithm).toBe('HS256');
+    expect(summary.security.jwt.symmetricSecret).toBe(true);
+    expect(summary.security.jwt.refreshJwt).toBe(true);
     expect(JSON.stringify(summary)).not.toContain('test-secret-key');
   });
 
@@ -97,6 +124,125 @@ describe('configuração dos segredos JWT', () => {
     const { validateConfiguration } = await loadConfig();
 
     expect(validateConfiguration()).toBe(true);
+  });
+});
+
+describe('assinatura ES256', () => {
+  it('é o padrão em produção, sem exigir segredo simétrico', async() => {
+    configureProduction('a'.repeat(32));
+    delete process.env.JWT_SECRET;
+    delete process.env.JWT_REFRESH_SECRET;
+    delete process.env.JWT_ALGORITHM;
+
+    const { validateConfiguration, getConfigSummary } = await loadConfig();
+
+    expect(validateConfiguration()).toBe(true);
+    const summary = getConfigSummary() as unknown as {
+      security: { jwt: { algorithm: string; es256: boolean; kid: string } };
+    };
+    expect(summary.security.jwt.algorithm).toBe('ES256');
+    expect(summary.security.jwt.es256).toBe(true);
+    expect(summary.security.jwt.kid).toBe('v1');
+  });
+
+  it('exige chave privada e pública', async() => {
+    configureProduction('a'.repeat(32));
+    delete process.env.JWT_ES256_PRIVATE_KEY;
+
+    const { validateConfiguration } = await loadConfig();
+
+    expect(() => validateConfiguration()).toThrow(/JWT_ES256_PRIVATE_KEY é obrigatório/);
+  });
+
+  it('recusa HS256 em produção: quem verifica não pode assinar', async() => {
+    configureProduction('a'.repeat(32));
+    process.env.JWT_ALGORITHM = 'HS256';
+
+    const { validateConfiguration } = await loadConfig();
+
+    expect(() => validateConfiguration()).toThrow(/HS256 não é permitido em produção/);
+  });
+
+  it('recusa algoritmo desconhecido em vez de cair num padrão implícito', async() => {
+    configureProduction('a'.repeat(32));
+    process.env.JWT_ALGORITHM = 'RS512';
+
+    const { validateConfiguration } = await loadConfig();
+
+    expect(() => validateConfiguration()).toThrow(/JWT_ALGORITHM deve ser ES256 ou HS256/);
+  });
+
+  it('recusa rotação pela metade: chave anterior sem kid', async() => {
+    configureProduction('a'.repeat(32));
+    const previous = es256Pair();
+    process.env.JWT_ES256_PREVIOUS_PUBLIC_KEY = previous.publicKeyEnv;
+
+    const { validateConfiguration } = await loadConfig();
+
+    expect(() => validateConfiguration()).toThrow(/JWT_ES256_PREVIOUS_KID é obrigatório/);
+  });
+
+  it('recusa kid anterior sem a chave correspondente', async() => {
+    configureProduction('a'.repeat(32));
+    process.env.JWT_ES256_PREVIOUS_KID = 'v0';
+
+    const { validateConfiguration } = await loadConfig();
+
+    expect(() => validateConfiguration()).toThrow(/JWT_ES256_PREVIOUS_PUBLIC_KEY é obrigatório/);
+  });
+
+  it('recusa kid anterior igual ao atual: seria uma rotação que não rotaciona', async() => {
+    configureProduction('a'.repeat(32));
+    const previous = es256Pair();
+    process.env.JWT_ES256_PREVIOUS_KID = 'v1';
+    process.env.JWT_ES256_PREVIOUS_PUBLIC_KEY = previous.publicKeyEnv;
+
+    const { validateConfiguration } = await loadConfig();
+
+    expect(() => validateConfiguration()).toThrow(/deve ser diferente de JWT_ES256_KID/);
+  });
+
+  it('aceita janela de rotação completa', async() => {
+    configureProduction('a'.repeat(32));
+    const previous = es256Pair();
+    process.env.JWT_ES256_PREVIOUS_KID = 'v0';
+    process.env.JWT_ES256_PREVIOUS_PUBLIC_KEY = previous.publicKeyEnv;
+
+    const { validateConfiguration } = await loadConfig();
+
+    expect(validateConfiguration()).toBe(true);
+  });
+
+  it('normaliza o PEM com quebras de linha literais e aceita base64', async() => {
+    configureProduction('a'.repeat(32));
+    const pair = es256Pair();
+    const base64 = Buffer.from(
+      pair.privateKeyEnv.replace(/\\n/g, '\n')
+    ).toString('base64');
+
+    const literal = await loadConfig();
+    expect(literal.securityConfig.jwt.es256.privateKey).toContain('-----BEGIN PRIVATE KEY-----');
+    expect(literal.securityConfig.jwt.es256.privateKey).toContain('\n');
+
+    process.env.JWT_ES256_PRIVATE_KEY = base64;
+    const encoded = await loadConfig();
+    expect(encoded.securityConfig.jwt.es256.privateKey).toBe(
+      pair.privateKeyEnv.replace(/\\n/g, '\n')
+    );
+  });
+
+  it('mantém HS256 fora de produção, onde não há KMS', async() => {
+    process.env.NODE_ENV = 'development';
+    process.env.JWT_SECRET = 'test-secret-key-with-at-least-32-chars-123';
+    process.env.URI_MONGODB = 'mongodb://localhost:27017/test-db';
+    delete process.env.JWT_ALGORITHM;
+    delete process.env.JWT_ES256_PRIVATE_KEY;
+    delete process.env.JWT_ES256_PUBLIC_KEY;
+
+    const { validateConfiguration, securityConfig } = await loadConfig();
+
+    expect(validateConfiguration()).toBe(true);
+    expect(securityConfig.jwt.algorithm).toBe('HS256');
   });
 });
 

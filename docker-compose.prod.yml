@@ -39,6 +39,21 @@ services:
       VERSION: ${VERSION:-latest}
       # O container expõe a porta interna 3000; APP_PORT é o binding do host
       PORT: 3000
+      # --- Assinatura ES256 ---
+      # A chave privada entra como ARQUIVO montado (Docker secret / volume do
+      # orquestrador), nunca como valor de ambiente: variável de ambiente vaza
+      # em `docker inspect`, em dump de crash e em log de configuração.
+      # Gere o par com scripts/generate-jwt-keys.sh e aponte o caminho do host.
+      JWT_ES256_PRIVATE_KEY_PATH: /run/secrets/jwt-es256-private.pem
+      JWT_ES256_PUBLIC_KEY_PATH: /run/secrets/jwt-es256-public.pem
+    volumes:
+      # Chave de assinatura: somente leitura. O diretório do host vem do
+      # .env.prod (JWT_ES256_KEYS_DIR), de um secret do Docker ou de um volume
+      # com saída do KMS.
+      - type: bind
+        source: ${JWT_ES256_KEYS_DIR:-./secrets}
+        target: /run/secrets
+        read_only: true
     # Porta do HOST vem do .env.prod (fonte da verdade). Se estiver em uso,
     # some +1 via scripts/next-port.sh --env .env.prod.
     ports:

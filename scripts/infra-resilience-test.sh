@@ -103,6 +103,15 @@ RESILIENCE_PORT="${RESILIENCE_PORT:-3200}"
 BASE_URL="http://localhost:${RESILIENCE_PORT}"
 export RESILIENCE_PORT
 
+# Par de chaves ES256 efêmero, montado em disco. Efêmero de propósito: um par
+# novo a cada execução significa que nenhuma chave de teste sobrevive ao fim do
+# teste. Persistente de propósito dentro da execução: o token emitido antes do
+# restart do container precisa continuar verificando depois dele, senão o teste
+# mediria "chave trocada" em vez de "serviço voltou".
+RESILIENCE_KEYS_DIR="${RESILIENCE_KEYS_DIR:-${ROOT_DIR}/.resilience-keys}"
+export RESILIENCE_KEYS_DIR
+KEYS_GENERATED=0
+
 RUN_ID="$(date +%s)-$$"
 USERNAME="resil-${RUN_ID}"
 PASSWORD="R3sil-Test-${RUN_ID}-Aa!"
@@ -114,10 +123,16 @@ cleanup() {
     if [ "$KEEP_STACK" -eq 1 ]; then
         log_warn "Stack mantido (--keep). Remova com:"
         echo "  docker compose -p ${PROJECT} -f ${COMPOSE_FILE} down -v"
+        if [ "$KEYS_GENERATED" -eq 1 ]; then
+            echo "  rm -rf ${RESILIENCE_KEYS_DIR}   # par ES256 do teste"
+        fi
         return
     fi
     log_info "Destruindo o stack de teste..."
     "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+    if [ "$KEYS_GENERATED" -eq 1 ]; then
+        rm -rf "$RESILIENCE_KEYS_DIR"
+    fi
 }
 trap cleanup EXIT
 
@@ -189,6 +204,35 @@ expect_json() {
     if [ "$actual" != "$expected" ]; then
         fail "${what}: ${expr} = '${actual}', esperado '${expected}'. Corpo: ${BODY:0:400}"
     fi
+}
+
+# expect_eq <valor> <esperado> <descrição>
+expect_eq() {
+    if [ "$1" != "$2" ]; then
+        fail "${3}: obtido '${1}', esperado '${2}'"
+    fi
+}
+
+# Lê uma claim do header de um JWT sem verificar assinatura.
+# Existe para afirmar que o token REAL saiu com ES256 e o `kid` do par do
+# teste: um stack de resiliência que validasse HS256 não estaria testando a
+# configuração que vai para produção.
+jwt_header_claim() {
+    printf '%s' "$1" | python3 -c '
+import base64, json, sys
+token = sys.stdin.read().strip()
+try:
+    raw = token.split(".")[0]
+    padding = "=" * (-len(raw) % 4)
+    header = json.loads(base64.urlsafe_b64decode(raw + padding))
+except Exception:
+    sys.exit(0)
+for key in sys.argv[1].split("."):
+    if not isinstance(header, dict) or key not in header:
+        sys.exit(0)
+    header = header[key]
+print(header if header is not None else "")
+' "$2" 2>/dev/null || true
 }
 
 # ============================================================

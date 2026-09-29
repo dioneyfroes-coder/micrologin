@@ -7,28 +7,32 @@
  * - Revogação de tokens (blacklist em Redis)
  * - Renovação de tokens
  *
+ * A assinatura em si vive em `jwtSigner.ts` (HS256 para dev/test, ES256 em
+ * produção). Este serviço cuida do que é sessão: *quando* emitir, quais
+ * claims, e como revogar.
+ *
  * Segue as melhores práticas de segurança:
  * - RFC 6750: OAuth 2.0 Bearer Token Usage
  * - RFC 7519: JSON Web Token (JWT)
  */
 
-import jwt, { SignOptions } from 'jsonwebtoken';
 import { createHash, randomUUID } from 'crypto';
 import type { RedisClient } from '../cache/connection.js';
 import type { TokenGenerationOptions, TokenPair, TokenService } from '../../domain/index.js';
 import { REVOCATION_UNAVAILABLE_CODE } from '../../domain/index.js';
 import { logger } from '../../shared/utils/logger.js';
+import {
+  Es256Signer,
+  Hs256Signer,
+  type Es256Keys,
+  type TokenClaims,
+  type TokenSigner
+} from './jwtSigner.js';
 
-interface JwtIssuedPayload {
-  id: string;
-  username: string;
-  token_type?: string;
-  iat?: number;
-  exp?: number;
-  jti?: string;
-  /** Versão de sessão do usuário no momento da emissão. */
-  sv?: number;
-}
+type JwtIssuedPayload = TokenClaims;
+
+/** Material de assinatura assimétrica injetado pelo bootstrap em produção. */
+export type Es256KeyMaterial = Es256Keys;
 
 /**
  * Prefixo da blacklist. A chave é derivada do `jti` do token (identificador
@@ -81,6 +85,8 @@ export class JWTTokenService implements TokenService {
   private issuer: string;
   private audience: string;
   private sessionPolicy: SessionPolicy;
+  private accessSigner: TokenSigner;
+  private refreshSigner: TokenSigner;
 
   constructor(
     secret: string,
@@ -90,9 +96,22 @@ export class JWTTokenService implements TokenService {
     audience = 'api-users',
     // Padrão fail-open: seguro para unit/integration tests. Em produção, o
     // bootstrap injeta a política de `securityConfig.session`.
-    sessionPolicy: SessionPolicy = { failOpen: true }
+    sessionPolicy: SessionPolicy = { failOpen: true },
+    /**
+     * Assinatura assimétrica (ES256). Quando ausente, cai para HS256 com os
+     * segredos — o caminho de dev/test e dos testes que fabricam token legado.
+     */
+    es256: Es256KeyMaterial | null = null
   ) {
-    if (!secret) {
+    // ES256: uma única instância serve a access e refresh. Importar o mesmo PEM
+    // duas vezes faria parse de ASN.1 redundante no caminho de login.
+    const es256Signer = es256 ? new Es256Signer(es256) : null;
+    this.accessSigner = es256Signer ?? new Hs256Signer(secret);
+    this.refreshSigner = es256Signer ?? new Hs256Signer(refreshSecret ?? secret);
+
+    // No caminho ES256 os segredos simétricos não são usados: exigir ou avisar
+    // sobre eles seria pedir configuração que não protege nada.
+    if (!es256 && !secret) {
       throw new Error('JWT_SECRET é obrigatório');
     }
 
@@ -100,7 +119,9 @@ export class JWTTokenService implements TokenService {
     if (refreshSecret) {
       this.refreshSecret = refreshSecret;
     } else {
-      logger.warn('⚠️ JWT_REFRESH_SECRET não definido: usando JWT_SECRET para refresh tokens');
+      if (!es256) {
+        logger.warn('⚠️ JWT_REFRESH_SECRET não definido: usando JWT_SECRET para refresh tokens');
+      }
       this.refreshSecret = secret;
     }
     this.redisClient = redisClient;
@@ -157,19 +178,32 @@ export class JWTTokenService implements TokenService {
   }
 
   /**
+   * Impede que um refresh token seja usado como access (e vice-versa).
+   *
+   * Com HS256 isso é redundante: os segredos já são diferentes, e tokens
+   * legados sem a claim continuam válidos. Com ES256 é obrigatório — o par de
+   * chaves é o mesmo, e aceitar um refresh como access entregaria 7 dias de
+   * sessão a quem só tem o refresh, inclusive depois de um logout.
+   */
+  private assertTokenType(payload: JwtIssuedPayload, expected: 'access' | 'refresh'): void {
+    if (!this.accessSigner.reliesOnTokenType) {
+      return;
+    }
+    if (payload.token_type !== expected) {
+      throw new Error(`Token não é do tipo ${expected}`);
+    }
+  }
+
+  /**
    * Extrai o `jti` (identificador único do JWT) sem validar a assinatura.
    * @returns O jti ou null para tokens sem jti/ilegíveis
    */
   private extractJti(token: string): string | null {
-    try {
-      const decoded = jwt.decode(token);
-      if (!decoded || typeof decoded === 'string' || typeof decoded.jti !== 'string' || !decoded.jti) {
-        return null;
-      }
-      return decoded.jti;
-    } catch {
+    const decoded = this.accessSigner.decode(token);
+    if (typeof decoded?.jti !== 'string' || !decoded.jti) {
       return null;
     }
+    return decoded.jti;
   }
 
   /**
@@ -212,12 +246,7 @@ export class JWTTokenService implements TokenService {
   private blacklistTtlSeconds(token: string, requestedExpiresIn: number): number {
     const requested = this.toTtlSeconds(requestedExpiresIn);
 
-    let payload: JwtIssuedPayload | null = null;
-    try {
-      payload = jwt.decode(token) as JwtIssuedPayload | null;
-    } catch {
-      return requested;
-    }
+    const payload = this.accessSigner.decode(token);
 
     if (!payload || typeof payload.exp !== 'number') {
       return requested;
@@ -281,12 +310,6 @@ export class JWTTokenService implements TokenService {
         refreshExpiresIn = '7d'
       } = options;
 
-      const signOptions: Omit<SignOptions, 'jwtid'> = {
-        issuer,
-        audience,
-        subject: payload.id
-      };
-
       // A claim `sv` amarra o token à versão de sessão do usuário: logout em
       // massa (ou troca de senha) incrementa a versão e derruba todos os
       // tokens emitidos antes, sem depender da precisão do relógio.
@@ -295,30 +318,28 @@ export class JWTTokenService implements TokenService {
       // ✅ Access Token (curta vida)
       // `jti` único por token: é a chave de revogação e o que torna dois
       // tokens emitidos no mesmo segundo (iat em segundos) distintos.
-      const accessToken = jwt.sign(
-        { ...payload, ...sessionClaim, token_type: 'access' },
-        this.secret,
-        {
-          ...signOptions,
-          jwtid: randomUUID(),
-          expiresIn: accessExpiresIn as SignOptions['expiresIn']
-        }
-      );
+      const accessToken = await this.accessSigner.sign({
+        payload: { ...payload, ...sessionClaim, token_type: 'access' },
+        expiresIn: accessExpiresIn,
+        issuer,
+        audience,
+        subject: payload.id,
+        jwtid: randomUUID()
+      });
 
       // ✅ Refresh Token (longa vida) - jti PRÓPRIO, para revogar apenas o
       // refresh sem derrubar o access emitido na mesma operação.
-      const refreshToken = jwt.sign(
-        { id: payload.id, username: payload.username, ...sessionClaim, token_type: 'refresh' },
-        this.refreshSecret,
-        {
-          ...signOptions,
-          jwtid: randomUUID(),
-          expiresIn: refreshExpiresIn as SignOptions['expiresIn']
-        }
-      );
+      const refreshToken = await this.refreshSigner.sign({
+        payload: { id: payload.id, username: payload.username, ...sessionClaim, token_type: 'refresh' },
+        expiresIn: refreshExpiresIn,
+        issuer,
+        audience,
+        subject: payload.id,
+        jwtid: randomUUID()
+      });
 
       // Decodificar para obter tempo de expiração
-      const decoded = jwt.decode(accessToken) as JwtIssuedPayload;
+      const decoded = this.accessSigner.decode(accessToken) as JwtIssuedPayload;
 
       return {
         accessToken,
@@ -347,8 +368,9 @@ export class JWTTokenService implements TokenService {
     try {
       this.assertRevocationAvailable();
       const sessionClaim = await this.sessionVersionClaim(payload.id);
-      return jwt.sign({ ...payload, ...sessionClaim, token_type: 'access' }, this.secret, {
-        expiresIn: expiresIn as SignOptions['expiresIn'],
+      return this.accessSigner.sign({
+        payload: { ...payload, ...sessionClaim, token_type: 'access' },
+        expiresIn,
         issuer: this.issuer,
         audience: this.audience,
         subject: payload.id,
@@ -381,10 +403,11 @@ export class JWTTokenService implements TokenService {
         }
       }
 
-      const payload = jwt.verify(token, this.secret, {
+      const payload = await this.accessSigner.verify(token, {
         issuer: this.issuer,
         audience: this.audience
-      }) as JwtIssuedPayload;
+      });
+      this.assertTokenType(payload, 'access');
 
       // Verificar revogação em nível de usuário (ex: logout/logout-all)
       if (await this.isUserRevoked(payload)) {
@@ -425,10 +448,11 @@ export class JWTTokenService implements TokenService {
         }
       }
 
-      const payload = jwt.verify(token, this.refreshSecret, {
+      const payload = await this.refreshSigner.verify(token, {
         issuer: this.issuer,
         audience: this.audience
-      }) as JwtIssuedPayload;
+      });
+      this.assertTokenType(payload, 'refresh');
 
       // Verificar revogação em nível de usuário (ex: logout/logout-all)
       if (await this.isUserRevoked(payload)) {
@@ -665,11 +689,7 @@ export class JWTTokenService implements TokenService {
    * @param token - Token a decodificar
    * @returns Payload decodificado
    */
-  decodeToken(token: string): jwt.JwtPayload | string | null {
-    try {
-      return jwt.decode(token);
-    } catch (error) {
-      throw new Error(`Erro ao decodificar token: ${(error as Error).message}`);
-    }
+  decodeToken(token: string): JwtIssuedPayload | null {
+    return this.accessSigner.decode(token);
   }
 }

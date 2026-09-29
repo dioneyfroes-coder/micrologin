@@ -25,6 +25,10 @@
 #
 # As senhas abaixo são descartáveis: este stack nunca sai da máquina de quem
 # roda o teste e é destruído no fim (--keep mantém para depurar).
+#
+# A chave de assinatura ES256 é a exceção: o script a gera em disco
+# (RESILIENCE_KEYS_DIR) e apaga no teardown, porque um par novo a cada rodada
+# faria o token emitido antes do restart parecer inválido por motivo errado.
 
 services:
   auth-service:
@@ -40,12 +44,14 @@ services:
       VERSION: resilience-test
       URI_MONGODB: mongodb://mongodb:27017/auth_resilience
       REDIS_URL: redis://redis:6379/0
-      # Segredos de teste, satisfazendo a validação de produção (32+ chars,
-      # refresh diferente do access). Fixos de propósito: a assinatura precisa
-      # sobreviver ao restart do container, senão o token emitido antes do
-      # restart pareceria inválido por motivo errado.
-      JWT_SECRET: resilience-test-access-secret-000000000000
-      JWT_REFRESH_SECRET: resilience-test-refresh-secret-1111111111
+      # --- Assinatura ES256, como em produção ---
+      # O stack de resiliência precisa exercitar o mesmo caminho de assinatura
+      # que vai para produção: um teste que valida HS256 não diz nada sobre a
+      # configuração que realmente roda.
+      JWT_ALGORITHM: ES256
+      JWT_ES256_KID: resilience-v1
+      JWT_ES256_PRIVATE_KEY_PATH: /run/secrets/jwt-es256-private.pem
+      JWT_ES256_PUBLIC_KEY_PATH: /run/secrets/jwt-es256-public.pem
       SECURITY_DASHBOARD_TOKEN: resilience-test-dashboard-token-22222
       # Sem certificado no stack de teste; o app só avisa no log.
       SSL_ENABLED: "false"
@@ -58,6 +64,14 @@ services:
       RATE_LIMIT_PROD_LOGIN_DURATION: "60"
       RATE_LIMIT_PROD_IP_POINTS: "500"
       LOG_LEVEL: info
+    volumes:
+      # Par ES256 gerado em disco pelo script, não em variável de ambiente: o
+      # token emitido antes do restart do container precisa continuar
+      # verificando depois dele, ou o teste mediria o motivo errado.
+      - type: bind
+        source: ${RESILIENCE_KEYS_DIR:-./.resilience-keys}
+        target: /run/secrets
+        read_only: true
     ports:
       - "${RESILIENCE_PORT:-3200}:3000"
     networks:

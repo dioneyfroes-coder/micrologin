@@ -30,14 +30,30 @@ export function bootstrapServices() {
   // ✅ NOVO: Usar JWTTokenService com suporte a refresh token
   // O Redis é injetado após a inicialização da conexão (app.js)
   container.register('jwtService', () => {
+    const jwt = securityConfig.jwt;
+
+    // ES256 em produção: a chave privada assina, a pública verifica. Os
+    // segredos simétricos continuam sendo lidos porque a validação de
+    // configuração já garantiu que, neste caminho, eles não são obrigatórios.
+    const es256 = jwt.algorithm === 'ES256'
+      ? {
+        kid: jwt.es256.kid,
+        privateKeyPem: jwt.es256.privateKey as string,
+        publicKeyPem: jwt.es256.publicKey as string,
+        previousKid: jwt.es256.previousKid,
+        previousPublicKeyPem: jwt.es256.previousPublicKey
+      }
+      : null;
+
     return new JWTTokenService(
-      securityConfig.jwt.secret as string,
-      securityConfig.jwt.refreshSecret,
+      jwt.secret ?? '',
+      jwt.refreshSecret,
       null,
-      securityConfig.jwt.issuer,
-      securityConfig.jwt.audience,
+      jwt.issuer,
+      jwt.audience,
       // Política de revogação: fail-closed em produção (Redis fora => nega)
-      { failOpen: securityConfig.session.failOpen }
+      { failOpen: securityConfig.session.failOpen },
+      es256
     );
   });
 

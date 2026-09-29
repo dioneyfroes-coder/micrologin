@@ -6,6 +6,12 @@ server.key
 .env.prod
 .env.docker
 
+# Chaves de assinatura ES256: material privado nunca entra no repositorio
+keys/
+secrets/
+.resilience-keys/
+*.pem
+
 dist
 build
 coverage/

@@ -9,6 +9,7 @@
 import './env.js';
 
 import os from 'os';
+import { readFileSync } from 'fs';
 import { parseEnvNumber } from './rateLimitConfig.js';
 import { getRedisConfig } from './redisConfig.js';
 import { logger } from '../../shared/utils/logger.js';
@@ -126,10 +127,69 @@ const isProductionEnv = (process.env.NODE_ENV || 'development') === 'production'
 //                               que tokens revogados não sejam barrados.
 const sessionFailOpenEnv = process.env.SESSION_FAIL_OPEN;
 
+// Algoritmo de assinatura dos tokens.
+//
+// ES256 (assimétrico) é o alvo: quem assina tem a chave privada, quem verifica
+// só a pública. HS256 continua disponível em dev/test, onde não há KMS para
+// guardar chave assimétrica e onde os testes fabricam token legado.
+//
+// A escolha não é do arquivo: em produção, HS256 é recusado na validação.
+const jwtAlgorithm = (process.env.JWT_ALGORITHM || (isProductionEnv ? 'ES256' : 'HS256')).toUpperCase();
+
+/**
+ * Lê uma chave PEM de variável de ambiente ou de arquivo.
+ *
+ * PEM tem quebras de linha, e variável de ambiente não. Aceitamos as duas
+ * formas que aparecem em arquivo `.env`: `\n` literal, ou base64 do PEM.
+ *
+ * A variante `<NOME>_PATH` existe porque chave privada não deveria viajar como
+ * texto de configuração: em produção ela é montada como arquivo (secret do
+ * Docker, volume do Kubernetes, saída do KMS) e o processo recebe só o caminho.
+ */
+const readPem = (name: string): string | undefined => {
+  const raw = process.env[name];
+  if (raw) {
+    if (raw.includes('-----BEGIN')) {
+      return raw.replace(/\\n/g, '\n');
+    }
+    try {
+      return Buffer.from(raw, 'base64').toString('utf8');
+    } catch {
+      return undefined;
+    }
+  }
+
+  const path = process.env[`${name}_PATH`];
+  if (path) {
+    try {
+      return readFileSync(path, 'utf8');
+    } catch {
+      logger.error(`Falha ao ler a chave em ${name}_PATH: ${path}`);
+      return undefined;
+    }
+  }
+
+  return undefined;
+};
+
 export const securityConfig = {
   jwt: {
+    algorithm: jwtAlgorithm,
     secret: process.env.JWT_SECRET,
     refreshSecret: process.env.JWT_REFRESH_SECRET,
+    /**
+     * Material ES256. `kid` identifica a chave no header do token: é o que
+     * permite trocar a chave de assinatura sem derrubar os tokens já emitidos,
+     * porque o verificador sabe qual chave conferir em vez de testar todas.
+     */
+    es256: {
+      kid: process.env.JWT_ES256_KID || 'v1',
+      privateKey: readPem('JWT_ES256_PRIVATE_KEY'),
+      publicKey: readPem('JWT_ES256_PUBLIC_KEY'),
+      // Janela de rotação: a chave anterior continua verificando.
+      previousKid: process.env.JWT_ES256_PREVIOUS_KID,
+      previousPublicKey: readPem('JWT_ES256_PREVIOUS_PUBLIC_KEY')
+    },
     expiresIn: process.env.JWT_EXPIRES || '15m',
     refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES || '7d',
     issuer: process.env.JWT_ISSUER || 'auth-service',
@@ -196,11 +256,60 @@ export const environmentConfig = {
 export function validateConfiguration(): boolean {
   const errors: string[] = [];
 
-  // Validações obrigatórias
-  if (!securityConfig.jwt.secret) {
-    errors.push('JWT_SECRET é obrigatório');
+  const jwt = securityConfig.jwt;
+  const es256Enabled = jwt.algorithm === 'ES256';
+
+  // --- Algoritmo de assinatura ------------------------------------------------
+  // HS256 em produção significaria que todo processo que verifica um token
+  // carrega o segredo que o assina: um dump de memória vira forge de token.
+  // Por isso a recusa é explícita, e não um aviso.
+  if (!['ES256', 'HS256'].includes(jwt.algorithm)) {
+    errors.push(`JWT_ALGORITHM deve ser ES256 ou HS256 (recebido: ${jwt.algorithm})`);
+  } else if (environmentConfig.isProduction && jwt.algorithm !== 'ES256') {
+    errors.push('JWT_ALGORITHM=HS256 não é permitido em produção: use ES256 (chave privada assina, pública verifica)');
   }
 
+  if (es256Enabled) {
+    if (!jwt.es256.privateKey) {
+      errors.push('JWT_ES256_PRIVATE_KEY é obrigatório com JWT_ALGORITHM=ES256');
+    }
+    if (!jwt.es256.publicKey) {
+      errors.push('JWT_ES256_PUBLIC_KEY é obrigatório com JWT_ALGORITHM=ES256');
+    }
+    // Chave anterior sem `kid` (ou vice-versa) é rotação pela metade: a chave
+    // antiga não entraria no mapa de verificação e derrubaria tokens vivos.
+    if (jwt.es256.previousPublicKey && !jwt.es256.previousKid) {
+      errors.push('JWT_ES256_PREVIOUS_KID é obrigatório quando JWT_ES256_PREVIOUS_PUBLIC_KEY está definida');
+    }
+    if (jwt.es256.previousKid && !jwt.es256.previousPublicKey) {
+      errors.push('JWT_ES256_PREVIOUS_PUBLIC_KEY é obrigatório quando JWT_ES256_PREVIOUS_KID está definido');
+    }
+    if (jwt.es256.previousKid && jwt.es256.previousKid === jwt.es256.kid) {
+      errors.push('JWT_ES256_PREVIOUS_KID deve ser diferente de JWT_ES256_KID');
+    }
+  }
+
+  // Segredos simétricos só são exigidos no caminho HS256; com ES256 eles são
+  // residuais de configuração e não devem passar a ser condição de arranque.
+  if (!es256Enabled) {
+    if (!jwt.secret) {
+      errors.push('JWT_SECRET é obrigatório');
+    }
+    if (jwt.secret && jwt.secret.length < 32) {
+      errors.push('JWT_SECRET deve ter pelo menos 32 caracteres');
+    }
+    if (environmentConfig.isProduction && !jwt.refreshSecret) {
+      errors.push('JWT_REFRESH_SECRET é obrigatório em produção');
+    }
+    if (jwt.refreshSecret && jwt.refreshSecret.length < 32) {
+      errors.push('JWT_REFRESH_SECRET deve ter pelo menos 32 caracteres');
+    }
+    if (environmentConfig.isProduction && jwt.refreshSecret && jwt.refreshSecret === jwt.secret) {
+      errors.push('JWT_REFRESH_SECRET deve ser diferente de JWT_SECRET');
+    }
+  }
+
+  // Validações obrigatórias
   if (environmentConfig.isProduction && !securityConfig.dashboardToken) {
     errors.push('SECURITY_DASHBOARD_TOKEN é obrigatório em produção');
   }
@@ -211,25 +320,6 @@ export function validateConfiguration(): boolean {
 
   if (!databaseConfig.mongodb.uri) {
     errors.push('URI_MONGODB é obrigatório');
-  }
-
-  // Validações de segurança
-  if (securityConfig.jwt.secret && securityConfig.jwt.secret.length < 32) {
-    errors.push('JWT_SECRET deve ter pelo menos 32 caracteres');
-  }
-
-  if (environmentConfig.isProduction && !securityConfig.jwt.refreshSecret) {
-    errors.push('JWT_REFRESH_SECRET é obrigatório em produção');
-  }
-
-  if (securityConfig.jwt.refreshSecret && securityConfig.jwt.refreshSecret.length < 32) {
-    errors.push('JWT_REFRESH_SECRET deve ter pelo menos 32 caracteres');
-  }
-
-  if (environmentConfig.isProduction &&
-      securityConfig.jwt.refreshSecret &&
-      securityConfig.jwt.refreshSecret === securityConfig.jwt.secret) {
-    errors.push('JWT_REFRESH_SECRET deve ser diferente de JWT_SECRET');
   }
 
   // Validações de cluster
@@ -286,8 +376,15 @@ export function getConfigSummary() {
       redis: databaseConfig.redis.enabled
     },
     security: {
-      jwt: !!securityConfig.jwt.secret,
-      refreshJwt: !!securityConfig.jwt.refreshSecret,
+      jwt: {
+        algorithm: securityConfig.jwt.algorithm,
+        kid: securityConfig.jwt.es256.kid,
+        // `true` significa "existe segredo simétrico"; com ES256 o que importa
+        // é haver chave assimétrica, e reportar `jwt: false` seria alarme falso.
+        symmetricSecret: !!securityConfig.jwt.secret,
+        refreshJwt: !!securityConfig.jwt.refreshSecret,
+        es256: securityConfig.jwt.algorithm === 'ES256'
+      },
       dashboardTokenConfigured: Boolean(securityConfig.dashboardToken),
       bcrypt: securityConfig.bcrypt.saltRounds
     },
