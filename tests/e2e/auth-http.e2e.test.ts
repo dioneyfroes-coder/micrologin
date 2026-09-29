@@ -562,20 +562,25 @@ describe('E2E HTTP - fluxo completo contra infra real (compose)', () => {
     const updatedBody = await updateRes.json() as { data?: { user?: { username?: string } } };
     expect(updatedBody.data?.user?.username).toBe(unique);
   }, 30000);
-  it('migra hash bcrypt para argon2id no primeiro login, sem quebrar nada', async() => {
-    const unique = `mig_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  it('reescreve hash argon2id fraco no primeiro login, sem quebrar nada', async() => {
+    const unique = `reh_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const password = 'StrongPass123!';
 
     const registerRes = await postJson('/register', { user: unique, password });
     expect(registerRes.status).toBe(201);
 
-    // A base que existe hoje foi gravada em bcrypt. Reescreve o hash direto no
-    // Mongo para reproduzir esse estado, porque pela API não há como produzir
-    // material legado.
+    // Reproduz o estado de um hash gravado com parâmetros mais fracos que os
+    // em vigor, escrevendo direto no Mongo: pela API não há como produzir
+    // material fora do padrão.
     const { getUserModel } = await import('../../src/infrastructure/database/models/User.js');
     const UserModel = getUserModel();
-    const bcrypt = (await import('bcrypt')).default;
-    const legacyHash = await bcrypt.hash(password, 10);
+    const { hash } = await import('@node-rs/argon2');
+    const legacyHash = await hash(password, {
+      algorithm: 2,
+      memoryCost: 8192,
+      timeCost: 1,
+      parallelism: 1
+    });
 
     await UserModel.updateOne({ user: unique }, { $set: { password: legacyHash } });
 
@@ -583,17 +588,17 @@ describe('E2E HTTP - fluxo completo contra infra real (compose)', () => {
     expect(before?.password).toBe(legacyHash);
     const passwordChangedAtBefore = before?.passwordChangedAt;
 
-    // Login tem de funcionar: o hash legado ainda é verificável.
+    // Login tem de funcionar: o hash existente ainda é verificável.
     const loginRes = await postJson('/login', { user: unique, password });
     expect(loginRes.status).toBe(200);
     const loginBody = await loginRes.json() as { data?: { accessToken?: string } };
     expect(loginBody.data?.accessToken).toBeTruthy();
 
     const after = await UserModel.findOne({ user: unique }).select('+passwordHistory');
-    // O hash foi reescrito no padrão em vigor, sem depender de troca de senha.
-    expect(after?.password).toMatch(/^\$argon2id\$/);
+    // O hash foi reescrito nos parâmetros em vigor, sem troca de senha.
+    expect(after?.password).toMatch(/^\$argon2id\$v=19\$m=19456,t=2,p=1\$/);
     expect(after?.password).not.toBe(legacyHash);
-    // Migrar não é trocar senha: histórico e data de troca ficam como estavam.
+    // Reescrever não é trocar senha: histórico e data de troca ficam como estavam.
     expect(after?.passwordHistory ?? []).toEqual(before?.passwordHistory ?? []);
     expect(after?.passwordChangedAt).toEqual(passwordChangedAtBefore);
 

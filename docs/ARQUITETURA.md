@@ -45,7 +45,7 @@ tem um arquivo correspondente; onde há limite conhecido, o limite está escrito
                     ┌──────────────────────────────────────────────┐
                     │  infrastructure/                              │
                     │  adapters/MongoUserAdapter   → MongoDB        │
-                    │  adapters/BcryptAdapter      → bcrypt         │
+                    │  adapters/PasswordHasher      → argon2id       │
                     │  external-services/JWTTokenService → Redis   │
                     └──────────────────────────────────────────────┘
 
@@ -91,7 +91,7 @@ POST /register
       → AuthService.register
           → normalizeUsername      trim + lowercase  (fonte única)
           → exists(username)       UserRepository
-          → hash(plainText)        CryptoService (bcrypt)
+          → hash(plainText)        CryptoService (argon2id)
           → save(user)             UserRepository
       ← 201 { user }
 ```

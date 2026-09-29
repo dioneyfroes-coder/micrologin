@@ -71,8 +71,8 @@ export interface UserRepository {
  * Porta de criptografia (CryptoPort)
  *
  * `needsRehash` é opcional de propósito: quem só sabe `hash` e `compare` (os
- * doubles de teste, o console) continua válido, e o login só migra hash quando
- * o adapter sabe dizer que o hash guardado ficou atrás do padrão atual.
+ * doubles de teste, o console) continua válido, e o login só reescreve o hash
+ * quando o adapter sabe dizer que ele ficou atrás do padrão em vigor.
  */
 export interface CryptoService {
   hash(plainText: string): Promise<string>;
@@ -210,12 +210,14 @@ export class User {
    * Reescreve apenas o hash, sem tocar em `passwordHistory` nem em
    * `passwordChangedAt`.
    *
-   * Migrar de algoritmo não é troca de senha: o usuário não trocou nada, e a
-   * senha que ele conhece é a mesma. Se o hash antigo fosse para o histórico,
-   * uma senha antiga voltaria a ser rejeitada depois da migração; se
-   * `passwordChangedAt` fosse atualizado, o sistema passaria a afirmar que a
-   * senha mudou quando ela não mudou. `updatedAt` também fica: o perfil do
-   * usuário não mudou.
+   * Reescrever o hash não é troca de senha: o usuário não trocou nada, e a
+   * senha que ele conhece é a mesma. Serve para o hash ficar atrás do padrão em
+   * vigor (parâmetros de argon2 mais fortes, pepper ativado ou rotacionado).
+   *
+   * Se o hash anterior fosse para o histórico, a senha antiga passaria a ser
+   * aceita de novo logo depois; se `passwordChangedAt` fosse atualizado, o
+   * sistema afirmaria que a senha mudou quando ela não mudou. `updatedAt` também
+   * fica: o perfil do usuário não mudou.
    *
    * @param newHashedPassword - Hash no padrão atual
    */
@@ -420,12 +422,12 @@ export class AuthService {
         return AuthResult.failure('Senha incorreta');
       }
 
-      // Migração transparente: o hash guardado pode ter sido feito com outro
-      // algoritmo, outros parâmetros ou outra versão de pepper. Este é o único
+      // Reescrita transparente: o hash guardado pode ter sido feito com
+      // parâmetros mais fracos ou com outra versão de pepper. Este é o único
       // momento em que a senha em claro está disponível de novo, então é aqui
       // que ela é reescrita — sem esperar um pedido de troca de senha.
       if (this.crypto.needsRehash?.(user.hashedPassword)) {
-        await this.migrateHash(user, credentials.plainPassword);
+        await this.refreshHash(user, credentials.plainPassword);
       }
 
       // Gerar token
@@ -448,24 +450,24 @@ export class AuthService {
   }
 
   /**
-   * Reescreve o hash do usuário no padrão atual, best-effort.
+   * Reescreve o hash do usuário no padrão em vigor, best-effort.
    *
    * Falhar aqui não pode transformar um login válido em erro: o usuário provou
    * a senha, o acesso é legítimo, e o hash antigo continua verificável. A
-   * migração volta a ser tentada no próximo login.
+   * reescrita volta a ser tentada no próximo login.
    */
-  private async migrateHash(user: User, plainPassword: string): Promise<void> {
+  private async refreshHash(user: User, plainPassword: string): Promise<void> {
     try {
       const rehashed = await this.crypto.hash(plainPassword);
       user.rehashPassword(rehashed);
       await this.userRepository.save(user);
 
-      this.logger.info('Hash de senha migrado para o padrão atual', {
+      this.logger.info('Hash de senha reescrito no padrão em vigor', {
         userId: user.id,
         username: user.username
       });
     } catch (error) {
-      this.logger.warn('Não foi possível migrar o hash de senha; login mantido', {
+      this.logger.warn('Não foi possível reescrever o hash de senha; login mantido', {
         userId: user.id,
         username: user.username,
         error: (error as Error).message

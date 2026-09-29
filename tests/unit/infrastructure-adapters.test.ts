@@ -1,12 +1,7 @@
 import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 
-const [{ MongoUserAdapter, BcryptAdapter, ConsoleLoggerAdapter, AdapterFactory }, bcryptModule, models, domain] =
+const [{ MongoUserAdapter, PasswordHasher, ConsoleLoggerAdapter, AdapterFactory }, models, domain] =
   await (async() => {
-    const bcryptMock = {
-      hash: jest.fn(),
-      compare: jest.fn()
-    };
-
     // `select()` é encadeável em Mongoose e devolve a própria query
     const chainable = (result: unknown) => ({ select: jest.fn(() => result) });
     const modelMock = {
@@ -19,20 +14,17 @@ const [{ MongoUserAdapter, BcryptAdapter, ConsoleLoggerAdapter, AdapterFactory }
       chainable
     };
 
-    await jest.unstable_mockModule('bcrypt', () => ({ default: bcryptMock }));
     await jest.unstable_mockModule('../../src/infrastructure/database/models/User.js', () => ({
       getUserModel: jest.fn(() => modelMock)
     }));
 
     const adapters = await import('../../src/infrastructure/adapters/index.js');
-    const bcryptModule = await import('bcrypt');
     const modelsModule = await import('../../src/infrastructure/database/models/User.js');
     const domainModule = await import('../../src/domain/index.js');
 
-    return [adapters, bcryptModule, modelsModule, domainModule];
+    return [adapters, modelsModule, domainModule];
   })();
 
-const bcrypt = bcryptModule.default;
 const { getUserModel } = models;
 
 const makeDoc = (id: string, user: string, password: string, passwordHistory: string[] = []) => ({
@@ -45,43 +37,20 @@ const makeDoc = (id: string, user: string, password: string, passwordHistory: st
   updatedAt: new Date()
 });
 
-describe('BcryptAdapter - implementação do CryptoPort', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
+describe('PasswordHasher - porta de cripto', () => {
+  it('grava argon2id com os parâmetros da fábrica', async() => {
+    const hasher = AdapterFactory.createCryptoService({ argon2: { memoryCost: 8192, timeCost: 1, parallelism: 1 } });
+
+    expect(hasher).toBeInstanceOf(PasswordHasher);
+    await expect(hasher.hash('StrongPass123!')).resolves.toMatch(/^\$argon2id\$v=19\$m=8192,t=1,p=1\$/);
   });
 
-  it('gera hash com os salt rounds configurados', async() => {
-    bcrypt.hash.mockResolvedValue('$2b$12$hashed');
-    const adapter = new BcryptAdapter(10);
+  it('nunca sai do argon2id, mesmo pedindo outro tipo', async() => {
+    // A antiga rejeição de tipo não builtin mais: o algoritmo é fixo e não há
+    // caminho alternativo para cair.
+    const hasher = AdapterFactory.createCryptoService({ argon2: { memoryCost: 8192, timeCost: 1, parallelism: 1 } });
 
-    const result = await adapter.hash('StrongPass123!');
-
-    expect(bcrypt.hash).toHaveBeenCalledWith('StrongPass123!', 10);
-    expect(result).toBe('$2b$12$hashed');
-  });
-
-  it('compara texto puro com o hash', async() => {
-    bcrypt.compare.mockResolvedValue(true);
-    const adapter = new BcryptAdapter();
-
-    const result = await adapter.compare('StrongPass123!', '$2b$12$hashed');
-
-    expect(bcrypt.compare).toHaveBeenCalledWith('StrongPass123!', '$2b$12$hashed');
-    expect(result).toBe(true);
-  });
-
-  it('encapsula erros de hash com mensagem contextual', async() => {
-    bcrypt.hash.mockRejectedValue(new Error('boom'));
-    const adapter = new BcryptAdapter();
-
-    await expect(adapter.hash('StrongPass123!')).rejects.toThrow('Erro ao criptografar: boom');
-  });
-
-  it('encapsula erros de comparação com mensagem contextual', async() => {
-    bcrypt.compare.mockRejectedValue(new Error('boom'));
-    const adapter = new BcryptAdapter();
-
-    await expect(adapter.compare('a', 'b')).rejects.toThrow('Erro ao comparar hash: boom');
+    await expect(hasher.hash('StrongPass123!')).resolves.toMatch(/^\$argon2id\$/);
   });
 });
 
@@ -226,14 +195,8 @@ describe('ConsoleLoggerAdapter - implementação do LoggerPort', () => {
 });
 
 describe('AdapterFactory - fábrica de adapters', () => {
-  it('cria crypto adapter bcrypt por padrão', () => {
-    const crypto = AdapterFactory.createCrypto(10) as BcryptAdapter;
-    expect(crypto).toBeInstanceOf(BcryptAdapter);
-    expect(crypto.saltRounds).toBe(10);
-  });
-
-  it('rejeita tipos de crypto não suportados', () => {
-    expect(() => AdapterFactory.createCryptoService('argon2')).toThrow('não suportado');
+  it('cria hasher de senha por padrão', () => {
+    expect(AdapterFactory.createCryptoService()).toBeInstanceOf(PasswordHasher);
   });
 
   it('cria logger de console', () => {

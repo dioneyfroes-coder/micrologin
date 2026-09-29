@@ -20,7 +20,7 @@ automatizadas** de que ele sobrevive a roubo de credenciais e a DDoS.
 | Área | Hoje | Onde |
 | --- | --- | --- |
 | Assinatura JWT | **HS256** simétrico (`jsonwebtoken`), access 15m / refresh 7d, `jti` + `sv` | `src/infrastructure/external-services/jwtTokenService.ts` |
-| Hash de senha | **bcrypt cost 12**, política 12–72 bytes, histórico 5, blacklist de comuns | `src/shared/utils/passwordPolicy.ts`, `appConfig.ts` |
+| Hash de senha | **argon2id** m=19MiB/t=2/p=1, política 12–72 bytes, histórico 5, blacklist de comuns (bcrypt removido na 1.2) | `src/shared/utils/passwordPolicy.ts`, `appConfig.ts` |
 | Redis | v7, AOF `appendonly yes`, **sem senha/ACL**, **sem réplica**, blacklist por `jti` com `SET NX` | `docker-compose.yml`, `connection.ts` |
 | MongoDB | v7 **single node, sem auth, sem backup configurado** | `docker-compose.yml`, `models/User.ts` |
 | Escala | vertical PM2 (4 instâncias) OU cluster module (4/8) OU compose 1 réplica com `container_name` + bind | `ecosystem.config.cjs`, `src/app.ts`, compose |
@@ -116,7 +116,7 @@ travam a costura: `tests/unit/jwt-key-provisioning.test.ts` executa o script rea
 e assina com a chave que ele produziu, e `logger.test.ts` garante que a falha
 aparece com mensagem e stack.
 
-## 1.2 Decisão de hash de senha: argon2id vs bcrypt raisado
+## 1.2 Decisão de hash de senha: argon2id, medido no serviço
 
 **Status: concluída.** Decidido por medição no mesmo orçamento de produção
 (2.0 CPU, 512 MB): `D16` e `D17` em `docs/SEGURANCA.md`, números completos em
@@ -127,10 +127,13 @@ aparece com mensagem e stack.
       e concorrência (`scripts/benchmark-password-hash.mjs`, `npm run bench:hash`)
 - [x] p95 de `/login` real antes e depois (`scripts/measure-login-latency.mjs`,
       `npm run bench:login`), porque o benchmark de hash não é o endpoint
-- [x] decisão `D16`: **argon2id m=19MiB, t=2, p=1** com migração silenciosa
-- [x] migração sem quebrar usuários: verificação por prefixo do hash guardado,
-      rehash no próximo login, escrita best-effort (`PASSWORD_HASH_ALGORITHM=bcrypt`
-      como rollback)
+- [x] decisão `D16`: **argon2id m=19MiB, t=2, p=1**
+- [x] reescrita sem quebrar usuários: `compare` lê os parâmetros do hash
+      guardado, rehash no próximo login, escrita best-effort
+- [x] **bcrypt removido do projeto** (laboratório, sem usuários antigos):
+      `BcryptAdapter`, dependência `bcrypt`, `PASSWORD_HASH_ALGORITHM` e
+      `BCRYPT_SALT_ROUNDS` fora. `compare` entende só argon2id; qualquer outro
+      valor é credencial ilegível (`false` + aviso no log), nunca aceito
 - [x] avaliar **pepper** `D17`: mecanismo pronto (envelope versionado `p1:$...`,
       rotação com `PASSWORD_PEPPER_PREVIOUS`), **desligado por padrão**
 - [x] manter limites: senha opaca, máximo em bytes, histórico 5 (intactos)
@@ -143,16 +146,17 @@ não ser memory-hard. Resultado no `/login` real: p95 de **491 ms → 45.4 ms** 
 c=1 e **1868 ms → 191 ms** em c=8, com 2.5 → 29.1 logins/s.
 
 **Definição de pronto:** decisão D16/D17 registradas com dado medido (não por
-palpite); migração sem quebrar usuários existentes (login antigo continua
-funcionando até rehash). — **cumprida: 496 unit + 38 integração + 15 E2E
-(incluindo migração bcrypt→argon2id com Mongo real) + `test:infra` 10/10, todos
+palpite), e reescrita sem quebrar quem já tem conta (login antigo continua
+funcionando até o rehash). — **cumprida: 500 unit + 38 integração + 15 E2E
+(incluindo reescrita de hash fraco com Mongo real) + `test:infra` 10/10, todos
 verde.**
 
-**Correção que a migração exigiu:** o schema do Mongo validava o campo
-`password` com a política de senha em texto claro (12–72 caracteres). Com bcrypt
-(60) passava; argon2id (~100) era recusado na gravação, e o registro devolvia
-400. A política vale para o que o usuário digita; o campo do banco guarda hash e
-passa a validar como hash.
+**Correção que a troca expôs:** o schema do Mongo validava o campo `password`
+com a política de senha em texto claro (12–72 caracteres). O hash argon2id tem
+~100 e era recusado na gravação, e o registro devolvia 400. A política vale para
+o que o usuário digita; o campo do banco guarda hash e passa a validar como
+hash. O teto de 72 bytes deixou de ser herança do bcrypt: o argon2id não trunca,
+então virou escolha do serviço.
 
 ## 1.3 Credenciais em repouso das dependências
 
@@ -224,7 +228,7 @@ dump) de Redis (regenerável por design); decisão D18 registrada.
 - [ ] rodar `npm run test:load` com p50/p95/p99 e taxa de erro para: 1 worker, 100/200/400 VUs em /health, /login, /refresh, /register
 - [ ] medirmemória RSS e heap com `--max-memory-restart` do PM2 (hoje 500M) e limites do compose (512m)
 - [ ] guardar resultado em `docs/metricas.md` (ou no README) como referência "quanto um worker aguenta"
-- [ ] custo de autenticação já é dominado por bcrypt/argon2id — medir se o hash come > X% do tempo de /login
+- [x] custo de autenticação já medido: o hash era 13x mais caro que o argon2id mínimo e dominava o `/login` (p95 de 491 ms → 45.4 ms em c=1)
 
 **Definição de pronto:** tabela publicada com capacidade por worker e por réplica, e o gargalo identificado com número.
 

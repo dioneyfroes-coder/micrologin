@@ -1,5 +1,4 @@
 import { describe, it, expect } from '@jest/globals';
-import bcrypt from 'bcrypt';
 import { PasswordHasher } from '../../src/infrastructure/adapters/index.js';
 import type { PasswordHasherOptions } from '../../src/infrastructure/adapters/index.js';
 
@@ -12,7 +11,6 @@ import type { PasswordHasherOptions } from '../../src/infrastructure/adapters/in
 const options = (overrides: Partial<PasswordHasherOptions> = {}): PasswordHasherOptions => ({
   algorithm: 'argon2id',
   argon2: { memoryCost: 8192, timeCost: 1, parallelism: 1 },
-  bcrypt: { saltRounds: 10 },
   ...overrides
 });
 
@@ -40,23 +38,6 @@ describe('PasswordHasher - gravar e verificar', () => {
     expect(await hasher.hash(PASSWORD)).not.toBe(await hasher.hash(PASSWORD));
   });
 
-  it('grava bcrypt quando o algoritmo em vigor é bcrypt (rollback)', async() => {
-    const hasher = new PasswordHasher(options({ algorithm: 'bcrypt' }));
-    const stored = await hasher.hash(PASSWORD);
-
-    expect(stored).toMatch(/^\$2[aby]\$/);
-    await expect(hasher.compare(PASSWORD, stored)).resolves.toBe(true);
-  });
-
-  it('verifica hash bcrypt legado sem saber de onde veio', async() => {
-    // O que já está no banco foi gravado pelo BcryptAdapter antigo.
-    const legacy = await bcrypt.hash(PASSWORD, 10);
-    const hasher = new PasswordHasher(options());
-
-    await expect(hasher.compare(PASSWORD, legacy)).resolves.toBe(true);
-    await expect(hasher.compare('outra-senha', legacy)).resolves.toBe(false);
-  });
-
   it('nega comparação em hash de formato desconhecido, sem estourar erro', async() => {
     const hasher = new PasswordHasher(options());
 
@@ -71,13 +52,6 @@ describe('PasswordHasher - needsRehash', () => {
     const stored = await hasher.hash(PASSWORD);
 
     expect(hasher.needsRehash(stored)).toBe(false);
-  });
-
-  it('pede rehash de hash bcrypt, que é o caso da migração', async() => {
-    const hasher = new PasswordHasher(options());
-    const legacy = await bcrypt.hash(PASSWORD, 10);
-
-    expect(hasher.needsRehash(legacy)).toBe(true);
   });
 
   it('pede rehash quando os parâmetros argon2id estão mais fracos', async() => {
@@ -113,6 +87,15 @@ describe('PasswordHasher - needsRehash', () => {
     const hasher = new PasswordHasher(options());
 
     expect(hasher.needsRehash('material-ilegivel')).toBe(true);
+  });
+
+  it('nega comparação de hash de outro algoritmo, em vez de aceitar qualquer coisa', async() => {
+    const hasher = new PasswordHasher(options());
+
+    // O bcrypt saiu do projeto, então um `$2b$` remanescente no banco é
+    // credencial ilegível. Dizer "senha incorreta" é a resposta honesta: o
+    // serviço não tem como conferir, e aceitar seria devolver acesso a tudo.
+    await expect(hasher.compare(PASSWORD, '$2b$12$abcdefghijklmnopqrstuv')).resolves.toBe(false);
   });
 });
 

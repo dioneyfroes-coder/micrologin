@@ -24,18 +24,14 @@ export function bootstrapServices() {
 
   // Registrar adapters com configurações explícitas
   container.register('userRepository', () => adapterFactory.createUserRepository());
-  // O hasher grava no algoritmo configurado (argon2id por padrão, D16) e
-  // verifica qualquer formato legado pelo prefixo do hash, então a migração
-  // acontece sem interromper quem ainda não voltou a fazer login.
-  container.register('cryptoService', () => adapterFactory.createCryptoService(
-    securityConfig.passwordHash.algorithm,
-    {
-      argon2: securityConfig.passwordHash.argon2,
-      bcrypt: securityConfig.bcrypt,
-      pepper: pepperConfigFor(securityConfig.passwordHash.pepper),
-      previousPepper: pepperConfigFor(securityConfig.passwordHash.previousPepper)
-    }
-  ));
+  // Hasher em argon2id com os parâmetros validados na largada (D16). O
+  // `compare` lê o hash gravado, então subir custo depois reescreve cada
+  // usuário no próximo login sem interromper ninguém.
+  container.register('cryptoService', () => adapterFactory.createCryptoService({
+    argon2: securityConfig.passwordHash.argon2,
+    pepper: pepperConfigFor(securityConfig.passwordHash.pepper),
+    previousPepper: pepperConfigFor(securityConfig.passwordHash.previousPepper)
+  }));
 
   // ✅ NOVO: Usar JWTTokenService com suporte a refresh token
   // O Redis é injetado após a inicialização da conexão (app.js)

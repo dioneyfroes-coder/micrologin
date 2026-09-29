@@ -6,7 +6,6 @@
  */
 
 import { Algorithm, hash as argon2Hash, verify as argon2Verify } from '@node-rs/argon2';
-import bcrypt from 'bcrypt';
 import { createHmac } from 'node:crypto';
 import type { CryptoService, Logger, UserRepository } from '../../domain/index.js';
 import { User } from '../../domain/index.js';
@@ -137,39 +136,6 @@ export class MongoUserAdapter implements UserRepository {
 }
 
 /**
- * ADAPTER: Bcrypt Crypto
- * Implementa o CryptoPort
- *
- * Mantido para rollback imediato (`PASSWORD_HASH_ALGORITHM=bcrypt`) e como
- * verificador do material legado: os hashes já gravados são `$2b$` e precisam
- * continuar verificáveis durante a migração. Para gravar hash novo, use
- * `PasswordHasher`.
- */
-export class BcryptAdapter implements CryptoService {
-  private saltRounds: number;
-
-  constructor(saltRounds = 12) {
-    this.saltRounds = saltRounds;
-  }
-
-  async hash(plainText: string): Promise<string> {
-    try {
-      return await bcrypt.hash(plainText, this.saltRounds);
-    } catch (error) {
-      throw new Error(`Erro ao criptografar: ${(error as Error).message}`);
-    }
-  }
-
-  async compare(plainText: string, hash: string): Promise<boolean> {
-    try {
-      return await bcrypt.compare(plainText, hash);
-    } catch (error) {
-      throw new Error(`Erro ao comparar hash: ${(error as Error).message}`);
-    }
-  }
-}
-
-/**
  * ADAPTER: Console Logger
  * Implementa o LoggerPort
  */
@@ -190,11 +156,11 @@ export class ConsoleLoggerAdapter implements Logger {
 /**
  * Algoritmo de hash de senha em vigor.
  *
- * - `argon2id`: recomendado pela OWASP e memory-hard (D16). Padrão.
- * - `bcrypt`: o que já estava em produção. Ainda grava e ainda verifica; é o
- *   caminho de rollback e o lado verificador da migração.
+ * `argon2id`, memory-hard e recomendado pela OWASP (D16). O bcrypt saiu do
+ * projeto e não há mais caminho de migração a sustentar: `compare` só entende
+ * argon2id, então qualquer outro valor gravado é tratado como credencial ilegível.
  */
-export type PasswordHashAlgorithm = 'argon2id' | 'bcrypt';
+export type PasswordHashAlgorithm = 'argon2id';
 
 /** Pepper em vigor, com a versão que fica gravada dentro do hash. */
 export interface PepperConfig {
@@ -219,9 +185,6 @@ export interface PasswordHasherOptions {
     /** Threads por hash. `1` em servidor: p>1 entrega CPU ao atacante. */
     parallelism: number;
   };
-  bcrypt: {
-    saltRounds: number;
-  };
   /**
    * Segredo externo aplicado antes do hash (HMAC-SHA256). Ausente = sem pepper.
    *
@@ -240,29 +203,26 @@ export interface PasswordHasherOptions {
 
 /** Prefixo que o argon2id grava (`$argon2id$v=19$...`). */
 const ARGON2ID_PREFIX = '$argon2id$';
-/** Prefixos do bcrypt, incluindo o `$2y$` legado de outras bibliotecas. */
-const BCRYPT_PREFIXES = ['$2a$', '$2b$', '$2y$'];
 /**
  * Envelope do pepper: `p1:` antes do hash.
  *
- * O separador é `:` e não `$` porque todo hash válido (bcrypt e argon2id)
- * começa com `$` e o argon2id não usa `:` em nenhum campo. Com `$` como
- * separador, o resultado saía `p1$$argon2id$...`.
+ * O separador é `:` e não `$` porque o hash argon2id começa com `$` e não usa
+ * `:` em nenhum campo. Com `$` como separador, o resultado saía
+ * `p1$$argon2id$...`.
  */
 const PEPPER_ENVELOPE_PATTERN = /^(p\d+):([\s\S]+)$/;
 
 /**
- * ADAPTER: hashing de senha com migração entre algoritmos
+ * ADAPTER: hashing de senha em argon2id
  *
  * O valor gravado é opaco e carrega o próprio contexto:
  *
  * - `argon2id$v=19$m=19456,t=2,p=1$...` — sem pepper;
  * - `p1:$argon2id$v=19$...` — com pepper na versão 1 (envelope).
  *
- * `compare` nunca recebe o algoritmo: ele lê o prefixo do hash guardado e
- * despacha. É isso que deixa verificar material bcrypt antigo e, no mesmo
- * caminho, material pepperado de uma versão anterior do pepper, sem campo extra
- * no documento do usuário e sem tabela de migração.
+ * `compare` não recebe o algoritmo: ele lê o hash gravado. O envelope de pepper
+ * é o único contexto que precisa ser OPENADO, porque precisa do segredo da
+ * versão certa — ver `pepperCandidates`. Sem pepper, o valor é argon2id direto.
  */
 export class PasswordHasher implements CryptoService {
   private readonly options: PasswordHasherOptions;
@@ -284,10 +244,6 @@ export class PasswordHasher implements CryptoService {
     const pepper = this.options.pepper;
     const toHash = pepper ? this.pepper(plainText, pepper.secret) : plainText;
 
-    if (this.options.algorithm === 'bcrypt') {
-      return this.envelope(await bcrypt.hash(toHash, this.options.bcrypt.saltRounds));
-    }
-
     return this.envelope(
       await argon2Hash(toHash, {
         algorithm: Algorithm.Argon2id,
@@ -301,7 +257,7 @@ export class PasswordHasher implements CryptoService {
   async compare(plainText: string, hash: string): Promise<boolean> {
     const { value, pepperVersion } = this.unwrap(hash);
 
-    if (!this.isArgon2id(value) && !this.isBcrypt(value)) {
+    if (!this.isArgon2id(value)) {
       // Formato desconhecido não é "senha correta" e também não merece um 500:
       // um hash que ninguém consegue ler é uma credencial que não confere.
       logger.warn('Hash de senha em formato desconhecido; comparação negada', {
@@ -314,11 +270,7 @@ export class PasswordHasher implements CryptoService {
     for (const secret of this.pepperCandidates(pepperVersion)) {
       const toCompare = secret === null ? plainText : this.pepper(plainText, secret);
 
-      const matches = this.isArgon2id(value)
-        ? await argon2Verify(value, toCompare)
-        : await bcrypt.compare(toCompare, value);
-
-      if (matches) {
+      if (await argon2Verify(value, toCompare)) {
         return true;
       }
     }
@@ -329,12 +281,15 @@ export class PasswordHasher implements CryptoService {
   /**
    * O hash guardado está atrás do padrão atual?
    *
-   * Três motivos, todos decididos pelo próprio valor gravado:
+   * Dois motivos, ambos decididos pelo próprio valor gravado:
    *
-   * 1. algoritmo diferente do em vigor (o caso da migração bcrypt → argon2id);
-   * 2. parâmetros mais fracos que os configurados — subir custo é uma mudança
+   * 1. parâmetros mais fracos que os configurados — subir custo é uma mudança
    *    de política que se aplica sozinha no próximo login de cada usuário;
-   * 3. pepper ausente ou de outra versão (ativação ou rotação).
+   * 2. pepper ausente ou de outra versão (ativação ou rotação).
+   *
+   * Um hash que não seja argon2id também pede rehash, mas nunca chega aqui: um
+   * valor ilegível falha a verificação antes, porque o `compare` não tem como
+   * confirmar a senha e tratá-lo como login válido seria aceitar qualquer coisa.
    */
   needsRehash(hash: string): boolean {
     const { value, pepperVersion } = this.unwrap(hash);
@@ -347,10 +302,6 @@ export class PasswordHasher implements CryptoService {
     } else if (pepperVersion) {
       // Pepper desligado com hash pepperado: só um rehash sem pepper devolve
       // o usuário ao estado em que o serviço consegue verificar sem segredo.
-      return true;
-    }
-
-    if (this.isBcrypt(value)) {
       return true;
     }
 
@@ -400,10 +351,6 @@ export class PasswordHasher implements CryptoService {
 
   private isArgon2id(value: string): boolean {
     return value.startsWith(ARGON2ID_PREFIX);
-  }
-
-  private isBcrypt(value: string): boolean {
-    return BCRYPT_PREFIXES.some((prefix) => value.startsWith(prefix));
   }
 
   /**
@@ -464,8 +411,8 @@ export class PasswordHasher implements CryptoService {
   }
 
   private pepper(plainText: string, secret: string): string {
-    // Base64 e não hex: o valor só volta a entrar no bcrypt/argon2, que aceitam
-    // bytes, e base64 não ocupa mais espaço que hex com os mesmos 32 bytes.
+    // Base64 e não hex: o valor volta a entrar no argon2, que aceita bytes, e
+    // base64 não ocupa mais espaço que hex com os mesmos 32 bytes.
     return createHmac('sha256', secret).update(plainText, 'utf8').digest('base64');
   }
 }
@@ -478,23 +425,13 @@ export class AdapterFactory {
     return new MongoUserAdapter();
   }
 
-  static createCrypto(saltRounds = 12): BcryptAdapter {
-    return new BcryptAdapter(saltRounds);
-  }
-
   /**
-   * Hasher de senha em uso. Grava no algoritmo configurado e verifica qualquer
-   * formato legado que ainda esteja no banco (ver `D16`).
+   * Hasher de senha em uso: argon2id com os parâmetros configurados (D16).
    */
-  static createCryptoService(type = 'bcrypt', options: Partial<PasswordHasherOptions> = {}): CryptoService {
-    if (type !== 'argon2id' && type !== 'bcrypt') {
-      throw new Error(`Tipo de cryptoService não suportado: ${type}`);
-    }
-
+  static createCryptoService(options: Partial<PasswordHasherOptions> = {}): CryptoService {
     return new PasswordHasher({
-      algorithm: type,
+      algorithm: 'argon2id',
       argon2: options.argon2 ?? { memoryCost: 19456, timeCost: 2, parallelism: 1 },
-      bcrypt: options.bcrypt ?? { saltRounds: 12 },
       pepper: options.pepper,
       previousPepper: options.previousPepper
     });

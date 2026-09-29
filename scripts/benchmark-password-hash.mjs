@@ -2,11 +2,12 @@
 /**
  * @fileoverview Benchmark de hash de senha: o custo real, nesta máquina
  *
- * A decisão argon2id-vs-bcrypt não pode ser tomada de tabela: o que importa é
- * quanto o hash custa *aqui*, no caminho de login, e quanto custa *dentro do
- * limite do container* (2.0 CPU / 512 MB em `docker-compose.prod.yml`). Um
- * parâmetro que a OWASP recomenda e que cabe folgado numa VM de 8核 pode
- * derrubar o serviço no orçamento que este serviço tem.
+ * A escolha dos parâmetros do argon2id não pode ser tomada de tabela: o que
+ * importa é quanto o hash custa *aqui*, no caminho de login, e quanto custa
+ * *dentro do limite do container* (2.0 CPU / 512 MB em
+ * `docker-compose.prod.yml`). Um parâmetro que a OWASP recomenda e que cabe
+ * folgado numa VM de 8核 pode derrubar o serviço no orçamento que este serviço
+ * tem.
  *
  * Por isso o script mede três coisas que tabelas não dão:
  *
@@ -29,14 +30,18 @@
  *
  * Rodar dentro do container (é o número que vale):
  *   docker run --rm --cpus 2.0 --memory 512m -v "$PWD/scripts:/bench:ro" \
- *     node:22-alpine sh -c 'cd /tmp && npm i bcrypt @node-rs/argon2 \
+ *     node:22-alpine sh -c 'cd /tmp && npm i @node-rs/argon2 \
  *     --no-audit --no-fund --silent && node /bench/benchmark-password-hash.mjs'
+ *
+ * O script mede só argon2id: o bcrypt saiu do projeto depois de a decisão D16,
+ * e manter a dependência viva só para reexecutar uma comparação já feita
+ * custaria uma dependência que não pertence mais ao serviço. Os números do
+ * bcrypt que embasaram a decisão estão preservados em `docs/metricas.md`.
  */
 
 import { spawnSync } from 'node:child_process';
 import { createHmac } from 'node:crypto';
 import { cpus } from 'node:os';
-import bcrypt from 'bcrypt';
 import { Algorithm, hash as argon2Hash, verify as argon2Verify } from '@node-rs/argon2';
 
 const argv = process.argv.slice(2);
@@ -115,30 +120,12 @@ const withPepper = (password, pepper) => createHmac('sha256', pepper).update(pas
  * Candidatos. Os nomes são os que a documentação usa, para que a tabela do
  * benchmark possa ser colada na decisão sem renomear nada.
  *
- * Os quatro primeiros argon2id são a escada da OWASP (Password Storage Cheat
+ * Os candidatos argon2id cobrem a escada da OWASP (Password Storage Cheat
  * Sheet): 46 MiB/t=1, 19 MiB/t=2, 12 MiB/t=3 — mesma defesa, memória trocada
- * por tempo. Os dois últimos são o que o roadmap propôs, e estão aqui para
- * mostrar o que essa proposta custa neste serviço.
+ * por tempo. O último é o que o roadmap propôs, e está aqui para mostrar o que
+ * essa proposta custa neste serviço.
  */
 const candidates = [
-  {
-    name: 'bcrypt cost 12 (atual)',
-    detail: 'BCRYPT_SALT_ROUNDS=12',
-    hash: () => bcrypt.hash(PASSWORD, 12),
-    verify: (stored) => bcrypt.compare(PASSWORD, stored)
-  },
-  {
-    name: 'bcrypt cost 13',
-    detail: 'BCRYPT_SALT_ROUNDS=13',
-    hash: () => bcrypt.hash(PASSWORD, 13),
-    verify: (stored) => bcrypt.compare(PASSWORD, stored)
-  },
-  {
-    name: 'bcrypt 12 + pepper',
-    detail: 'HMAC-SHA256 antes do hash',
-    hash: () => bcrypt.hash(withPepper(PASSWORD, 'pepper-de-benchmark'), 12),
-    verify: (stored) => bcrypt.compare(withPepper(PASSWORD, 'pepper-de-benchmark'), stored)
-  },
   {
     name: 'argon2id OWASP forte',
     detail: 'm=46MiB, t=1, p=1',

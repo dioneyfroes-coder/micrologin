@@ -251,7 +251,7 @@ describe('AuthService - DomainError na construção de credenciais', () => {
   });
 });
 
-describe('AuthService - migração do hash no login', () => {
+describe('AuthService - reescrita do hash no login', () => {
   const tokenGenerator = () => ({
     generateTokenPair: jest.fn().mockResolvedValue({
       accessToken: 'at',
@@ -263,7 +263,7 @@ describe('AuthService - migração do hash no login', () => {
 
   it('reescreve o hash fora do padrão atual e devolve o login', async() => {
     const logger = makeLogger();
-    const user = new User('u-1', 'alice', 'hash-bcrypt-antigo');
+    const user = new User('u-1', 'alice', 'hash-argon2-antigo');
     const userRepository = makeRepo({
       findByUsername: jest.fn().mockResolvedValue(user),
       save: jest.fn().mockImplementation(async(saved) => saved)
@@ -279,16 +279,16 @@ describe('AuthService - migração do hash no login', () => {
 
     expect(result.success).toBe(true);
     expect(result.token.accessToken).toBe('at');
-    // A migração acontece depois de a senha ser provada, e com a senha em claro
-    // que o próprio usuário acabou de digitar.
+    // A reescrita acontece depois de a senha ser provada, e com a senha em
+    // claro que o próprio usuário acabou de digitar.
     expect(crypto.hash).toHaveBeenCalledWith('StrongPass123!');
     expect(userRepository.save).toHaveBeenCalledTimes(1);
     expect(user.hashedPassword).toBe('$argon2id$v=19$m=19456,t=2,p=1$novo');
   });
 
-  it('não trata migração como troca de senha: histórico e data ficam intactos', async() => {
+  it('não trata reescrita como troca de senha: histórico e data ficam intactos', async() => {
     const logger = makeLogger();
-    const user = new User('u-1', 'alice', 'hash-bcrypt-antigo', new Date('2024-01-01'), new Date('2024-02-02'), ['antigo-1'], new Date('2024-03-03'));
+    const user = new User('u-1', 'alice', 'hash-argon2-antigo', new Date('2024-01-01'), new Date('2024-02-02'), ['antigo-1'], new Date('2024-03-03'));
     const userRepository = makeRepo({
       findByUsername: jest.fn().mockResolvedValue(user),
       save: jest.fn().mockImplementation(async(saved) => saved)
@@ -310,9 +310,9 @@ describe('AuthService - migração do hash no login', () => {
     expect(user.updatedAt).toEqual(new Date('2024-02-02'));
   });
 
-  it('mantém o login quando a escrita da migração falha', async() => {
+  it('mantém o login quando a escrita da reescrita falha', async() => {
     const logger = makeLogger();
-    const user = new User('u-1', 'alice', 'hash-bcrypt-antigo');
+    const user = new User('u-1', 'alice', 'hash-argon2-antigo');
     const userRepository = makeRepo({
       findByUsername: jest.fn().mockResolvedValue(user),
       save: jest.fn().mockRejectedValue(new Error('mongo indisponível'))
@@ -327,11 +327,11 @@ describe('AuthService - migração do hash no login', () => {
     const result = await service.authenticateUser('alice', 'StrongPass123!');
 
     // O usuário provou a senha e o acesso é legítimo: uma falha de escrita não
-    // pode virar erro de autenticação. A migração volta no próximo login.
+    // pode virar erro de autenticação. A reescrita volta no próximo login.
     expect(result.success).toBe(true);
     expect(result.token.accessToken).toBe('at');
     expect(logger.warn).toHaveBeenCalledWith(
-      expect.stringContaining('Não foi possível migrar o hash'),
+      expect.stringContaining('Não foi possível reescrever o hash'),
       expect.objectContaining({ userId: 'u-1' })
     );
   });
@@ -370,10 +370,10 @@ describe('AuthService - migração do hash no login', () => {
     expect(result.success).toBe(true);
   });
 
-  it('não migra quando a senha está errada', async() => {
+  it('não reescreve quando a senha está errada', async() => {
     const logger = makeLogger();
     const userRepository = makeRepo({
-      findByUsername: jest.fn().mockResolvedValue(new User('u-1', 'alice', 'hash-bcrypt-antigo'))
+      findByUsername: jest.fn().mockResolvedValue(new User('u-1', 'alice', 'hash-argon2-antigo'))
     });
     const crypto = {
       hash: jest.fn(),

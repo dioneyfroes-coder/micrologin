@@ -365,20 +365,15 @@ describe('configuração de hash de senha', () => {
     expect(summary).not.toContain('segredo-que-nao-pode-vazar');
   });
 
-  it('aceita bcrypt como rollback e ainda valida a configuração', async() => {
+  it('mantém argon2id mesmo se o ambiente pedir outro algoritmo', async() => {
+    // O bcrypt saiu do projeto e o algoritmo não é mais configurável: aceitar
+    // a variável criaria um caminho de gravação que o `compare` não entende,
+    // e o usuário que caísse nele ficaria preso sem como entrar.
     process.env.PASSWORD_HASH_ALGORITHM = 'bcrypt';
 
     const { securityConfig, validateConfiguration } = await loadConfig();
 
-    expect(securityConfig.passwordHash.algorithm).toBe('bcrypt');
+    expect(securityConfig.passwordHash.algorithm).toBe('argon2id');
     expect(validateConfiguration()).toBe(true);
-  });
-
-  it('recusa algoritmo desconhecido em vez de assumir o padrão', async() => {
-    process.env.PASSWORD_HASH_ALGORITHM = 'scrypt';
-
-    const { validateConfiguration } = await loadConfig();
-
-    expect(() => validateConfiguration()).toThrow(/PASSWORD_HASH_ALGORITHM/);
   });
 });

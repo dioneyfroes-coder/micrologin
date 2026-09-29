@@ -11,7 +11,7 @@ Projeto de portfólio em Node.js para demonstrar uma API de autenticação com a
 - JWT com access token, refresh token, revogação pontual e revogação por usuário (blacklist no Redis)
 - fluxo HTTP completo de renovação/revogação: `POST /refresh` e `POST /logout`
 - política única de username: 3 a 30 caracteres, apenas letras, números, `_` e `-` (fonte única em `shared/utils/usernamePolicy.ts`)
-- hash de senha em **argon2id** (m=19MiB, t=2, p=1 — mínimos da OWASP) com migração silenciosa do material bcrypt já gravado, sem travar ninguém
+- hash de senha em **argon2id** (m=19MiB, t=2, p=1 — mínimos da OWASP), único algoritmo do projeto, com reescrita silenciosa quando os parâmetros sobem
 - política de senha forte em fonte única (12+ caracteres, máximo de 72 bytes, composição, lista de senhas comuns) e troca de senha com step-up, histórico de 5 hashes e encerramento das sessões
 - rate limiting por IP e por login, com backend Redis e fallback em memória quando o Redis está indisponível
 - monitoramento auxiliar de segurança com limites de memória (auditoria e anomalias sem crescimento ilimitado)
@@ -28,7 +28,7 @@ Projeto de portfólio em Node.js para demonstrar uma API de autenticação com a
 - MongoDB + Mongoose
 - Redis (node-redis 5)
 - JWT (jsonwebtoken / jose)
-- argon2id (@node-rs/argon2) + bcrypt (verificação de material legado e rollback)
+- argon2id (@node-rs/argon2)
 - Jest
 - Docker / Docker Compose
 - GitHub Actions
@@ -115,7 +115,7 @@ A política está em um único objeto (`PASSWORD_POLICY`, em `src/shared/utils/p
 | Regra | Valor | Por quê |
 | --- | --- | --- |
 | Mínimo | 12 caracteres | acima do mínimo de 8 da NIST, já que há exigência de composição |
-| Máximo | **72 bytes** | limite herdado do bcrypt, que ignora o que passa de 72 bytes. Mantido como política: argon2id não trunca, mas o limite é escolha do serviço, não do algoritmo (D16) |
+| Máximo | **72 bytes** | o argon2id não trunca, então o teto é escolha do serviço: protege de entrada desnecessariamente grande e mantém a política estável em vez de mudar junto com o algoritmo (D16) |
 | Composição | maiúscula, minúscula, número, símbolo | camada extra à checagem de senha comum |
 | Senhas comuns | 27 entradas, sem diferenciar caixa | cobre o caso offline, sem rede no caminho de registro |
 | Expiração | nunca | rotação forçada empurra para padrões piores (NIST SP 800-63B) |
@@ -129,19 +129,22 @@ Senha é valor opaco: nenhum limite, escape ou normalização é aplicado ao val
 2. reuso da senha atual ou de qualquer uma das últimas 5 é recusado (`PASSWORD_REUSED`);
 3. **todas as sessões são encerradas**: os tokens emitidos antes da troca deixam de valer e é preciso fazer login de novo.
 
-### Migração de hash no login
+### Reescrita de hash no login
 
-Hashes em bcrypt já gravados continuam válidos: o login verifica pelo prefixo do
-hash guardado e, ao acertar a senha, **reescreve o hash em argon2id na mesma
-requisição**. Não há campo novo no documento nem tabela de migração.
+O `compare` lê os parâmetros do hash guardado. Se eles estiverem mais fracos que
+os em vigor, o login **reescreve o hash com os parâmetros atuais na mesma
+requisição** — depois de a senha ser provada, que é o único momento em que ela
+está em claro. Subir `ARGON2_MEMORY_COST` ou `ARGON2_TIME_COST` endurece a base
+sem travar ninguém e sem pedir troca de senha. Não há campo novo no documento
+nem tabela de migração.
 
 Reescrever o hash não é trocar senha: o histórico de senhas e
 `passwordChangedAt` ficam intactos, e as sessões do usuário **não** são
-encerradas. Se a escrita da migração falhar, o login é entregue normalmente e a
-tentativa se repete no próximo acesso.
+encerradas. Se a escrita falhar, o login é entregue normalmente e a tentativa se
+repete no próximo acesso.
 
-`PASSWORD_HASH_ALGORITHM=bcrypt` volta a gravar bcrypt (rollback), e o serviço
-continua verificando argon2id normalmente.
+O algoritmo é fixo: argon2id é o único caminho de gravação e de verificação, e
+não há variável de ambiente para trocá-lo.
 
 `PUT /update` atualiza somente o username; enviar `password` nesse endpoint é recusado com `400`.
 

@@ -60,7 +60,7 @@ describe('normalizeInput - credenciais são valores opacos', () => {
 
     normalizeInput(req, {} as never, next);
 
-    // O valor precisa chegar intacto ao bcrypt: escapar ou "sanitizar" a senha
+    // O valor precisa chegar intacto ao hash: escapar ou "sanitizar" a senha
     // faria o hash de uma senha diferente da digitada pelo usuário.
     expect(req.body.password).toBe(password);
   });

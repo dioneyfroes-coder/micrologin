@@ -286,16 +286,15 @@ export const securityConfig = {
    * Hash de senha (D16).
    *
    * `algorithm` decide o que é *gravado*; a verificação é sempre automática pelo
-   * formato do hash guardado, então trocar o valor aqui migra a base sem
-   * ninguém ser trancado fora — cada usuário é reescrito no próximo login.
-   * `bcrypt` continua aceito como rollback imediato.
+   * formato do hash guardado, então subir o custo migra a base sem ninguém ser
+   * trancado fora: cada usuário é reescrito no próximo login.
    *
    * Os padrões do argon2id são os mínimos da OWASP (m=19MiB, t=2, p=1) e foram
    * escolhidos por medição: 4 logins simultâneos ficam em 146 MB de pico, dentro
    * do container de 512 MB. Ver `docs/metricas.md`.
    */
   passwordHash: {
-    algorithm: (process.env.PASSWORD_HASH_ALGORITHM || 'argon2id') as 'argon2id' | 'bcrypt',
+    algorithm: 'argon2id' as const,
     argon2: {
       // KiB. 19456 = 19 MiB.
       memoryCost: parseEnvNumber(process.env.ARGON2_MEMORY_COST, 19456),
@@ -313,12 +312,6 @@ export const securityConfig = {
      * Quem não voltar a fazer login não pode ser derrubado por uma rotação.
      */
     previousPepper: readPepper('PASSWORD_PEPPER_PREVIOUS', 'PASSWORD_PEPPER_PREVIOUS_VERSION')
-  },
-
-  // Mantido porque o caminho de rollback e o verificador do material legado
-  // ainda usam bcrypt. some após a migração terminar.
-  bcrypt: {
-    saltRounds: parseEnvNumber(process.env.BCRYPT_SALT_ROUNDS, 12)
   },
 
   cors: {
@@ -428,37 +421,25 @@ export function validateConfiguration(): boolean {
   // quebrar. Por isso os limites são recusados na largada, não avisados.
   const passwordHash = securityConfig.passwordHash;
 
-  if (!['argon2id', 'bcrypt'].includes(passwordHash.algorithm)) {
+  const { memoryCost, timeCost, parallelism } = passwordHash.argon2;
+
+  if (memoryCost < 8192) {
+    errors.push('ARGON2_MEMORY_COST deve ser pelo menos 8192 KiB (8 MiB): abaixo disso o hash não é memory-hard');
+  }
+  if (timeCost < 1) {
+    errors.push('ARGON2_TIME_COST deve ser pelo menos 1');
+  }
+  if (parallelism < 1) {
+    errors.push('ARGON2_PARALLELISM deve ser pelo menos 1');
+  }
+  // 4 logins simultâneos a 128 MiB passam de 640 MB e matam o container de
+  // 512 MB. O teto é a memória do serviço, não um dogma de parâmetro.
+  if (memoryCost * Math.max(4, parallelism) > 131072) {
     errors.push(
-      `PASSWORD_HASH_ALGORITHM deve ser argon2id ou bcrypt (recebido: ${passwordHash.algorithm})`
+      `ARGON2_MEMORY_COST/ARGON2_PARALLELISM altos demais: ${Math.max(4, parallelism)} logins ` +
+      `simultâneos pediriam ${(memoryCost * Math.max(4, parallelism) / 1024).toFixed(0)} MiB, ` +
+      'acima do que o container de 512 MB comporta (veja docs/metricas.md)'
     );
-  }
-
-  if (passwordHash.algorithm === 'argon2id') {
-    const { memoryCost, timeCost, parallelism } = passwordHash.argon2;
-
-    if (memoryCost < 8192) {
-      errors.push('ARGON2_MEMORY_COST deve ser pelo menos 8192 KiB (8 MiB): abaixo disso o hash não é memory-hard');
-    }
-    if (timeCost < 1) {
-      errors.push('ARGON2_TIME_COST deve ser pelo menos 1');
-    }
-    if (parallelism < 1) {
-      errors.push('ARGON2_PARALLELISM deve ser pelo menos 1');
-    }
-    // 4 logins simultâneos a 128 MiB passam de 640 MB e matam o container de
-    // 512 MB. O teto é a memória do serviço, não um dogma de parâmetro.
-    if (memoryCost * Math.max(4, parallelism) > 131072) {
-      errors.push(
-        `ARGON2_MEMORY_COST/ARGON2_PARALLELISM altos demais: ${Math.max(4, parallelism)} logins ` +
-        `simultâneos pediriam ${(memoryCost * Math.max(4, parallelism) / 1024).toFixed(0)} MiB, ` +
-        'acima do que o container de 512 MB comporta (veja docs/metricas.md)'
-      );
-    }
-  }
-
-  if (securityConfig.bcrypt.saltRounds < 10) {
-    errors.push('BCRYPT_SALT_ROUNDS deve ser pelo menos 10');
   }
 
   // Pepper mal configurado impede a verificação dos hashes já gravados. Recusar
@@ -565,8 +546,7 @@ export function getConfigSummary() {
         argon2: securityConfig.passwordHash.argon2,
         pepperConfigured: Boolean(securityConfig.passwordHash.pepper),
         previousPepperConfigured: Boolean(securityConfig.passwordHash.previousPepper)
-      },
-      bcrypt: securityConfig.bcrypt.saltRounds
+      }
     },
     session: {
       // false = fail-closed (recomendado em produção): sem Redis, operações

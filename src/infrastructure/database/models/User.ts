@@ -33,10 +33,9 @@ const UserSchema = new Schema<IUser>(
       required: true,
       // O campo guarda um HASH, não a senha. A política de senha em texto claro
       // (12 a 72 bytes) é do domínio, em `passwordPolicy.ts`, e vale para o que
-      // o usuário digita — repeti-la aqui validava o hash como se fosse senha.
-      // Com bcrypt (60 caracteres) isso passava despercebido; o hash argon2id
-      // tem cerca de 100 e era recusado na gravação, o que transformava a
-      // migração em erro 400 no registro.
+      // o usuário digita — repeti-la aqui validava o hash como se fosse senha, e
+      // o limite de 72 recusava na gravação qualquer hash mais longo. O 255
+      // acomoda argon2id (~100) e o envelope de pepper.
       minlength: [32, 'Hash de senha inválido'],
       maxlength: [255, 'Hash de senha inválido']
     },

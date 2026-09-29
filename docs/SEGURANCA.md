@@ -69,7 +69,7 @@ por IP. O `liveness` foi feito para não depender disso (ver README).
 | T6 | SQL/NoSQL injection | sem SQL no projeto; Mongo comongoose sanitiza o objeto; input validado por tipo | `validation.ts` |
 | T7 | XSS | API responde JSON, sem HTML; CSP restritiva; sem escaping na entrada | `helmet.ts` |
 | T8 | Senha fraca ou reutilizada | mínimo 12, classe de caractere exigida, 5 hashes anteriores, troca exige a senha atual | `passwordPolicy.ts` |
-| T9 | Timing attack na comparação de senha | `bcrypt.compare` é de tempo constante por construção | `BcryptAdapter` |
+| T9 | Timing attack na comparação de senha | a verificação do argon2id é de tempo constante por construção, e o `compare` não tem caminho de igualdade antecipada | `PasswordHasher` |
 | T10 | Payload grande / DoS de parsing | limite de 100kb no `express.json`; rate limit antes do trabalho caro | `app.ts` |
 | T11 | Clique em log de auditoria | usuário mascarado no console; refresh token nunca vai para o log de evento | `logToConsole` |
 | T12 | Cliente forja identidade via proxy | `X-Request-Id` externo é recusado se não for UUID; IP confiável exige `trust proxy` | `requestLogger.ts` |
@@ -246,20 +246,21 @@ emissor aceita SEC1 também (é o mesmo par em outra embalagem, e convertê-lo v
 `node:crypto` não afrouxa nada); e um teste novo executa o script de verdade e
 assina com a chave que ele produziu — a costura que faltava.
 
-### D16 — argon2id (m=19MiB, t=2, p=1) com migração silenciosa a partir do bcrypt
-O hash de senha saiu de **bcrypt cost 12** para **argon2id** nos mínimos da
+### D16 — argon2id (m=19MiB, t=2, p=1), único algoritmo do projeto
+O hash de senha é **argon2id** nos mínimos da
 [OWASP Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html).
-A escolha é do serviço, não do costume: a mesma máquina, no mesmo orçamento de
-produção (2.0 CPU, 512 MB), mediu **365.7 ms por hash de bcrypt 12 contra
-27.8 ms de argon2id 19MiB** — o bcrypt era 13x mais caro e ainda assim menos
-resistente, por não ser memory-hard. Medições completas em
+A escolha saiu de medição, não de costume: na mesma máquina, no mesmo orçamento
+de produção (2.0 CPU, 512 MB), o bcrypt cost 12 que rodava custava **365.7 ms
+por hash contra 27.8 ms de argon2id 19MiB** — 13x mais caro e menos resistente,
+por não ser memory-hard. No `/login` real o p95 caiu de **491 ms para 45.4 ms**
+em c=1 e de **1868 ms para 191 ms** em c=8. Medições completas em
 [`metricas.md`](metricas.md).
 
-*Recusado:* a configuração que o roadmap propunha (`m=64MiB, t=3, p=4`). Ela é
-**2.7x mais barata que o bcrypt 12 de hoje** (133.4 ms), então não é "mais
+*Recusado:* a configuração que o roadmap propunha (`m=64MiB, t=3, p=4`). Era
+**2.7x mais barata que o bcrypt 12 de hoje** (133.4 ms), então não era "mais
 forte que o que já rodava" em CPU — e 4 logins simultâneos pedem **326 MB de
-pico**, 64% do container e acima do limiar de 200 MB que o próprio `/health`
-usa para marcar `warning`. Trocaria latência de login por risco de OOM.
+pico**, 64% do container e acima do limiar de 200 MB que o próprio `/health` usa
+para marcar `warning`. Trocaria latência de login por risco de OOM.
 *Recusado:* `p=4`. Dentro de 2.0 CPU derruba a latência de um hash (75 ms contra
 133 ms), mas consome 4 threads por requisição: dois logins simultâneos já
 ocupam o container. Os autores do Argon2 pedem `p=1` em servidor — `p>1` entrega
@@ -267,34 +268,43 @@ CPU ao atacante sem ganhar defesa proporcional. `m=46MiB, t=1, p=1` (a segunda
 recomendação da OWASP) foi medida e fica em 208 MB com 4 logins: cabe, mas passa
 do limiar de alerta sem comprar defesa equivalente à de 19MiB/t=2.
 
-**Migração, sem trancar ninguém.** `compare` não recebe o algoritmo: ele lê o
-prefixo do hash guardado (`$argon2id$` ou `$2b$`) e despacha. O hash bcrypt já gravado
-continua verificável, e cada login bem-sucedido cujo hash esteja fora
-do padrão é **reescrito no mesmo instante** (`needsRehash` → `rehashPassword`).
-Sem tabela de migração, sem campo novo, sem pedir troca de senha.
+**O bcrypt saiu do projeto.** A primeira versão desta decisão o mantinha como
+verificador do material legado e como rollback. Em ambiente de laboratório, sem
+usuários antigos para preservar, esse caminho não pagava o que cobrava: uma
+dependência nativa a mais, um segundo algoritmo no `compare`, e um rollback que
+pode dar a impressão de reversibilidade onde não há reversibilidade real — se
+alguém rodar com um hash bcrypt no banco, o serviço não tem como conferir a
+senha e o usuário fica preso. Removido `BcryptAdapter`, a dependência `bcrypt`,
+`PASSWORD_HASH_ALGORITHM` e `BCRYPT_SALT_ROUNDS`. O `compare` entende apenas
+argon2id, e qualquer outro valor é tratado como credencial ilegível (resposta
+`false`, com aviso no log) em vez de ser aceito.
 
-**Migrar não é trocar senha.** `rehashPassword` grava só o hash: não toca em
-`passwordHistory` nem em `passwordChangedAt`. Se o hash antigo fosse para o
-histórico, a senha original voltaria a ser rejeitada depois da migração; se
-`passwordChangedAt` mudasse, o sistema passaria a afirmar que o usuário trocou a
-senha quando não trocou. Há teste para os dois.
+**O que continua de pé.** O reescritor (`needsRehash` → `rehashPassword`) não
+dependia do bcrypt: ele cobre o caso real daqui em diante, que é **subir os
+parâmetros**. Um hash gravado com m=19MiB continua verificável depois de a
+configuração ir para 46MiB, e cada login bem-sucedido reescreve o hash nos
+parâmetros em vigor, na mesma requisição. Sem tabela de migração, sem campo novo,
+sem pedir troca de senha. O E2E cobre exatamente esse caminho gravando um hash
+fraco direto no Mongo.
 
-**A migração não pode custar um login válido.** A reescrita é best-effort: se a
-escrita falhar, o login é entregue, o aviso vai para o log e a migração volta no
+**Reescrever não é trocar senha.** `rehashPassword` grava só o hash: não toca em
+`passwordHistory` nem em `passwordChangedAt`. Se o hash anterior fosse para o
+histórico, a senha antiga voltaria a ser aceita logo depois; se
+`passwordChangedAt` mudasse, o sistema afirmaria que o usuário trocou a senha
+quando não trocou. Há teste para os dois.
+
+**A reescrita não pode custar um login válido.** Ela é best-effort: se a escrita
+falhar, o login é entregue, o aviso vai para o log e a reescrita volta no
 próximo login. O usuário provou a senha; transformar falha de escrita em erro de
 autenticação seria devolver 500 para quem fez tudo certo.
 
-**Rollback:** `PASSWORD_HASH_ALGORITHM=bcrypt` volta a gravar bcrypt, e os
-hashes argon2id continuam verificáveis pelo mesmo `compare`. O caminho é
-simétrico e foi testado.
-
-**Um bug que só apareceu aqui:** o schema do Mongo validava o campo `password`
-com a política de senha em texto claro (12 a 72 caracteres). Com bcrypt (60
-caracteres) passava; o hash argon2id tem ~100 e era **recusado na gravação** —
-a migração virava 400 no registro. A política de senha vale para o que o usuário
-digita (domínio, `passwordPolicy.ts`); o campo do banco guarda hash e valida
-como hash. Corrigido com teste E2E que grava bcrypt no Mongo e prova a
-migração de ponta a ponta.
+**Um bug que a troca expôs:** o schema do Mongo validava o campo `password` com
+a política de senha em texto claro (12 a 72 caracteres). O hash argon2id tem
+~100 e era **recusado na gravação** — registro devolvia 400. A política de senha
+vale para o que o usuário digita (domínio, `passwordPolicy.ts`); o campo do banco
+guarda hash e valida como hash. O teto de 72 bytes deixou de ser herança do
+bcrypt: o argon2id não trunca, então ele virou escolha do serviço, mantido para
+não deixar a entrada desnecessariamente grande.
 
 ### D17 — Pepper: mecanismo pronto, desligado por padrão
 O pepper (HMAC-SHA256 antes do hash) foi **medido** e **implementado**, mas
@@ -302,8 +312,8 @@ O pepper (HMAC-SHA256 antes do hash) foi **medido** e **implementado**, mas
 `PASSWORD_PEPPER_PREVIOUS_VERSION` — e o padrão é desligado.
 
 *Por que desligar, se não custa nada:* a medição confirma que o pepper não tem
-custo mensurável (26.2 ms contra 27.8 ms; no bcrypt, diferença menor que a
-variação entre execuções). A discussão nunca foi de desempenho. É que o pepper
+custo mensurável (26.2 ms contra 27.8 ms, diferença menor que a variação entre
+execuções). A discussão nunca foi de desempenho. É que o pepper
 só protege quando **hash e pepper não saem juntos** — e num serviço que guarda
 `passwordHistory`, pepper por hash, envelope versionado e rotação, ele amplia a
 superfície de operação (segredo a provisionar no KMS, versão a gravar, rotação a

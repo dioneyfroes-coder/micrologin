@@ -30,25 +30,24 @@ describe('validatePasswordStrength - política de senha forte', () => {
     expect(result.errors).toContain(`Senha deve ter pelo menos ${PASSWORD_MIN_LENGTH} caracteres`);
   });
 
-  it('rejeita senha que passa do limite de bytes do bcrypt', () => {
-    // O que excede 72 bytes seria simplesmente ignorado pelo hash: aceitar
-    // seria prometer uma proteção que o algoritmo não entrega.
+  it('rejeita senha que passa do limite de bytes', () => {
     const long = `A1!${'a'.repeat(PASSWORD_MAX_LENGTH)}`;
     const result = validatePasswordStrength(long);
     expect(result.isValid).toBe(false);
-    expect(result.errors).toContain(`Senha não pode exceder ${PASSWORD_MAX_LENGTH} caracteres (limite do bcrypt)`);
+    expect(result.errors).toContain(`Senha não pode exceder ${PASSWORD_MAX_LENGTH} bytes`);
   });
 
   it('conta o limite em BYTES, não em caracteres', () => {
-    // 28 caracteres multibyte = 76 bytes: passa em contagem de caracteres,
-    // mas estouraria o que o bcrypt realmente processa.
+    // 28 caracteres multibyte = 76 bytes: passa em contagem de caracteres, mas
+    // estoura o teto. Contar em caracteres deixaria o usuário acreditar num
+    // limite que o serviço não está medindo.
     const multibyte = `Aa1!${'€'.repeat(24)}`;
     expect(multibyte.length).toBeLessThanOrEqual(PASSWORD_MAX_LENGTH);
     expect(passwordByteLength(multibyte)).toBeGreaterThan(PASSWORD_MAX_LENGTH);
 
     const result = validatePasswordStrength(multibyte);
     expect(result.isValid).toBe(false);
-    expect(result.errors.join(' ')).toContain('bcrypt');
+    expect(result.errors.join(' ')).toContain(`${PASSWORD_MAX_LENGTH} bytes`);
   });
 
   it('aceita senha exatamente no limite de bytes', () => {
@@ -117,26 +116,28 @@ describe('PASSWORD_POLICY - decisões explícitas', () => {
     expect(PASSWORD_POLICY.expires).toBe(false);
   });
 
-  it('limita o máximo ao limite do bcrypt', () => {
+  it('mantém um teto explícito de bytes, independente do algoritmo', () => {
+    // O argon2id não trunca em 72, mas teto definido protege o serviço de
+    // entrada desnecessariamente grande e mantém a política estável.
     expect(PASSWORD_POLICY.maxLengthBytes).toBe(72);
   });
 });
 
 describe('wasPasswordUsedBefore - histórico de senhas', () => {
-  const bcryptCompareTrue = async() => true;
-  const bcryptCompareFalse = async() => false;
+  const compareAlwaysTrue = async() => true;
+  const compareAlwaysFalse = async() => false;
 
   it('retorna false quando não há histórico', async() => {
-    expect(await wasPasswordUsedBefore('StrongPass123!', null, bcryptCompareTrue)).toBe(false);
-    expect(await wasPasswordUsedBefore('StrongPass123!', undefined, bcryptCompareTrue)).toBe(false);
-    expect(await wasPasswordUsedBefore('StrongPass123!', [], bcryptCompareTrue)).toBe(false);
+    expect(await wasPasswordUsedBefore('StrongPass123!', null, compareAlwaysTrue)).toBe(false);
+    expect(await wasPasswordUsedBefore('StrongPass123!', undefined, compareAlwaysTrue)).toBe(false);
+    expect(await wasPasswordUsedBefore('StrongPass123!', [], compareAlwaysTrue)).toBe(false);
   });
 
   it('retorna true quando uma senha do histórico coincide', async() => {
     const result = await wasPasswordUsedBefore(
       'StrongPass123!',
       ['hash-antigo'],
-      bcryptCompareTrue
+      compareAlwaysTrue
     );
     expect(result).toBe(true);
   });
@@ -145,7 +146,7 @@ describe('wasPasswordUsedBefore - histórico de senhas', () => {
     const result = await wasPasswordUsedBefore(
       'StrongPass123!',
       ['hash-1', 'hash-2'],
-      bcryptCompareFalse
+      compareAlwaysFalse
     );
     expect(result).toBe(false);
   });

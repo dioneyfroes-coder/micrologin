@@ -6,6 +6,14 @@ alvo.
 
 Data da medição: 2026-09-29.
 
+> **As linhas de bcrypt abaixo são registro histórico**, medidas enquanto o
+> bcrypt ainda era o algoritmo do serviço. Ele foi removido do projeto depois da
+> decisão `D16` (laboratório, sem usuários antigos a preservar), então o script
+> de benchmark hoje mede apenas argon2id. As linhas foram preservadas porque
+> foram elas que embasaram a troca — sem elas, a decisão fica sendo opinião.
+> Para reexecutar a comparação seria preciso instalar `bcrypt` à mão no
+> ambiente de medição, já que ele não é mais dependência do projeto.
+
 ## 1. Custo de hashing de senha
 
 Comando:
@@ -16,7 +24,7 @@ node scripts/benchmark-password-hash.mjs --iterations 20 --concurrency 1,2,4
 
 # no orçamento real de produção: 2.0 CPU e 512 MB
 docker run --rm --cpus 2.0 --memory 512m -v "$PWD/scripts:/bench:ro" node:22-alpine \
-  sh -c 'cd /tmp && npm i bcrypt @node-rs/argon2 --no-audit --no-fund --silent \
+  sh -c 'cd /tmp && npm i @node-rs/argon2 --no-audit --no-fund --silent \
   && cp /bench/benchmark-password-hash.mjs /tmp/ \
   && node /tmp/benchmark-password-hash.mjs --iterations 20 --concurrency 1,2,4'
 ```
@@ -113,10 +121,11 @@ O p95 de `/login` caiu de 491 ms para 45.4 ms em c=1, e o serviço passou de
 requisição caiu de 1868 ms para 191 ms, porque o hash deixou de ocupar um núcleo
 por 365 ms.
 
-A migração aconteceu no mesmo teste: o hash de `mede_bench` estava em bcrypt
+A reescrita aconteceu no mesmo teste: o hash de `mede_bench` estava em bcrypt
 antes da primeira requisição e já estava em `$argon2id$v=19$m=19456,t=2,p=1$`
-depois, com `passwordHistory` vazio — o login migrou sem trocar a senha do
-usuário.
+depois, com `passwordHistory` vazio — o login reescreveu sem trocar a senha do
+usuário. Foi a única vez que a base teve material bcrypt: o algoritmo foi removido
+em seguida, e hoje o `compare` entende apenas argon2id.
 
 ### Limite de 4 workers
 

@@ -10,17 +10,20 @@
  * 1. **Mínimo de 12 caracteres.** Acima do mínimo de 8 da NIST SP 800-63B,
  *    porque a política também exige composição e o custo de um caractere a mais
  *    é trivial para o usuário.
- * 2. **Máximo de 72 BYTES, não de caracteres.** bcrypt ignora tudo o que passa
- *    de 72 bytes: duas senhas diferentes com o mesmo prefixo de 72 bytes
- *    seriam considered equivalentes. Aceitar mais do que isso prometeria uma
- *    proteção que o hash não entrega, então o limite é o do algoritmo.
+ * 2. **Máximo de 72 BYTES, não de caracteres.** O teto era o do bcrypt, que
+ *    ignorava o que passasse de 72 bytes. O argon2id não trunca em 72 e não tem
+ *    esse limite, então o teto virou escolha nossa, não imposição do algoritmo:
+ *    um teto bem definido protege o serviço de entrada desnecessariamente grande
+ *    e mantém a política estável em vez de mudar junto com o hash. Contar em
+ *    bytes evita que caractere multibyte "pague" por um limite que o usuário não
+ *    consegue enxergar.
  * 3. **Composição obrigatória** (maiúscula, minúscula, número, símbolo). A NIST
  *    desaconselha regras de composição em troca de comprimento + bloqueio de
  *    senhas comprometidas; aqui o tamanho é exigida junto com composição e com
  *    a lista de senhas comuns, e o usuário não tem como contornar a verificação
  *    de breach, então a composição é mantida como camada extra.
  * 4. **Senha é valor opaco.** Nunca é normalizada, escapada ou recortada. Todo
- *    limite é aplicado sem tocar no valor que vai para o bcrypt.
+ *    limite é aplicado sem tocar no valor que vai para o hash.
  * 5. **Sem expiração forçada.** Rotação periódica semi-automática empurra o
  *    usuário para padrões piores (NIST SP 800-63B). A troca acontece quando o
  *    usuário ou o sistema pedem.
@@ -37,9 +40,8 @@ export const PASSWORD_POLICY = {
   /** Comprimento mínimo, em caracteres. */
   minLength: 12,
   /**
-   * Comprimento máximo em BYTES (limite do bcrypt: o que passa disso é ignorado
-   * pelo hash). Contar em bytes também evita que caracteres multibyte "paguem"
-   * por um limite que o algoritmo não honra.
+   * Comprimento máximo em BYTES. Mesmo com argon2id, um teto explícito protege o
+   * serviço de entrada desnecessariamente grande.
    */
   maxLengthBytes: 72,
   requireUppercase: true,
@@ -112,7 +114,7 @@ export interface PasswordValidationResult {
 }
 
 /**
- * Quantidade de BYTES da senha (é o que o bcrypt realmente processa).
+ * Quantidade de BYTES da senha (é a unidade em que o teto é contado).
  */
 export const passwordByteLength = (password: string): number => Buffer.byteLength(password, 'utf8');
 
@@ -164,10 +166,9 @@ export function validatePasswordStrength(password: string): PasswordValidationRe
     errors.push(`Senha deve ter pelo menos ${PASSWORD_MIN_LENGTH} caracteres`);
   }
 
-  // Limite do bcrypt: acima de 72 bytes o resto da senha seria ignorado.
   const bytes = passwordByteLength(password);
   if (bytes > PASSWORD_MAX_LENGTH) {
-    errors.push(`Senha não pode exceder ${PASSWORD_MAX_LENGTH} caracteres (limite do bcrypt)`);
+    errors.push(`Senha não pode exceder ${PASSWORD_MAX_LENGTH} bytes`);
   }
 
   const composition = classifyComposition(password);
@@ -200,7 +201,7 @@ export function validatePasswordStrength(password: string): PasswordValidationRe
 export function getPasswordRequirements(): string {
   return [
     `✓ Mínimo ${PASSWORD_MIN_LENGTH} caracteres`,
-    `✓ Máximo ${PASSWORD_MAX_LENGTH} caracteres (limite do bcrypt)`,
+    `✓ Máximo ${PASSWORD_MAX_LENGTH} bytes`,
     '✓ Pelo menos 1 letra maiúscula (A-Z)',
     '✓ Pelo menos 1 letra minúscula (a-z)',
     '✓ Pelo menos 1 número (0-9)',
@@ -224,8 +225,8 @@ export function isCommonPassword(password: string): boolean {
  * Compara senha em claro contra um hash guardado, sem conhecer o algoritmo.
  *
  * Só o contrato importa aqui: quem chama precisa conseguir responder sem saber
- * se o hash é bcrypt, argon2id ou pepperado, e sem depender de `this` (daí o
- * `compare` do adapter ser entregue ligado à instância).
+ * se o hash é pepperado ou não, e sem depender de `this` (daí o `compare` do
+ * adapter ser entregue ligado à instância).
  */
 export type PasswordCompareFn = (plain: string, hash: string) => Promise<boolean>;
 
