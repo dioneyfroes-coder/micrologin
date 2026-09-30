@@ -16,6 +16,7 @@ import {
 // Utilitários e middlewares
 import { initRedis } from './infrastructure/cache/connection.js';
 import { requestLogger } from './application/middleware/requestLogger.js';
+import { inFlightLimit } from './application/middleware/inFlightLimit.js';
 import { connectDatabase } from './infrastructure/database/connection.js';
 import { setupSwagger } from './interfaces/config/swagger.js';
 import { errorHandler, setupErrorHandlers } from './shared/utils/errorHandler.js';
@@ -73,8 +74,15 @@ class AuthService {
   }
 
   setupMiddleware() {
-    this.app.use(compression());
     this.app.use(requestLogger);
+
+    // Antes de `compression` e do parser de corpo, de propósito: recusar uma
+    // requisição sobrecarregada tem de ser BARATO. Se o limite viesse depois,
+    // o proprio caminho de recusa gastaria CPU de compressão e memória de
+    // buffer -- o disjuntor ficaria mais caro no momento em que o recurso é o
+    // mais escasso.
+    this.app.use(inFlightLimit);
+    this.app.use(compression());
     this.app.use(express.json({ limit: '100kb' }));
     this.app.use(express.urlencoded({ extended: true }));
     this.app.use(normalizeInput);

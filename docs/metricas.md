@@ -463,3 +463,74 @@ devolvia **4** no container de 2.0 CPU, e 4 workers a ~370 MB por processo
 seriam ~1.4 GB — **OOM killer garantido**, não um risco teórico. A correção
 para `os.availableParallelism()` em `src/interfaces/config/appConfig.ts` não é
 ajuste fino: é o que impede o serviço de subir e morrer em produção.
+
+---
+
+## 5. Calibrando o limite de requisições em andamento
+
+O disjuntor (`src/application/middleware/inFlightLimit.ts`) recusa com 503 e
+`Retry-After` quando o número de requisições **simultâneas** por processo passa
+do teto, e nunca recusa `/health`, `/readiness` e `/observability`. A pergunta
+honesta é qual deve ser o teto, e a resposta intuitiva ("o menor que ainda
+proteja memória") se mostrou errada.
+
+Todas as linhas abaixo: 1 worker, 400 VUs, 60 s de regime, mesmo stack.
+
+| teto | endpoint | rps | p50 | p99 | 503 recusadas | RSS pico |
+| --- | --- | --- | --- | --- | --- | --- |
+| sem teto (§3) | /login | 22.37 | 17690 ms | 18851 ms | — | 365.8 MB |
+| sem teto (§3) | /refresh | 485.15 | 612 ms | 2483 ms | — | 375.4 MB |
+| 1024 | /login | 21.07 | 18605 ms | 19940 ms | 0 | 357.5 MB |
+| 1024 | /refresh | 543.83 | 577 ms | 993 ms | 0 | 261.8 MB |
+| 256 | /login | 19.55 | 510 ms | 19310 ms | 11554 | 348.9 MB |
+| 256 | /refresh | 244.54 | 121 ms | 1638 ms | 40741 | 325.8 MB |
+| 32 | /login | 11.19 | 254 ms | 4233 ms | 53290 | 327.3 MB |
+| 32 | /refresh | 21.11 | 235 ms | 907 ms | 71445 | 279.5 MB |
+
+### O que a tabela desmonta
+
+**1. O teto não é uma alavanca de memória.** Era a premissa — e a medição
+mostra que é falsa. Baixar o teto de 1024 para 256 economiza **4,6%** de memória
+no `/login` e 13% no `/refresh`, e paga **50% da vazão do `/refresh`** e 13% do
+`/login`. Teto 32 economiza 11% e paga metade do `/login` e **96%** do
+`/refresh`. Não existe ponto dessa curva em que limitar concorrência seja
+barato em vazão.
+
+A razão está no que já foi medido na §3: a memória do serviço não é dominada
+pelo número de requisições *esperando*, e sim pelo argon2id (~19 MiB por hash
+concorrente) e pelo que o GC retém. Requisição parada em fila custa quase nada;
+requisição no meio de um hash custa 19 MiB. **As duas coisas não são a mesma
+variável**, e tratar "requisições em andamento" como sinônimo de "memória em
+andamento" é o erro que faria o teto ser calibrado contra o número errado.
+
+**2. Por isso o teto é frouxo: 1024.** Com 400 VUs — a maior carga medida — o
+teto 1024 não recusou **nenhuma** requisição, e os números ficam nos do
+baseline (o `/refresh` a 543,8 rps está dentro da variação entre repetições, a
+mesma que fez o `/health` variar entre 693 e 701 rps). O limite só existe para
+rajada, e é por isso que ele não atrapalha o tráfego normal em vez de
+"proteger" um recurso que ele não controla.
+
+**3. `Retry-After: 1` e o formato do p50 mudam com o teto engatado.** Com teto
+256 o p50 do `/login` cai de 17690 ms para 510 ms — e isso **não é
+melhoria**: a distribuição fica bimodal, com 86% das respostas sendo recusa
+instantânea e o resto os 19 s de verdade. Ler essa linha como "o disjuntor
+melhorou a latência" seria ler errado. É por isso que o harness conta o 503 do
+disjuntor em balde próprio (`overloaded_503`) em vez de deixá-lo misturado na
+taxa de erro: o limite cumpriu o papel, o endpoint não degradou.
+
+### O que protege memória, então
+
+Em ordem de quanto realmente pesa, com o número de cada uma:
+
+1. **`os.availableParallelism()` nos workers** — impede 4 workers em 2.0 CPU,
+   que a §4 mediu em ~1.4 GB contra 1 GiB.
+2. **Teto do container (1 GiB) e o disjuntor do orquestrador** — a rede de
+   segurança para o que a aplicação não previu.
+3. **workers = 2, não mais** — 720 MB medidos de RSS somando os dois processos
+   no pico do `/login` a 400 VUs (70% do teto).
+4. **Este limite de concorrência** — para rajada, acima de 1024 simultâneas.
+
+Os itens 1 e 3 são decisões de configuração; o 4 é o único código novo desta
+rodada, e ele existe mais pela Fase 6 (DDoS) do que pela Fase 3. Dizer isso é
+melhor do que apresentar o limitador como a proteção de memória que a medição
+mostrou que ele não é.

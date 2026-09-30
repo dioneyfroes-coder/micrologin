@@ -96,6 +96,48 @@ export const serverConfig = {
     respawnDelay: parseEnvNumber(process.env.CLUSTER_RESPAWN_DELAY, 1000)
   },
 
+  // Limite de requisições em andamento
+  //
+  // Rate limit responde "quantas vezes por janela"; isto responde "quantas ao
+  // MESMO TEMPO". São defesas diferentes: o rate limit segura o abuso que
+  // insiste, o limite de concorrência segura a rajada.
+  //
+  // O teto é 1024 porque é o ponto em que ele fica TRANSPARENTE sob a maior
+  // carga medida, e só engage acima disso. Medido a 400 VUs, 1 worker, o
+  // comportamento do serviço conforme o teto:
+  //
+  //   sem teto   /login 22.37 rps RSS 365.8 MB   /refresh 485.15 rps RSS 375.4 MB
+  //   teto 1024  /login 21.07 rps RSS 357.5 MB   /refresh 543.83 rps RSS 261.8 MB
+  //   teto  256  /login 19.55 rps RSS 348.9 MB   /refresh 244.54 rps RSS 325.8 MB
+  //   teto   32  /login 11.19 rps RSS 327.3 MB   /refresh  21.11 rps RSS 279.5 MB
+  //
+  // Duas leituras que contrariam a intuição:
+  //
+  // 1. Com teto 1024 não houve UMA recusa (0 × 503) e os números ficam nos do
+  //    baseline. O teto existe para rajada, não para tráfego normal.
+  // 2. O teto é uma alavanca ruim de memória, e por isso ele é frouxo. Teto 256
+  //    compra 13% de memória e paga 50% da vazão do /refresh; teto 32 compra
+  //    11% e paga metade do /login. A memória desse serviço não é dominada pelo
+  //    número de requisições esperando -- é dominada pelo argon2id (~19 MiB por
+  //    hash concorrente) e pelo que o GC retém. Quem protege memória sob carga
+  //    normal é `availableParallelism()`, o teto do container e o
+  //    disjuntor do orquestrador; este limite é a última linha contra rajada.
+  //
+  // 503 e não 429: 429 é "tente mais tarde por janela" e o cliente já conhece o
+  // código do rate limit; 503 com `Retry-After` é "agora eu não consigo", e é o
+  // que o balanceador sabe reagir, tirando da rotação em vez de insistir.
+  inFlight: {
+    max: parseEnvNumber(process.env.MAX_IN_FLIGHT_REQUESTS, 1024),
+    // Caminhos que NUNCA são recusados, nem sob rajada.
+    //
+    // `/health` e `/readiness` são o sinal que o orquestrador usa para decidir
+    // se o container está vivo — recusá-los aqui transformaria sobrecarga em
+    // reinício, e o serviço voltaria sem ter melhorado nada. `/observability`
+    // fica pelo mesmo motivo: sem ele não há como diagnosticar a rajada que o
+    // limite acabou de registrar.
+    bypassPaths: ['/health', '/readiness', '/observability', '/api-docs']
+  },
+
   // Timeouts
   timeout: {
     server: parseEnvNumber(process.env.SERVER_TIMEOUT, 30000),

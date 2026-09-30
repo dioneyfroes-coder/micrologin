@@ -272,7 +272,8 @@ npm run test:capacity -- --workers 1 --vus 100,200,400 \
 Ele sobe o rate limit só durante a medição (medir 429 é medir o limiter, não o
 endpoint), semeia os usuários de login, amostra `/observability` e
 `docker stats` durante a carga, e no fim apaga as chaves `rl_*`, os usuários de
-teste e devolve o container ao `.env.prod`. O bruto fica em `artifacts/`
+teste e devolve o container ao `.env.prod`. `--max-in-flight` varia o teto do
+disjuntor de concorrência (default 1024) para medir o efeito dele. O bruto fica em `artifacts/`
 (ignorado pelo git) e a tabela interpretada em
 [`docs/metricas.md`](docs/metricas.md) §3. O último baseline: **22 logins/s por
 2.0 CPU** (argon2id), e `/refresh` perdendo vazão em 400 VUs.

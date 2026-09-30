@@ -12,6 +12,7 @@
  */
 import { performHealthCheck } from '../../shared/utils/healthCheck.js';
 import { securityAuditLogger } from '../middleware/securityAudit.js';
+import { inFlightSnapshot } from '../middleware/inFlightLimit.js';
 import { requestLogAggregator } from './requestLogAggregator.js';
 
 interface HealthReportLike {
@@ -50,7 +51,12 @@ export interface ObservabilitySnapshot {
       external_mb: number;
     };
   };
-  requests: ReturnType<typeof requestLogAggregator.getSnapshot>;
+  requests: ReturnType<typeof requestLogAggregator.getSnapshot> & {
+    // O disjuntor de sobrecarga é cego sem isso: `rejected > 0` é o sinal de
+    // que o teto de 256 por processo foi encostado, e `high_water_mark` diz o
+    // quanto falta para encostar.
+    in_flight: ReturnType<typeof inFlightSnapshot>;
+  };
   health: HealthReportLike;
   security: Record<string, unknown>;
   logging: {
@@ -90,7 +96,10 @@ export const buildObservabilitySnapshot = async(deps: ObservabilityDeps = {}): P
         external_mb: Math.round((memory.external / 1024 / 1024) * 100) / 100
       }
     },
-    requests,
+    requests: {
+      ...requests,
+      in_flight: inFlightSnapshot()
+    },
     health: health as HealthReportLike,
     security: security as Record<string, unknown>,
     logging: {

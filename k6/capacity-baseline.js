@@ -106,7 +106,8 @@ for (const name of ENDPOINTS) {
     warmup: new Counter(`ml_${name}_warmup`),
     warmupFailed: new Counter(`ml_${name}_warmup_failed`),
     transport: new Counter(`ml_${name}_transport_error`),
-    server5xx: new Counter(`ml_${name}_server_5xx`)
+    server5xx: new Counter(`ml_${name}_server_5xx`),
+    overloaded: new Counter(`ml_${name}_overloaded_503`)
   };
 }
 
@@ -161,6 +162,13 @@ const record = function(endpoint, status, durationMs, error) {
     m.refused.add(1);
   } else if (status >= 500) {
     m.server5xx.add(1, { status });
+    // 503 do disjuntor de concorrencia NAO e falha do endpoint: e o limite
+    // recusando antes de o endpoint ver a requisicao. Sem esta separacao, um
+    // teto bem escolhido apareceria na tabela como queda de taxa de erro, e a
+    // leitura seria invertida -- o disjuntor estaria "piorando" a medicao.
+    if (status === 503) {
+      m.overloaded.add(1);
+    }
   } else if (status >= 400) {
     m.client4xx.add(1, { status });
   } else {
@@ -369,6 +377,7 @@ export function handleSummary(data) {
     const warmupFailed = data.metrics[`ml_${name}_warmup_failed`];
     const transport = data.metrics[`ml_${name}_transport_error`];
     const server5xx = data.metrics[`ml_${name}_server_5xx`];
+    const overloaded = data.metrics[`ml_${name}_overloaded_503`];
 
     const total = (ok ? ok.values.count : 0)
       + (refused ? refused.values.count : 0)
@@ -395,6 +404,7 @@ export function handleSummary(data) {
       transport_errors: transport ? transport.values.count : 0,
       transport_causes: transport ? transport.values : {},
       server_5xx: server5xx ? server5xx.values.count : 0,
+      overloaded_503: overloaded ? overloaded.values.count : 0,
       server_5xx_by_status: server5xx ? server5xx.values : {}
     };
   }

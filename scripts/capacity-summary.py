@@ -68,6 +68,13 @@ def load_rows(out_dir):
             data = json.load(fh)
         base = os.path.basename(path)[len("k6_"):-len(".json")]
         workers = base.split("_")[0].lstrip("w")
+        # `w1_login_v400_if256_20260930_...`: o teto do disjuntor entra na
+        # tabela, porque uma corrida com teto e outra sem ele sao servicos
+        # diferentes e comparar as duas sem o valor seria mentir.
+        in_flight = ""
+        parts = base.split("_")
+        if len(parts) > 3 and parts[3].startswith("if"):
+            in_flight = parts[3][2:]
         stamp = base.rsplit("_", 2)[-1]
         for endpoint, e in data["endpoints"].items():
             prefix = f"{base[:-len(stamp)].rstrip('_')}_"
@@ -75,6 +82,7 @@ def load_rows(out_dir):
             stats_files = sorted(glob.glob(os.path.join(out_dir, f"stats_{prefix}*.csv")))
             rows.append({
                 "workers": workers,
+                "in_flight": in_flight,
                 "vus": data["vus"],
                 "endpoint": endpoint,
                 "duration_s": data.get("test_duration_s"),
@@ -98,16 +106,17 @@ def main():
               f"`{out_dir}`._\n")
         return
 
-    print("| workers | VUs | endpoint | reqs | rps | p50 ms | p95 ms | p99 ms | max ms | 429 | 4xx | 5xx | falha % | RSS pico MB | heap pico MB | CPU pico % |")
-    print("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+    print("| workers | teto in-flight | VUs | endpoint | reqs | rps | p50 ms | p95 ms | p99 ms | max ms | 429 | 4xx | 5xx | 503 | falha % | RSS pico MB | heap pico MB | CPU pico % |")
+    print("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
     for r in rows:
         e = r["e"]
         mem = r["mem"] or {}
         stats = r["stats"] or {}
         print(
-            f"| {r['workers']} | {r['vus']} | /{r['endpoint']} | {e['requests']} | {e['rps']} | "
+            f"| {r['workers']} | {r['in_flight'] or '-'} | {r['vus']} | /{r['endpoint']} | {e['requests']} | {e['rps']} | "
             f"{e['p50_ms']} | {e['p95_ms']} | {e['p99_ms']} | {e['max_ms']} | "
-            f"{e['refused_429']} | {e['client_4xx']} | {e.get('server_5xx', '-')} | {e['failure_pct']} | "
+            f"{e['refused_429']} | {e['client_4xx']} | {e.get('server_5xx', '-')} | "
+            f"{e.get('overloaded_503', '-')} | {e['failure_pct']} | "
             f"{mem.get('rss_sum', '-')} | {mem.get('heap_sum', '-')} | "
             f"{stats.get('cpu_pct', '-')} |"
         )

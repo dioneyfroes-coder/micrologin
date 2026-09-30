@@ -53,6 +53,7 @@ REGISTER_ITERATIONS="5"
 SAMPLE_INTERVAL="2"
 OUT_DIR="artifacts/capacity"
 KEEP_STACK=0
+MAX_IN_FLIGHT="1024"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -64,6 +65,11 @@ while [ $# -gt 0 ]; do
         --ramp-down)    RAMP_DOWN="$2"; shift 2 ;;
         --iterations)   REGISTER_ITERATIONS="$2"; shift 2 ;;
         --sample-every) SAMPLE_INTERVAL="$2"; shift 2 ;;
+        --max-in-flight)
+            # 1024 e o default do servico e o teto em que a medicao o deixou
+            # transparente (docs/metricas.md 5). Abaixo disso o limitador
+            # segura rajada, mas paga caro em vazao.
+            MAX_IN_FLIGHT="$2"; shift 2 ;;
         --out)          OUT_DIR="$2"; shift 2 ;;
         --keep-stack)   KEEP_STACK=1; shift ;;
         -h|--help)      sed -n '2,28p' "$0"; exit 0 ;;
@@ -104,7 +110,7 @@ RUN_ID="$(date +%s | tail -c 7)"
 USER_COUNT="$(echo "$VUS_LIST" | tr ',' '\n' | sort -n | tail -1)"
 mkdir -p "$OUT_DIR"
 
-log_step "run_id=${RUN_ID}  workers=${WORKERS_LIST}  vus=${VUS_LIST}  endpoints=${ENDPOINTS_LIST}"
+log_step "run_id=${RUN_ID}  workers=${WORKERS_LIST}  vus=${VUS_LIST}  endpoints=${ENDPOINTS_LIST}  max_in_flight=${MAX_IN_FLIGHT}"
 log_step "duracao=${DURATION} (rampa ${RAMP_UP} + ${RAMP_DOWN})  alvo=${BASE_URL}"
 
 # ------------------------------------------------------------------
@@ -118,6 +124,7 @@ compose() {
     # limit de medicao nao encosta no .env.prod.
     CAPACITY_WORKERS="$workers" \
     CAPACITY_CLUSTER_ENABLED="$enabled" \
+    CAPACITY_MAX_IN_FLIGHT="$MAX_IN_FLIGHT" \
     docker compose --env-file "$ENV_FILE" \
         -f "$COMPOSE_PROD" -f "$COMPOSE_CAPACITY" "$@"
 }
@@ -196,13 +203,19 @@ purge_rate_limits() {
 }
 
 # Cliente redis-cli autenticado, com a senha lida de dentro do container.
-# REDISCLI_AUTH em vez de --pass: a senha nao vai para a linha de comando,
-# que qualquer um le com `ps`.
+#
+# `--pass` em vez de REDISCLI_AUTH: o redis-cli 7 IGNORA a variavel de ambiente
+# quando `--user` tambem esta setado, e responde NOAUTH. Esse bug era invisivel
+# aqui porque o `2>/dev/null` engolia o erro e o cleanup "passava" sem apagar
+# nada -- o que deixava o orcamento de rate limit inflado sobrevivendo a
+# medicao. A senha continua vindo de dentro do container, e nao do host.
+#
+# `-n 1`: o ACL do Redis da aplicacao so autoriza o db 1.
 redis_cli() {
     local cid="$1"; shift
     docker exec "$cid" sh -c '
-        REDISCLI_AUTH=$(cat /run/secrets/redis-password)
-        exec redis-cli --no-auth-warning --user auth-service -n 1 "$@"' _ "$@" 2>/dev/null
+        exec redis-cli --no-auth-warning --user auth-service \
+            -a "$(cat /run/secrets/redis-password)" -n 1 "$@"' _ "$@" 2>/dev/null
 }
 
 purge_test_users() {
@@ -277,7 +290,9 @@ for workers in ${WORKERS_LIST//,/ }; do
             # refaz o cadastro anterior e a metade das respostas vira 400.
             case_seq=$((case_seq + 1))
             stamp="$(date +%Y%m%d_%H%M%S)"
-            tag="w${workers}_${endpoint}_v${vus}_${stamp}"
+            # O teto entra no nome: sem ele, uma corrida com disjuntor e outra
+            # sem ele escrevem no mesmo arquivo e a tabela mostra a ultima.
+            tag="w${workers}_${endpoint}_v${vus}_if${MAX_IN_FLIGHT}_${stamp}"
             log_file="${OUT_DIR}/k6_${tag}.log"
 
             echo

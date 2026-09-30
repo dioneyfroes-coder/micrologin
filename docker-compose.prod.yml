@@ -71,6 +71,11 @@ services:
       # serviço gerenciado, troque por MONGODB_TLS=true / REDIS_TLS=true, que é
       # a outra metade da decisão.
       DEPENDENCY_NETWORK_ISOLATED: "true"
+      # --- Disjuntor de requisições em andamento ---
+      # Teto de requisições simultâneas POR PROCESSO. Vem do .env.prod (fonte
+      # da verdade) com o mesmo valor default do código (256), para que subir o
+      # limite não exija editar imagem.
+      MAX_IN_FLIGHT_REQUESTS: ${MAX_IN_FLIGHT_REQUESTS:-1024}
     volumes:
       # Chave de assinatura: somente leitura. O diretório do host vem do
       # .env.prod (JWT_ES256_KEYS_DIR), de um secret do Docker ou de um volume

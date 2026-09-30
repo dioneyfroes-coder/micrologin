@@ -31,6 +31,10 @@ services:
       # --- Dimensionamento vertical ---
       CLUSTER_ENABLED: "${CAPACITY_CLUSTER_ENABLED:-false}"
       CLUSTER_WORKERS: "${CAPACITY_WORKERS:-1}"
+      # Mesma chave do compose de produção: a medição tem de rodar com o
+      # disjuntor no valor de produção, senão a tabela mede um serviço que
+      # ninguém opera.
+      MAX_IN_FLIGHT_REQUESTS: "${CAPACITY_MAX_IN_FLIGHT:-1024}"
       # Vazio por padrao. A Fase 3.2 e que passa a medir
       # `--max-old-space-size` por worker; sem valor, o Node escolhe pelo
       # cgroup.
