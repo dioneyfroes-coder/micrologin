@@ -1,0 +1,132 @@
+# ====================================
+# STACK DO DRILL DE BACKUP/RESTORE - Fase 2.1
+# Authentication Microservice
+# ====================================
+#
+# Stack separado (nome, porta, rede e volumes próprios) usado só por
+# `scripts/test-backup.sh`. Existe porque o drill precisa provar a restauração
+# de verdade: gera um usuário, tira o backup, apaga o banco, restaura e exige
+# que o usuário volte a fazer login. Isso exige poder derrubar e restaurar o
+# banco sem afetar o ambiente de ninguém.
+#
+# Mesmo contrato do stack de resiliência: produção (NODE_ENV=production),
+# dependências autenticadas via arquivo (conta e chaves ES256 efêmeras geradas
+# pelo script e apagadas no teardown). A única diferença é o banco em jogo:
+# `auth_backup`, que o drill apaga e restaura.
+#
+# Uso (o script cuida de build, env e teardown):
+#   docker compose -p micrologin-backup -f docker-compose.backup.yml up -d
+
+services:
+  auth-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    image: micrologin-backup:local
+    container_name: micrologin-backup-app
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      VERSION: backup-test
+      URI_MONGODB: mongodb://mongodb:27017/auth_backup
+      MONGODB_USER: auth-service
+      MONGODB_PASSWORD_PATH: /run/secrets/deps/mongo-app-password
+      MONGODB_AUTH_SOURCE: admin
+      REDIS_URL: redis://redis:6379/0
+      REDIS_USERNAME: auth-service
+      REDIS_PASSWORD_PATH: /run/secrets/deps/redis-password
+      DEPENDENCY_NETWORK_ISOLATED: "true"
+      JWT_ALGORITHM: ES256
+      JWT_ES256_KID: ${BACKUP_JWT_KID:-backup-v1}
+      JWT_ES256_PRIVATE_KEY_PATH: /run/secrets/jwt/jwt-es256-private.pem
+      JWT_ES256_PUBLIC_KEY_PATH: /run/secrets/jwt/jwt-es256-public.pem
+      SECURITY_DASHBOARD_TOKEN: backup-test-dashboard-token-33333
+      SSL_ENABLED: "false"
+      CLUSTER_ENABLED: "false"
+      RATE_LIMIT_PROD_LOGIN_POINTS: "500"
+      RATE_LIMIT_PROD_LOGIN_DURATION: "60"
+      RATE_LIMIT_PROD_IP_POINTS: "500"
+      LOG_LEVEL: info
+    volumes:
+      - type: bind
+        source: ${BACKUP_KEYS_DIR:-./.backup-keys}
+        target: /run/secrets/jwt
+        read_only: true
+      - type: bind
+        source: ${BACKUP_DEPS_DIR:-./.backup-deps}
+        target: /run/secrets/deps
+        read_only: true
+    ports:
+      - "${BACKUP_PORT:-3201}:3000"
+    networks:
+      - backup-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/readiness"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
+
+  mongodb:
+    image: mongo:7-jammy
+    container_name: micrologin-backup-mongo
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/deps/mongo-root-password
+      MONGO_APP_USER: auth-service
+      MONGO_APP_DB: auth_backup
+      MONGO_APP_PASSWORD_PATH: /run/secrets/deps/mongo-app-password
+    volumes:
+      - backup-mongo:/data/db
+      - type: bind
+        source: ${BACKUP_DEPS_DIR:-./.backup-deps}
+        target: /run/secrets/deps
+        read_only: true
+      - type: bind
+        source: ./docker/mongo/10-app-user.sh
+        target: /docker-entrypoint-initdb.d/10-app-user.sh
+        read_only: true
+    networks:
+      - backup-network
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --host 127.0.0.1 --username \"$$MONGO_APP_USER\" --password \"$$(cat $$MONGO_APP_PASSWORD_PATH)\" --authenticationDatabase admin --eval 'quit(db.adminCommand(\"ping\").ok ? 0 : 1)'"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: micrologin-backup-redis
+    command: redis-server --aclfile /etc/redis/users.acl --save "" --appendonly no
+    volumes:
+      - type: bind
+        source: ${BACKUP_DEPS_DIR:-./.backup-deps}/redis-app.acl
+        target: /etc/redis/users.acl
+        read_only: true
+      - type: bind
+        source: ${BACKUP_DEPS_DIR:-./.backup-deps}/redis-password
+        target: /run/secrets/redis-password
+        read_only: true
+    networks:
+      - backup-network
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$(cat /run/secrets/redis-password)\" redis-cli --no-auth-warning --user auth-service ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+networks:
+  backup-network:
+    driver: bridge
+
+volumes:
+  backup-mongo:
+    driver: local

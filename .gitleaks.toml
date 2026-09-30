@@ -36,6 +36,11 @@ regexes = [
   # contra a linha inteira, então a entrada precisa ser o valor.
   '''jwt\.es256\.privateKey''',
   '''jwt-es256-(private|public)\.pem''',
+  # Fixture plantada pelo PRÓPRIO teste da varredura para provar que a
+  # checagem falha de verdade (tests/unit/secret-scan.test.ts, linhas 97/102).
+  # É o valor fictício que o teste grava num repositório temporário e espera
+  # que o scanner rejeite; não é material que exista no fluxo real.
+  '''mY9a2b7c4d1e6f3a5b8c2d9e0f4a7b3c6d''',
 ]
 paths = [
   '''.*\.gitleaks\.toml$''',

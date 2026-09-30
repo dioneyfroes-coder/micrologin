@@ -509,6 +509,30 @@ eles é a única coisa que faz o portão valer alguma coisa.
 
 ---
 
+### D21 — Backup do Mongo é gpg AES-256 simétrico sobre archive único, RPO 24h
+
+O roadmap da fase 2.1 citava "age/gpg simétrico" e "tar". O que foi entregue:
+**gpg** (não age) e **`mongodump --archive`** único (não `mongodump --dir` +
+tar). Motivos documentados em `docs/BACKUP.md`: age não existe na base do host
+nem nas imagens do projeto (baixar binário novo só para o backup é uma
+dependência que o runbook não deve criar), e o archive é um fluxo único e
+atômico, sem o segundo ponto de falha de empacotar um diretório.
+
+O texto claro nunca toca o disco do host: `docker exec <mongo> mongodump
+--archive --gzip` é entregue por pipe direto ao `gpg --symmetric`, e o que
+sobra é `sha-data-<data>.archive.gpg`. Cada backup é verificado antes de ser
+aceito (decifra → gzip → `mongorestore --dryRun` **contra o próprio servidor,
+sem escrever nada**), grava o manifest `last-backup.json` e expõe `--check`
+como gancho de alerta de backup velho/falho. RPO padrão 24h; RTO medido no
+drill (`scripts/test-backup.sh`), que apaga o banco de verdade e exige que o
+mesmo usuário volte a autenticar — ~1s no banco de autenticação desta aplicação.
+
+A passphrase do backup entra por `--passphrase-file` — nunca em argv, para não
+vazar em `ps` do host nem no interpretador de log — e o arquivo é material
+operacional fora do repositório, no mesmo regime dos outros segredos.
+
+
+
 ## 7. O que este serviço não é
 
 - Não é MFA, recuperação de conta, verificação de e-mail nem federação.

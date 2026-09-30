@@ -42,6 +42,7 @@ Projeto de portfólio em Node.js para demonstrar uma API de autenticação com a
 | [`docs/ARQUITETURA.md`](docs/ARQUITETURA.md) | camadas, ordem dos middlewares, fluxo de login/refresh/logout e onde o estado mora |
 | [`docs/SEGURANCA.md`](docs/SEGURANCA.md) | threat model, riscos aceitos e log de decisões (o que foi decidido e o que foi recusado) |
 | [`docs/ROTACAO.md`](docs/ROTACAO.md) | rotação da chave ES256, do pepper e das senhas de Mongo/Redis, e onde o material privado deve viver |
+| [`docs/BACKUP.md`](docs/BACKUP.md) | backup/restauração do Mongo (Fase 2.1): RPO/RTO medidos, retenção, `--check` de alerta e o drill |
 | [`docs/DASHBOARD_SEGURANCA_GUIA.md`](docs/DASHBOARD_SEGURANCA_GUIA.md) | como usar `GET /security/*` e o dashboard |
 | [`MICROLOGIN_ANALISE_E_ROADMAP.md`](MICROLOGIN_ANALISE_E_ROADMAP.md) | análise e plano de fases executado |
 
@@ -239,7 +240,7 @@ Principais campos:
 - `SECURITY_DASHBOARD_TOKEN` (obrigatório em produção; envia-se no header `X-Security-Token`)
 - `RATE_LIMIT_*_POINTS` (pontos por janela)
 
-Nenhuma credencial real fica versionada: apenas exemplos (`.env.example` e `.env.prod.example`) são commitados; `.env` e `.env.prod` ficam no `.gitignore`. Os segredos das dependências são gerados por `scripts/generate-dependency-secrets.sh <dir> --for-container` (Mongo/Redis) e `scripts/generate-jwt-keys.sh <dir> <kid> --for-container` (ES256), e nunca entram no repositório. A rotação é `scripts/rotate-dependency-secrets.sh <dir> --for-container` (Redis com janela, Mongo com `--mongo-only`), e a ordem de cada troca está em [`docs/ROTACAO.md`](docs/ROTACAO.md).
+Nenhuma credencial real fica versionada: apenas exemplos (`.env.example` e `.env.prod.example`) são commitados; `.env` e `.env.prod` ficam no `.gitignore`. Os segredos das dependências são gerados por `scripts/generate-dependency-secrets.sh <dir> --for-container` (Mongo/Redis) e `scripts/generate-jwt-keys.sh <dir> <kid> --for-container` (ES256), e nunca entram no repositório. A rotação é `scripts/rotate-dependency-secrets.sh <dir> --for-container` (Redis com janela, Mongo com `--mongo-only`), e a ordem de cada troca está em [`docs/ROTACAO.md`](docs/ROTACAO.md). O backup do Mongo é cifrado com a passphrase em `--passphrase-file` e nunca em linha de comando — ver [`docs/BACKUP.md`](docs/BACKUP.md).
 
 ## Testes
 
@@ -249,6 +250,7 @@ npm run test:unit           # suítes unitárias
 npm run test:integration    # suíte de integração
 npm run test:e2e            # E2E contra MongoDB e Redis reais (sobe via compose)
 npm run test:infra          # resiliência de infraestrutura (derruba Redis e container de verdade)
+npm run test:backup         # backup/restauração do Mongo de ponta a ponta (apaga o banco e restaura)
 npm run test:secrets        # varredura de segredo: gitleaks + material/.env versionado
 npm run test:coverage       # cobertura (text + html + lcov)
 npm run lint                # ESLint em src/ e tests/
@@ -284,11 +286,23 @@ um placeholder. É o mesmo comando no CI e local, e é ele que impede a chave no
 de acabar num `.env` commitado. A rotação de chaves e senhas está descrita em
 [`docs/ROTACAO.md`](docs/ROTACAO.md).
 
+`test:backup` (`scripts/test-backup.sh`) é o drill da Fase 2.1: sobe um stack
+isolado, **cria um usuário, tira o backup cifrado, apaga o banco de verdade,
+prova que o login passou a falhar, restaura e exige que o mesmo usuário volte a
+autenticar**. O `backup.sh` cifra o dump gpg AES-256 pela saída (nada em claro no
+disco), verifica cada arquivo recém-criado (decifra + gzip + `mongorestore
+--dryRun`), poda `N` diários + `M` semanas, grava o manifest `last-backup.json`
+e expõe `--check` como gancho de alerta de backup velho. O `restore.sh` valida o
+arquivo em `--dryRun` antes de tocar nos dados e restaura com `--drop`. Tudo —
+RPO/RTO medidos, retenção, restauração pontual só com o dump cifrado — está em
+[`docs/BACKUP.md`](docs/BACKUP.md).
+
 O pipeline de CI usa `test:unit:fast`, `test:integration:app`,
 `test:coverage:fast` (com `--runInBand` para CI) e `test:secrets`. O `test:infra`
-fica de fora do CI de propósito: ele derruba serviço de verdade, e o trabalho disso é provar que
-a versão que você está para implantar reage como deve — rodado localmente ou no
-host de deploy, antes do corte.
+e o `test:backup` ficam fora do CI de propósito: derrubam serviço de verdade e
+restauram um banco apagado — o trabalho disso é provar que a versão que você
+está para implantar reage como deve — rodados localmente ou no host de deploy,
+antes do corte.
 
 ## CI/CD
 

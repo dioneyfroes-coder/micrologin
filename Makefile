@@ -5,7 +5,7 @@
 .PHONY: help install setup dev dev-watch stop logs build build-docker build-docker-prod \
  test test-unit test-integration test-coverage test-watch lint lint-fix typecheck audit \
  deploy-local deploy-staging deploy-prod smoke-test docker-up docker-down docker-rebuild docker-logs docker-clean \
- health observability docs shell redis-cli mongo-shell pre-commit secrets status watch reset clean
+ health observability docs shell redis-cli mongo-shell pre-commit secrets backup-test status watch reset clean
 
 # Porta pública do app: lida de .env (fonte da verdade); default 3000.
 APP_PORT:=$(shell grep -E '^APP_PORT=[0-9]+' .env 2>/dev/null | cut -d= -f2-)
@@ -86,6 +86,9 @@ audit: ## Auditoria de dependências (npm audit)
 
 secrets: ## Varredura de segredo: gitleaks + material e .env versionados
 	npm run test:secrets
+
+backup-test: ## Drill de backup/restauração do Mongo (Fase 2.1)
+	bash scripts/test-backup.sh
 
 pre-commit: ## Verificações pré-commit
 	npm run lint

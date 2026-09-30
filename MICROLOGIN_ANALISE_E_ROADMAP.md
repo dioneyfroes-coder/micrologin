@@ -258,19 +258,24 @@ segredo plantado. D19 registra isso.
 
 ## 2.1 MongoDB: backup criptografado, retenção e restauração real
 
-**Status: pendente.** Não existe nada hoje.
+**Status: concluído (2026-09-30).** Detalhes em `docs/BACKUP.md`.
 
-- [ ] `scripts/backup.sh`: `mongodump` → tar → **criptografia (age/gpg simétrico)** → destino com rótulo `sha-data` + data
-- [ ] retenção: manter N diários + M semanais; poda automática
-- [ ] RPO/RTO definidos e documentados (ex.: RPO 24h, RTO ≤ 15 min — ajustar à realidade)
-- [ ] `scripts/restore.sh` com **drill real**: restaura o dump no compose isolado e executa fluxo de login
-- [ ] `npm run test:backup` (ou passo de CI manual) que: gera dump, apaga o banco, restaura, valida usuário sobreviveu
-- [ ] alerta quando backup falha ou fica velho (fonte: authEventSink / log estruturado já existente)
-- [ ] documentar restauração pontual só com o dump criptografado (sem acesso ao servidor)
+- [x] `scripts/backup.sh`: `mongodump --archive` → **ciphera gpg AES-256 simétrico** → `sha-data-<data UTC>.archive.gpg`
+- [x] retenção: 7 diários + 4 semanas (padrão), poda automática após cada backup e via `--prune-only`
+- [x] RPO/RTO definidos e documentados (RPO 24h; RTO medido no drill: ~1s no banco de auth)
+- [x] `scripts/restore.sh` com **drill real**: valida em `--dryRun` antes de tocar nos dados; restaura com `--drop`; o drill apaga o banco de verdade e exige o login
+- [x] `npm run test:backup` que: gera dump, apaga o banco, restaura, valida usuário sobreviveu
+- [x] alerta quando backup falha ou fica velho: `--check` + manifest `last-backup.json` + evento estruturado no stderr
+- [x] restauração pontual só com o dump criptografado (sem acesso ao servidor; limite DR-frio documentado)
 
-**Definição de pronto:** existe um backup criptografado (verificável: `age -d`
-devolve o dump íntegro), um restore já exercitado localmente de ponta a ponta, e
-um teste que falha de verdade se a restauração não reconhecer um usuário.
+**Definição de pronto:** existe um backup criptografado (verificável: `gpg -d`
+devolve o dump íntegro, e `mongorestore --dryRun` o parseia de ponta a ponta),
+um restore exercitado localmente de ponta a ponta, e um teste que falha de
+verdade se a restauração não reconhecer um usuário (`scripts/test-backup.sh`).
+
+**Nota:** o roadmap citava `tar` e `age`; o projeto usa `--archive` único (um
+só fluxo atômico, sem o segundo ponto de falha de tar sobre diretório) e gpg
+(AES-256 simétrica; age não existe na base do host nem nas imagens do projeto).
 
 ## 2.2 Redis: o estado perdido e o que recuperar
 
