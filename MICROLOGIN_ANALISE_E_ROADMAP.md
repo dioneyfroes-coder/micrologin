@@ -21,12 +21,12 @@ automatizadas** de que ele sobrevive a roubo de credenciais e a DDoS.
 | --- | --- | --- |
 | Assinatura JWT | **HS256** simétrico (`jsonwebtoken`), access 15m / refresh 7d, `jti` + `sv` | `src/infrastructure/external-services/jwtTokenService.ts` |
 | Hash de senha | **argon2id** m=64MiB/t=1/p=1, política 12–72 bytes, histórico 5, blacklist de comuns (bcrypt removido na 1.2) | `src/shared/utils/passwordPolicy.ts`, `appConfig.ts` |
-| Redis | v7, AOF `appendonly yes`, **sem senha/ACL**, **sem réplica**, blacklist por `jti` com `SET NX` | `docker-compose.yml`, `connection.ts` |
-| MongoDB | v7 **single node, sem auth, sem backup configurado** | `docker-compose.yml`, `models/User.ts` |
+| Redis | v7, blacklist por `jti` com `SET NX`, **com ACL** (prod), persistência AOF `everysec` + RDB em volume (Fase 2.2; era desligada no prod), **sem réplica** | `docker-compose.yml`, `docker-compose.prod.yml`, `connection.ts` |
+| MongoDB | v7 **single node, sem auth**, com backup criptografado e restore verificado (Fase 2.1) | `docker-compose.yml`, `models/User.ts`, `docs/BACKUP.md` |
 | Escala | vertical PM2 (4 instâncias) OU cluster module (4/8) OU compose 1 réplica com `container_name` + bind | `ecosystem.config.cjs`, `src/app.ts`, compose |
 | Rate limit | `rate-limiter-flexible`, Redis + fallback memória **por processo** | `advancedRateLimit.ts` |
 | Auditoria/obs | buckets `loginAttempts/successfulLogins/failedLogins/unavailableLogins`, `/observability` agregador **por processo** | `securityAudit.ts`, `requestLogAggregator.ts` |
-| Testes | 32u/425 + 6i/38 + 1e2e/14 + infra real (`test:infra`) + k6 (`test:load`) | `tests/`, `k6/`, `scripts/infra-resilience-test.sh` |
+| Testes | 42u/570 + 6i/38 + 1e2e/15 + drills reais (`test:infra`, `test:backup`, `test:redis`) + k6 (`test:load`) | `tests/`, `k6/`, `scripts/infra-resilience-test.sh` |
 | Deploy | `deploy.sh` com backup de imagem, readiness, smoke e rollback | `scripts/deploy.sh`, `.github/workflows/ci-cd.yml` |
 
 **Achados relevantes para este roadmap:**
@@ -283,14 +283,22 @@ O Redis guarda blacklist, rotação, versão de sessão e rate limit. **Perda do
 Redis = tokens revogados voltam a valer e rate limit reseta** (controle de
 sessão amnésico até expirar). Decisões:
 
-- [ ] persistência explícita: AOF `fsync=everysec` + RDB snapshot no compose prod (hoje só AOF default)
-- [ ] política quando Redis some de vez (falha de disco): fail-closed derruba revogação? ou religa e aceita janela curta? decidir `D20`
-- [ ] backup de Redis **intencionalmente não é o objetivo primário**: re-registrar sessões revogadas é inviável; documentar que o Redis é regenerável (login novo) e o Mongo é a fonte de verdade
-- [ ] snapshots de Redis (por fora) só para diagnóstico forense, não para restore de serviço
+- [x] persistência explícita: AOF `appendfsync everysec` + RDB a cada 60s em volume nomeado no compose prod. **O "hoje só AOF default" do texto original estava errado**: o prod rodava `--save "" --appendonly no`, sem persistência nenhuma (o dev já tinha AOF). A blacklist não é reconstruível, e o efeito era silencioso — token revogado voltava a valer depois de restart (medido: 401 → 200), sem erro e sem log. `docker-compose.prod.yml`, decisão D22.
+- [ ] política quando Redis some de vez (falha de disco): `D20` **registrada e em aberto**. O que a 2.2 fechou foi o caso do container que reinicia (persistência resolve); o que continua aberto é o volume destruído, onde o serviço volta sem histórico de revogação e falha aberto por ausência do dado. As duas saídas anotadas: segundo Redis com réplica e promote manual, ou gravar o carimbo de revogação também no Mongo. Ver `docs/REDIS.md`.
+- [x] backup de Redis **intencionalmente não é o objetivo primário**: um restore devolveria o passado errado (contador de versão de sessão antigo faz token revogado depois do dump parecer válido). Documentado que o Redis é regenerável por design (login novo) e o Mongo é a fonte de verdade. `docs/REDIS.md`.
+- [x] snapshots de Redis (por fora) só para diagnóstico forense, não para restore de serviço: registrado o `BGSAVE`/`redis-cli --rdb` sob demanda, com a ressalva de que descreve um instante, não um estado recuperável.
 
 **Definição de pronto:** RPO/RTO documentados separando Mongo (restaurável do
-dump) de Redis (regenerável por design); decisão D20 registrada (D19 foi usada pela
-varredura de segredo, em 1.4).
+dump, RPO 24h) de Redis (regenerável, RPO ~1s de escrita) em `docs/REDIS.md` —
+com os números medidos, não estimados; decisão registrada em `docs/SEGURANCA.md`
+(D22 para o que a fase decide, D20 deixada em aberto com as saídas anotadas). O
+que cobre a mudança: `scripts/test-redis-persistence.sh` (`npm run test:redis`),
+que revoga, reinicia o Redis e exige que o revogado continue revogado com um
+controle não revogado em 200; e `tests/unit/redis-persistence-config.test.ts` (8
+asserções sem docker, o portão de CI, que falha se a persistência do prod for
+desligada, se o drill divergir do prod, ou se o stack de resiliência passar a
+persistir — este último é de propósito, ele reinicia o Redis querendo o estado
+perdido).
 
 ## 2.3 Backup da configuração e da versão em vigor
 

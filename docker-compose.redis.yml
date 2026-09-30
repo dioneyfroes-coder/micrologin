@@ -1,0 +1,147 @@
+# ====================================
+# STACK DO DRILL DE PERSISTÊNCIA DO REDIS - Fase 2.2
+# Authentication Microservice
+# ====================================
+#
+# Stack separado (nome, porta, rede e volumes próprios) usado só por
+# `scripts/test-redis-persistence.sh`. O drill existe porque a falha que esta
+# fase fecha é silenciosa: o Redis volta de pé respondendo e os tokens
+# revogados voltam a valer. Provar isso exige derrubar e religar o Redis sem
+# derrubar o ambiente de quem está programando.
+#
+# Mesmo contrato do stack de resiliência e do de backup: produção
+# (NODE_ENV=production), dependências autenticadas via arquivo (credenciais e
+# chaves ES256 efêmeras geradas pelo script e apagadas no teardown).
+#
+# O `redis` daqui é uma CÓPIA dos flags de `docker-compose.prod.yml` (ACL de
+# arquivo + AOF everysec + snapshot de 60s + volume em /data); o comentário
+# aponta para lá. A cópia é intencional: o drill precisa derrubar o container e
+# religar em outro processo, e não dá para reaproveitar o stack de produção.
+# `tests/unit/redis-persistence-config.test.ts` é o que impede as duas cópias de
+# divergirem — se alguém desligar a persistência no prod, o CI fica vermelho.
+#
+# Uso (o script cuida de build, env e teardown):
+#   docker compose -p micrologin-redis -f docker-compose.redis.yml up -d
+
+services:
+  auth-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    image: micrologin-redis:local
+    container_name: micrologin-redis-app
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      VERSION: redis-test
+      URI_MONGODB: mongodb://mongodb:27017/auth_redis
+      MONGODB_USER: auth-service
+      MONGODB_PASSWORD_PATH: /run/secrets/deps/mongo-app-password
+      MONGODB_AUTH_SOURCE: admin
+      REDIS_URL: redis://redis:6379/0
+      REDIS_USERNAME: auth-service
+      REDIS_PASSWORD_PATH: /run/secrets/deps/redis-password
+      DEPENDENCY_NETWORK_ISOLATED: "true"
+      JWT_ALGORITHM: ES256
+      JWT_ES256_KID: ${REDIS_TEST_KID:-redis-v1}
+      JWT_ES256_PRIVATE_KEY_PATH: /run/secrets/jwt/jwt-es256-private.pem
+      JWT_ES256_PUBLIC_KEY_PATH: /run/secrets/jwt/jwt-es256-public.pem
+      SECURITY_DASHBOARD_TOKEN: redis-test-dashboard-token-44444
+      SSL_ENABLED: "false"
+      CLUSTER_ENABLED: "false"
+      RATE_LIMIT_PROD_LOGIN_POINTS: "500"
+      RATE_LIMIT_PROD_LOGIN_DURATION: "60"
+      RATE_LIMIT_PROD_IP_POINTS: "500"
+      LOG_LEVEL: info
+    volumes:
+      - type: bind
+        source: ${REDIS_TEST_KEYS_DIR:-./.redis-keys}
+        target: /run/secrets/jwt
+        read_only: true
+      - type: bind
+        source: ${REDIS_TEST_DEPS_DIR:-./.redis-deps}
+        target: /run/secrets/deps
+        read_only: true
+    ports:
+      - "${REDIS_TEST_PORT:-3301}:3000"
+    networks:
+      - redis-test-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/readiness"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
+
+  mongodb:
+    image: mongo:7-jammy
+    container_name: micrologin-redis-mongo
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/deps/mongo-root-password
+      MONGO_APP_USER: auth-service
+      MONGO_APP_DB: auth_redis
+      MONGO_APP_PASSWORD_PATH: /run/secrets/deps/mongo-app-password
+    volumes:
+      - redis-test-mongo:/data/db
+      - type: bind
+        source: ${REDIS_TEST_DEPS_DIR:-./.redis-deps}
+        target: /run/secrets/deps
+        read_only: true
+      - type: bind
+        source: ./docker/mongo/10-app-user.sh
+        target: /docker-entrypoint-initdb.d/10-app-user.sh
+        read_only: true
+    networks:
+      - redis-test-network
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --host 127.0.0.1 --username \"$$MONGO_APP_USER\" --password \"$$(cat $$MONGO_APP_PASSWORD_PATH)\" --authenticationDatabase admin --eval 'quit(db.adminCommand(\"ping\").ok ? 0 : 1)'"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: micrologin-redis-redis
+    # Mesmos flags do Redis de produção (docker-compose.prod.yml): ACL de
+    # arquivo, AOF com fsync a cada segundo e snapshot RDB de 60s, com o
+    # diretório de dados em volume nomeado. Ver o comentário lá para o porquê.
+    command: >-
+      redis-server --aclfile /etc/redis/users.acl
+      --appendonly yes --appendfsync everysec
+      --save 60 1
+    volumes:
+      - redis-test-data:/data
+      - type: bind
+        source: ${REDIS_TEST_DEPS_DIR:-./.redis-deps}/redis-app.acl
+        target: /etc/redis/users.acl
+        read_only: true
+      - type: bind
+        source: ${REDIS_TEST_DEPS_DIR:-./.redis-deps}/redis-password
+        target: /run/secrets/redis-password
+        read_only: true
+    networks:
+      - redis-test-network
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$(cat /run/secrets/redis-password)\" redis-cli --no-auth-warning --user auth-service ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+networks:
+  redis-test-network:
+    driver: bridge
+
+volumes:
+  redis-test-mongo:
+    driver: local
+  redis-test-data:
+    driver: local

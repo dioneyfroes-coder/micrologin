@@ -11,6 +11,13 @@ keys/
 secrets/
 .resilience-keys/
 .resilience-deps/
+# Material efêmero dos drills de backup (2.1) e de persistência do Redis (2.2):
+# chaves ES256 e credenciais geradas na hora, apagadas no teardown.
+.backup-keys/
+.backup-deps/
+.redis-keys/
+.redis-deps/
+backups/
 *.pem
 
 dist

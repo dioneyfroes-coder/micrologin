@@ -23,6 +23,7 @@
     "test:e2e:down": "cross-env MONGO_PORT=27020 REDIS_PORT=6380 docker compose stop mongodb redis",
     "test:infra": "bash scripts/infra-resilience-test.sh",
     "test:backup": "bash scripts/test-backup.sh",
+    "test:redis": "bash scripts/test-redis-persistence.sh",
     "test:secrets": "bash scripts/secret-scan.sh",
     "test:coverage:fast": "cross-env NODE_ENV=test NODE_OPTIONS=\"--experimental-vm-modules\" jest --coverage --detectOpenHandles --runInBand",
     "test:all": "npm run test:unit && npm run test:integration",

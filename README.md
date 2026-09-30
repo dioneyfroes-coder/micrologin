@@ -43,6 +43,7 @@ Projeto de portfólio em Node.js para demonstrar uma API de autenticação com a
 | [`docs/SEGURANCA.md`](docs/SEGURANCA.md) | threat model, riscos aceitos e log de decisões (o que foi decidido e o que foi recusado) |
 | [`docs/ROTACAO.md`](docs/ROTACAO.md) | rotação da chave ES256, do pepper e das senhas de Mongo/Redis, e onde o material privado deve viver |
 | [`docs/BACKUP.md`](docs/BACKUP.md) | backup/restauração do Mongo (Fase 2.1): RPO/RTO medidos, retenção, `--check` de alerta e o drill |
+| [`docs/REDIS.md`](docs/REDIS.md) | o que o Redis guarda e o que se perde sem ele (Fase 2.2): persistência da revogação, RPO/RTO medidos, por que não há backup de Redis |
 | [`docs/DASHBOARD_SEGURANCA_GUIA.md`](docs/DASHBOARD_SEGURANCA_GUIA.md) | como usar `GET /security/*` e o dashboard |
 | [`MICROLOGIN_ANALISE_E_ROADMAP.md`](MICROLOGIN_ANALISE_E_ROADMAP.md) | análise e plano de fases executado |
 
@@ -251,6 +252,7 @@ npm run test:integration    # suíte de integração
 npm run test:e2e            # E2E contra MongoDB e Redis reais (sobe via compose)
 npm run test:infra          # resiliência de infraestrutura (derruba Redis e container de verdade)
 npm run test:backup         # backup/restauração do Mongo de ponta a ponta (apaga o banco e restaura)
+npm run test:redis          # persistência da revogação (revoga, reinicia o Redis e exige que continue revogado)
 npm run test:secrets        # varredura de segredo: gitleaks + material/.env versionado
 npm run test:coverage       # cobertura (text + html + lcov)
 npm run lint                # ESLint em src/ e tests/
@@ -297,12 +299,26 @@ arquivo em `--dryRun` antes de tocar nos dados e restaura com `--drop`. Tudo —
 RPO/RTO medidos, retenção, restauração pontual só com o dump cifrado — está em
 [`docs/BACKUP.md`](docs/BACKUP.md).
 
+`test:redis` (`scripts/test-redis-persistence.sh`) é o drill da Fase 2.2: sobe um
+stack isolado, **revoga a sessão de um usuário, reinicia o container do Redis e
+exige que o token revogado continue revogado** — com um segundo usuário de
+controle, nunca revogado, que tem que continuar autenticando em 200. O controle
+existe porque, sem ele, "401 depois do restart" seria ambíguo: o fail-closed
+barraria tudo por indisponibilidade e o teste passaria por acidente. O Redis de
+produção agora grava o estado de revogação com AOF `everysec` + snapshot RDB em
+volume nomeado, porque o efeito de perder esse estado era silencioso — o token
+revogado voltava a valer depois de um restart, sem erro e sem log. O que o Redis
+guarda, o que cada chave custa perder, e por que não há backup dele estão em
+[`docs/REDIS.md`](docs/REDIS.md).
+
 O pipeline de CI usa `test:unit:fast`, `test:integration:app`,
-`test:coverage:fast` (com `--runInBand` para CI) e `test:secrets`. O `test:infra`
-e o `test:backup` ficam fora do CI de propósito: derrubam serviço de verdade e
-restauram um banco apagado — o trabalho disso é provar que a versão que você
-está para implantar reage como deve — rodados localmente ou no host de deploy,
-antes do corte.
+`test:coverage:fast` (com `--runInBand` para CI) e `test:secrets`. O `test:infra`,
+o `test:backup` e o `test:redis` ficam fora do CI de propósito: derrubam serviço
+de verdade, restauram um banco apagado e reiniciam o Redis — o trabalho disso é
+provar que a versão que você está para implantar reage como deve — rodados
+localmente ou no host de deploy, antes do corte. No lugar do `test:redis`, o CI
+fica com `tests/unit/redis-persistence-config.test.ts`, que lê o compose de
+produção e falha se a persistência do Redis for desligada.
 
 ## CI/CD
 

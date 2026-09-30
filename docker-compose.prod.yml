@@ -176,10 +176,20 @@ services:
     # no usuário `default`, que não é atribuível a ninguém e não gira sem derrubar
     # quem está conectado.
     #
-    # Sem persistência: cache e blacklist são reconstruíveis, e um volume aqui
-    # só traria de volta o estado que o restart apaga de propósito.
-    command: redis-server --aclfile /etc/redis/users.acl --save "" --appendonly no
+    # Persistência explícita (Fase 2.2). A blacklist de revogação, a versão de
+    # sessão e o carimbo `user_tokens_revoked` NÃO são reconstruíveis: um restart
+    # do container que os apaga devolve tokens revogados à validade até o
+    # expirar, e o fail-closed (`SESSION_FAIL_OPEN`) não cobre esse caso, porque o
+    # Redis está de pé e respondendo. AOF `everysec` dá RPO de ~1s para a
+    # revogação e o snapshot RDB de 60s é a rede de segurança caso o AOF se
+    # corrompa; sem eles a decisão implícita era "revogação vale até o token
+    # expirar" (docs/REDIS.md, decisão D22).
+    command: >-
+      redis-server --aclfile /etc/redis/users.acl
+      --appendonly yes --appendfsync everysec
+      --save 60 1
     volumes:
+      - redis_data:/data
       - type: bind
         source: ${DEPENDENCY_SECRETS_DIR:-./secrets/deps}/redis-app.acl
         target: /etc/redis/users.acl
@@ -226,4 +236,9 @@ networks:
 
 volumes:
   mongo-data:
+    driver: local
+  # Estado de revogação (blacklist, versão de sessão) e rate limit. Um volume
+  # nomeado, não o diretório efêmero do container: o restart tem de devolver os
+  # tokens revogados como revogados (docs/REDIS.md).
+  redis_data:
     driver: local

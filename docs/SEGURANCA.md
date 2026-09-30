@@ -531,6 +531,61 @@ A passphrase do backup entra por `--passphrase-file` — nunca em argv, para nã
 vazar em `ps` do host nem no interpretador de log — e o arquivo é material
 operacional fora do repositório, no mesmo regime dos outros segredos.
 
+### D22 — Revogação persiste; o que o Redis perde é regenerável, o que ele esquece não é
+
+A 2.2 fecha um buraco que a 1.4 tinha deixado aberto e que ninguém tinha
+percebido, porque não produz erro nenhum. O Redis de produção rodava com
+`--save "" --appendonly no`, com um comentário no compose justificando que
+"cache e blacklist são reconstruíveis". A segunda metade da frase é falsa: a
+blacklist é o registro do que não pode mais entrar, e esse registro não se
+reconstrói — o logout aconteceu, o cliente foi avisado, e nada no sistema
+consegue provar que aconteceu de novo. Um restart de container devolvia tokens
+revogados à validade, em silêncio.
+
+Medido no stack de teste, com o mesmo caminho do drill: token revogado ia de
+401 (pós-logout) para **200** (pós-restart) sem nenhuma requisição mal
+intencionada no meio. Com AOF `everysec` e `/data` em volume nomeado, o mesmo
+caminho continua 401.
+
+O detalhe que quase fez essa fase ser resolvida por engano é a diferença entre
+duas coisas que o nome "fail-closed" sugeria serem a mesma:
+
+- **Redis fora do ar** — coberto desde antes: sem armazenamento de revogação não
+  há como garantir que um token não foi revogado, então o serviço nega (503, e
+  não 401, porque "senha errada" seria mentira). Decisão mantida.
+- **Redis de pé com o histórico perdido** — *não* era coberto por nada: o
+  servidor responde `PONG`, o middleware autentica, e a blacklist que deveria
+  estar lá não está. Aqui o serviço opera em fail-open de fato, por ausência do
+  dado e não por escolha. A persistência é o que fecha esse caso.
+
+A segunda coisa que a fase decide é **não** fazer backup do Redis, e isso é
+decisão, não omissão. Um restore de dump devolveria o passado errado: as
+blacklists do dump podem ser anteriores a revogações mais novas, e o contador de
+versão de sessão antigo faria tokens revogados depois do dump parecerem válidos.
+O que salva o caso é a propriedade de projeto — o Redis é regenerável por design
+(quem precisa voltar faz login novo) — e o que a persistência protege é o
+intervalo entre o logout e o próximo login, onde o cliente já foi avisado de que
+saiu. O Mongo é o que tem backup, porque é o que não se regenera. Snapshots de
+Redis ficam registrados para diagnóstico forense, nunca para restore de serviço.
+
+Resta por decidir (e fica registrado como pendência, não implementado): se o
+**volume** do Redis for destruído — falha de disco, `docker volume rm`,
+reposição de VM a partir de snapshot antigo —, o serviço volta sem histórico de
+revogação e falha aberto de verdade. Fechar isso exige tirar a revogação de um
+único nó: segundo Redis com réplica e promote manual, ou gravar o carimbo de
+revogação também no Mongo, que já é a fonte de verdade e já tem backup. As duas
+mudam o modelo de operação, e é por isso que são decisão de fase, não
+detalhe de implementação. Até lá, `npm run test:redis` prova no ambiente de
+teste que a revogação sobrevive ao restart, e é o teste mais barato que existe
+contra alguém desligar a persistência sem querer.
+
+Uma nota de método, porque ela mudou o desenho do teste: a ACL da aplicação é
+`+@all -@admin -@dangerous`, e tanto `CONFIG GET` quanto `INFO` estão em
+`@admin`. A primeira versão do drill perguntava a configuração ao servidor e
+recebia `NOPERM` — vazio. A conferência passou a ser feita no sistema de arquivos
+do volume e no comportamento observável, que é o que não depende de permissão
+nenhuma.
+
 
 
 ## 7. O que este serviço não é
