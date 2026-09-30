@@ -1,0 +1,48 @@
+# ===================================================================
+# OVERRIDE DE MEDICAO DE CAPACIDADE (Fases 3.1 e 3.2)
+# ===================================================================
+# NAO faz parte do deploy. Entra em cena apenas com
+# `scripts/capacity-baseline.sh`, que faz o `docker compose up` com este
+# arquivo e devolve o servico ao `.env.prod` no teardown.
+#
+# O que ele muda, e por que:
+#
+# 1. ORCAMENTO DE RATE LIMIT. Em producao `/login` aceita 5 tentativas por
+#    15 min por usuario e o limite por IP e 100/min. Uma matriz de 100 a 400
+#    VUs esbarra nesses numeros em menos de um segundo, e o que a corrida
+#    mediria seria o limiter repetindo 429 - nao a capacidade do servico.
+#    Entao a medicao roda com orcamento alto e o resultado e lido como
+#    "quanto o servico aguenta sem shape de trafego", que e a pergunta da
+#    Fase 3.1. A politica de limite de producao nao muda: o teardown recria o
+#    container sem este arquivo.
+#
+# 2. `CLUSTER_WORKERS` / `CLUSTER_ENABLED`. A matriz precisa reiniciar o
+#    servico para trocar a contagem de workers, e os valores vêm do driver
+#    por variável de ambiente em vez de ficarem escritos aqui.
+#
+# `environment` tem precedencia sobre `env_file`, entao estas chaves vencem o
+# `.env.prod` sem precisar edita-lo - que e o que evita que a medicao deixe o
+# arquivo de produicao com limite de teste dentro.
+# ===================================================================
+
+services:
+  auth-service:
+    environment:
+      # --- Dimensionamento vertical ---
+      CLUSTER_ENABLED: "${CAPACITY_CLUSTER_ENABLED:-false}"
+      CLUSTER_WORKERS: "${CAPACITY_WORKERS:-1}"
+      # Vazio por padrao. A Fase 3.2 e que passa a medir
+      # `--max-old-space-size` por worker; sem valor, o Node escolhe pelo
+      # cgroup.
+      NODE_OPTIONS: "${CAPACITY_NODE_OPTIONS:-}"
+
+      # --- Orcamento de trafego só durante a medicao ---
+      RATE_LIMIT_PROD_IP_POINTS: "${CAPACITY_RL_POINTS:-1000000}"
+      RATE_LIMIT_PROD_IP_DURATION: "60"
+      RATE_LIMIT_PROD_IP_BLOCK_DURATION: "10"
+      RATE_LIMIT_PROD_USER_POINTS: "${CAPACITY_RL_POINTS:-1000000}"
+      RATE_LIMIT_PROD_USER_DURATION: "60"
+      RATE_LIMIT_PROD_USER_BLOCK_DURATION: "10"
+      RATE_LIMIT_PROD_LOGIN_POINTS: "${CAPACITY_RL_POINTS:-1000000}"
+      RATE_LIMIT_PROD_LOGIN_DURATION: "60"
+      RATE_LIMIT_PROD_LOGIN_BLOCK_DURATION: "10"

@@ -257,8 +257,25 @@ npm run test:redis          # persistência da revogação (revoga, reinicia o R
 npm run test:config-backup  # backup/restauração da config EM EXECUÇÃO (devolve o valor do container, não o do disco)
 npm run test:secrets        # varredura de segredo: gitleaks + material/.env versionado
 npm run test:coverage       # cobertura (text + html + lcov)
+npm run test:capacity       # baseline de capacidade por endpoint (k6 + RSS/heap)
 npm run lint                # ESLint em src/ e tests/
 ```
+
+`test:capacity` (`scripts/capacity-baseline.sh`) mede quanto **um** worker aguenta,
+com o stack de produção e k6 dentro do Docker:
+
+```bash
+npm run test:capacity -- --workers 1 --vus 100,200,400 \
+  --endpoints health,login,refresh,register --duration 60s
+```
+
+Ele sobe o rate limit só durante a medição (medir 429 é medir o limiter, não o
+endpoint), semeia os usuários de login, amostra `/observability` e
+`docker stats` durante a carga, e no fim apaga as chaves `rl_*`, os usuários de
+teste e devolve o container ao `.env.prod`. O bruto fica em `artifacts/`
+(ignorado pelo git) e a tabela interpretada em
+[`docs/metricas.md`](docs/metricas.md) §3. O último baseline: **22 logins/s por
+2.0 CPU** (argon2id), e `/refresh` perdendo vazão em 400 VUs.
 
 `test:infra` (`scripts/infra-resilience-test.sh`) sobe um stack isolado com a
 imagem de produção, para o Redis no meio do teste e reinicia o container,

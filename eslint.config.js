@@ -47,6 +47,22 @@ export default tseslint.config(
     }
   },
   {
+    // O hook de pre-commit roda `eslint --fix` em qualquer `*.js` staged, e os
+    // scripts do k6 usam globais injetados pelo runtime (`__ENV`, `__VU`,
+    // `__ITER`). Sem declara-los, nenhum script de carga poderia ser commitado
+    // -- e `npm run lint` nao pega o diretorio, entao o erro so aparecia no
+    // momento do commit, que e o pior lugar para descobrir.
+    files: ['k6/**/*.js'],
+    languageOptions: {
+      globals: {
+        __ENV: 'readonly',
+        __VU: 'readonly',
+        __ITER: 'readonly',
+        process: 'readonly'
+      }
+    }
+  },
+  {
     ignores: [
       'node_modules/',
       'coverage/',

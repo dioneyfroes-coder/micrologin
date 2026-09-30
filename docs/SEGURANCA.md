@@ -654,6 +654,44 @@ Cada item acima é um limite de escopo declarado, não um defeito escondido.
 
 ---
 
+### D24 — A sonda Redis de liveness precisa de chave única por chamada, não uma chave fixa
+
+Medindo a capacidade da Fase 3.1, `/health` devolveu 503 para **173 de 300
+requisições simultâneas**, com o Redis reportando "conectado" e a degradação
+dizendo que ele não respondia a leitura/escrita. Não era o Redis: era a
+própria sonda. `src/infrastructure/cache/connection.ts` usava a chave fixa
+`__health_check__`, e como a verificação é "escreve e lê de volta comparando",
+N chamadas concorrentes se sobrescreviam. Cada uma lia o valor da outra e
+concluía, falsamente, que o Redis perdera a escrita. O efeito era duplo e ruim:
+o `/health` mentia sobre a dependência, e o alarme disparava em vazão — que é
+exatamente a hora em que alguém não confia no alerta.
+
+A decisão: **chave e valor únicos por chamada.** A chave carrega
+`${process.pid}` e um contador de sequência da própria instância, e o valor
+carrega `${Date.now()}` mais a sequência — o timestamp sozinho não bastava,
+porque duas sondas podem cair no mesmo milissegundo, o que é o caso comum
+quando o processador é rápido. Três propriedades, cada uma com um motivo:
+
+1. **Concorrência segura.** Duas sondas nunca dividem chave, então uma não
+   pode "envenenar" a leitura da outra. Regressão em
+   `tests/unit/redis-cache.test.ts`: 50 sondas concorrentes no mesmo processo
+   — que falha contra a versão anterior — mais unicidade de chave e de valor.
+2. **Isolamento entre processos.** O `pid` no nome impede que dois workers do
+   cluster, cada um com seu contador começando em zero, se confundam. Sem o
+   `pid`, `__health_check__:<pid>:0` colidiria entre réplicas.
+3. **Chave descartável, sem prefixo de ambiente.** O nome continua sendo
+   distinguível de chave de aplicação (prefixo `__`) e a sonda continua
+   escrevendo em Tempo *efêmero* com TTL próprio, então não há estado a
+   limpar e uma escrita perdida numa falha de escrita só custa uma iteração do
+   liveness, não inconsistência.
+
+A consequência de não ter feito isso antes é a lição registrada: **a verificação
+de saúde é código que roda em produção e precisa dos mesmos testes de
+concorrência do resto do serviço.** Ela foi a última parte do sistema a ser
+exercitada sob carga real, e a única que não aguentou.
+
+---
+
 ## Referências
 
 - Fluxo de requisição e arquitetura: [`ARQUITETURA.md`](ARQUITETURA.md)

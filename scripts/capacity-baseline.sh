@@ -1,0 +1,337 @@
+#!/usr/bin/env bash
+# ===================================================================
+# Baseline de capacidade (Fase 3.1) e varredura de workers (Fase 3.2)
+# ===================================================================
+# Mede p50/p95/p99, taxa de falha e memoria por corrida de k6, e monta a
+# tabela "quanto um worker aguenta" que o roadmap pede.
+#
+# Por que um driver e nao apenas o script k6:
+#
+#   - O numero de workers so muda reiniciando o servico, e o rate limit de
+#     producao (5 logins/15 min por usuario, 100/min por IP) barra a medicao
+#     em menos de um segundo. O driver sobe o servico com
+#     `docker-compose.capacity.yml`, roda a matriz e devolve o container ao
+#     `.env.prod` no teardown.
+#   - A memoria precisa ser amostrada DURANTE a carga. `/observability` responde
+#     pelo processo que o kernel escolheu naquele accept, entao o driver amostra
+#     varias vezes e separa por pid no consolidado.
+#   - O teardown limpa os contadores `rl_*` do Redis. Sem isso o orcamento
+#     inflado da medicao continua valendo depois que o limite volta ao valor de
+#     producao, e o proximo teste real toma 429 sem motivo.
+#
+# Uso:
+#   scripts/capacity-baseline.sh
+#   scripts/capacity-baseline.sh --vus 100,200,400 --duration 60s
+#   scripts/capacity-baseline.sh --workers 1,2 --endpoints health,login
+#
+# Saida: <OUT_DIR>/summary.md, <OUT_DIR>/k6_*.json, <OUT_DIR>/mem_*.csv
+# ===================================================================
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+COMPOSE_PROD="docker-compose.prod.yml"
+COMPOSE_CAPACITY="docker-compose.capacity.yml"
+ENV_FILE=".env.prod"
+SERVICE="auth-service"
+K6_IMAGE="${K6_IMAGE:-grafana/k6:latest}"
+SEED_PASSWORD="K6#Bench2026Pass"
+
+WORKERS_LIST="1"
+VUS_LIST="100,200,400"
+ENDPOINTS_LIST="health,login,refresh,register"
+DURATION="60s"
+RAMP_UP="15s"
+RAMP_DOWN="10s"
+REGISTER_ITERATIONS="5"
+SAMPLE_INTERVAL="2"
+OUT_DIR="artifacts/capacity"
+KEEP_STACK=0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --workers)      WORKERS_LIST="$2"; shift 2 ;;
+        --vus)          VUS_LIST="$2"; shift 2 ;;
+        --endpoints)    ENDPOINTS_LIST="$2"; shift 2 ;;
+        --duration)     DURATION="$2"; shift 2 ;;
+        --ramp-up)      RAMP_UP="$2"; shift 2 ;;
+        --ramp-down)    RAMP_DOWN="$2"; shift 2 ;;
+        --iterations)   REGISTER_ITERATIONS="$2"; shift 2 ;;
+        --sample-every) SAMPLE_INTERVAL="$2"; shift 2 ;;
+        --out)          OUT_DIR="$2"; shift 2 ;;
+        --keep-stack)   KEEP_STACK=1; shift ;;
+        -h|--help)      sed -n '2,28p' "$0"; exit 0 ;;
+        *) echo -e "${RED}Opcao desconhecida: $1${NC}" >&2; exit 1 ;;
+    esac
+done
+
+log_step() { echo -e "${YELLOW}$1${NC}"; }
+log_pass() { echo -e "${GREEN}✅ $1${NC}"; }
+log_warn() { echo -e "${YELLOW}⚠️  $1${NC}"; }
+fail() { echo -e "${RED}❌ $1${NC}" >&2; exit 1; }
+has_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+# ------------------------------------------------------------------
+echo -e "${YELLOW}══════════════════════════════════════════════════════${NC}"
+echo -e "${YELLOW} Baseline de capacidade (Fase 3.1)${NC}"
+echo -e "${YELLOW}══════════════════════════════════════════════════════${NC}"
+
+[ -f "$ENV_FILE" ] || fail "$ENV_FILE nao existe: rode o deploy local antes"
+[ -f "$COMPOSE_PROD" ] || fail "$COMPOSE_PROD nao encontrado"
+[ -f "$COMPOSE_CAPACITY" ] || fail "$COMPOSE_CAPACITY nao encontrado"
+has_cmd docker || fail "docker nao encontrado"
+has_cmd jq || fail "jq nao encontrado"
+has_cmd curl || fail "curl nao encontrado"
+has_cmd python3 || fail "python3 nao encontrado (consolidado da tabela)"
+
+# O token e o mesmo que o servico exige em /observability. Sem ele o
+# manifesto responde 401 e nao ha amostra de memoria: a corrida de latencia
+# ainda valeria, a de memoria nao.
+METRICS_TOKEN="$(grep -E '^METRICS_TOKEN=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)"
+[ -n "$METRICS_TOKEN" ] || fail "METRICS_TOKEN ausente em $ENV_FILE"
+
+APP_PORT="$(grep -E '^APP_PORT=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)"
+APP_PORT="${APP_PORT:-3000}"
+BASE_URL="http://localhost:${APP_PORT}"
+
+RUN_ID="$(date +%s | tail -c 7)"
+USER_COUNT="$(echo "$VUS_LIST" | tr ',' '\n' | sort -n | tail -1)"
+mkdir -p "$OUT_DIR"
+
+log_step "run_id=${RUN_ID}  workers=${WORKERS_LIST}  vus=${VUS_LIST}  endpoints=${ENDPOINTS_LIST}"
+log_step "duracao=${DURATION} (rampa ${RAMP_UP} + ${RAMP_DOWN})  alvo=${BASE_URL}"
+
+# ------------------------------------------------------------------
+# Helpers de compose e coleta
+
+compose() {
+    local workers="$1"; shift
+    local enabled=false
+    [ "$workers" -gt 1 ] && enabled=true
+    # `environment` do override vence `env_file`, entao o orcamento de rate
+    # limit de medicao nao encosta no .env.prod.
+    CAPACITY_WORKERS="$workers" \
+    CAPACITY_CLUSTER_ENABLED="$enabled" \
+    docker compose --env-file "$ENV_FILE" \
+        -f "$COMPOSE_PROD" -f "$COMPOSE_CAPACITY" "$@"
+}
+
+compose_plain() {
+    docker compose --env-file "$ENV_FILE" -f "$COMPOSE_PROD" "$@"
+}
+
+sample_memory() {
+    local csv="$1"
+    echo "ts,pid,rss_mb,heap_used_mb,heap_total_mb,external_mb" > "$csv"
+    while :; do
+        curl -s -m 5 -H "x-metrics-token: ${METRICS_TOKEN}" "${BASE_URL}/observability" 2>/dev/null \
+            | jq -r --arg ts "$(date -Is)" '
+                if .service then
+                  [ $ts, .service.pid, .service.memory.rss_mb,
+                    .service.memory.heap_used_mb, .service.memory.heap_total_mb,
+                    .service.memory.external_mb ] | @csv
+                else empty end' >> "$csv" 2>/dev/null || true
+        sleep "$SAMPLE_INTERVAL"
+    done
+}
+
+sample_docker_stats() {
+    local file="$1" cid="$2"
+    # Separador interno `|`: nenhum campo do `docker stats` contem virgula
+    # (`.MemUsage` vem como `75.27MiB / 1GiB`), entao trocar `|` por `,` na
+    # escrita produz CSV de 5 colunas de verdade.
+    echo "ts,cpu_pct,mem_usage,mem_pct,pids" > "$file"
+    while :; do
+        local line
+        line="$(docker stats --no-stream \
+            --format '{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}|{{.PIDs}}' "$cid" 2>/dev/null || true)"
+        if [ -n "$line" ]; then
+            printf '%s,%s\n' "$(date -Is)" "$(printf '%s' "$line" | tr '|' ',')" >> "$file"
+        fi
+        sleep "$SAMPLE_INTERVAL"
+    done
+}
+
+wait_ready() {
+    local cid="$1" tries=60
+    while [ "$tries" -gt 0 ]; do
+        if curl -fsS -m 5 "${BASE_URL}/readiness" >/dev/null 2>&1; then
+            return 0
+        fi
+        tries=$((tries - 1))
+        sleep 2
+    done
+    docker logs --tail=30 "$cid" 2>&1 || true
+    return 1
+}
+
+node_processes() {
+    local cid="$1"
+    docker exec "$cid" sh -c \
+        'ps -o args 2>/dev/null | grep -c "[n]ode dist/app.js"' 2>/dev/null || echo "?"
+}
+
+purge_rate_limits() {
+    local cid keys key
+    cid="$(compose_plain ps -q redis || true)"
+    [ -n "$cid" ] || return 0
+    # A senha e lida DENTRO do container, como no healthcheck do compose. O
+    # arquivo em `secrets/deps` pertence ao uid 1001 (--for-container) e o
+    # usuario do host nao o abre - e nao precisa: quem roda a medicao nao tem
+    # que ler a senha do Redis para limpar um contador.
+    # SCAN, nunca KEYS: KEYS bloqueia o servidor durante a varredura.
+    keys="$(redis_cli "$cid" --scan --pattern 'rl_*')"
+    [ -n "$keys" ] || return 0
+    printf '%s\n' "$keys" | while read -r key; do
+        [ -n "$key" ] || continue
+        redis_cli "$cid" UNLINK "$key" >/dev/null 2>&1 || true
+    done
+    log_pass "chaves rl_* removidas do Redis (o limite de producao voltou ao normal)"
+}
+
+# Cliente redis-cli autenticado, com a senha lida de dentro do container.
+# REDISCLI_AUTH em vez de --pass: a senha nao vai para a linha de comando,
+# que qualquer um le com `ps`.
+redis_cli() {
+    local cid="$1"; shift
+    docker exec "$cid" sh -c '
+        REDISCLI_AUTH=$(cat /run/secrets/redis-password)
+        exec redis-cli --no-auth-warning --user auth-service -n 1 "$@"' _ "$@" 2>/dev/null
+}
+
+purge_test_users() {
+    local cid
+    cid="$(compose_plain ps -q mongodb || true)"
+    [ -n "$cid" ] || return 0
+    # Mesma razao do Redis: as credenciais ficam dentro do container do Mongo,
+    # e o RUN_ID vai por ambiente para nao passar pela linha de comando.
+    docker exec -e "K6_RUN_ID=$RUN_ID" "$cid" sh -c '
+        mongosh --quiet --host 127.0.0.1 \
+            --username "$MONGO_APP_USER" \
+            --password "$(cat "$MONGO_APP_PASSWORD_PATH")" \
+            --authenticationDatabase admin "$MONGO_APP_DB" \
+            --eval "db.users.deleteMany({ username: { \$regex: \"^k6(user|reg)_\" + process.env.K6_RUN_ID } }).deletedCount"' \
+        2>/dev/null || true
+}
+
+teardown() {
+    local code=$?
+    if [ "$KEEP_STACK" = "1" ]; then
+        log_warn "--keep-stack: o servico fica com o orcamento de medicao ativo"
+        log_warn "  devolva com: docker compose --env-file $ENV_FILE -f $COMPOSE_PROD up -d $SERVICE"
+        return "$code"
+    fi
+    log_step "Teardown: devolvendo o container ao .env.prod"
+    purge_rate_limits || log_warn "nao foi possivel limpar as chaves rl_* do Redis"
+    compose_plain up -d --force-recreate "$SERVICE" >/dev/null 2>&1 || true
+    return "$code"
+}
+
+# ------------------------------------------------------------------
+log_step "1/4 · Subindo o servico com o orcamento de medicao"
+
+FIRST_WORKERS="${WORKERS_LIST%%,*}"
+compose "$FIRST_WORKERS" up -d --force-recreate "$SERVICE" >/dev/null
+CID="$(compose "$FIRST_WORKERS" ps -q "$SERVICE")"
+[ -n "$CID" ] || fail "o container do $SERVICE nao subiu"
+wait_ready "$CID" || fail "$SERVICE nao ficou pronto"
+log_pass "$(node_processes "$CID") processo(s) node, /readiness 200"
+
+trap teardown EXIT
+
+# ------------------------------------------------------------------
+log_step "2/4 · Semeando o pool de login (${USER_COUNT} usuarios, fora de medicao)"
+
+seeded=0
+for i in $(seq 0 $((USER_COUNT - 1))); do
+    code="$(curl -s -o /dev/null -w '%{http_code}' -m 20 \
+        -H 'Content-Type: application/json' \
+        -X POST "${BASE_URL}/register" \
+        -d "{\"user\":\"k6user_${RUN_ID}_${i}\",\"password\":\"${SEED_PASSWORD}\"}")"
+    [ "$code" = "201" ] && seeded=$((seeded + 1))
+done
+log_pass "${seeded}/${USER_COUNT} usuarios semeados"
+
+# ------------------------------------------------------------------
+log_step "3/4 · Matriz de carga"
+
+for workers in ${WORKERS_LIST//,/ }; do
+    if [ "$workers" != "$FIRST_WORKERS" ] || [ "${WORKERS_LIST//,/ }" != "$FIRST_WORKERS" ]; then
+        compose "$workers" up -d --force-recreate "$SERVICE" >/dev/null
+        CID="$(compose "$workers" ps -q "$SERVICE")"
+        wait_ready "$CID" || fail "$SERVICE nao ficou pronto (workers=$workers)"
+        log_pass "workers=${workers}: $(node_processes "$CID") processo(s) node, /readiness 200"
+    fi
+
+    case_seq=0
+    for endpoint in ${ENDPOINTS_LIST//,/ }; do
+        for vus in ${VUS_LIST//,/ }; do
+            # Um CASE_ID por invocacao: o nome do usuario de /register precisa
+            # ser unico dentro do RUN_ID, senao o nivel de VUs seguinte
+            # refaz o cadastro anterior e a metade das respostas vira 400.
+            case_seq=$((case_seq + 1))
+            stamp="$(date +%Y%m%d_%H%M%S)"
+            tag="w${workers}_${endpoint}_v${vus}_${stamp}"
+            log_file="${OUT_DIR}/k6_${tag}.log"
+
+            echo
+            log_step "  workers=${workers} endpoint=/${endpoint} vus=${vus}"
+
+            sample_memory "${OUT_DIR}/mem_${tag}.csv" &
+            mem_pid=$!
+            sample_docker_stats "${OUT_DIR}/stats_${tag}.csv" "$CID" &
+            stats_pid=$!
+
+            # `--user` com o uid do host: a imagem do k6 roda como usuario
+            # proprio e nao escreveria o `k6_*.json` num bind mount do host.
+            docker run --rm --network host \
+                --user "$(id -u):$(id -g)" \
+                -v "${REPO_ROOT}/k6:/k6:ro" \
+                -v "${REPO_ROOT}/${OUT_DIR}:/out" \
+                -e "BASE_URL=${BASE_URL}" \
+                -e "ENDPOINTS=${endpoint}" \
+                -e "VUS=${vus}" \
+                -e "DURATION=${DURATION}" \
+                -e "RAMP_UP=${RAMP_UP}" \
+                -e "RAMP_DOWN=${RAMP_DOWN}" \
+                -e "REGISTER_ITERATIONS=${REGISTER_ITERATIONS}" \
+                -e "RUN_ID=${RUN_ID}" \
+                -e "CASE_ID=${case_seq}" \
+                -e "USER_COUNT=${USER_COUNT}" \
+                -e "METRICS_TOKEN=${METRICS_TOKEN}" \
+                -e "SUMMARY_JSON=/out/k6_${tag}.json" \
+                -e "K6_SUMMARY_TREND_STATS=avg,min,med,max,p(90),p(95),p(99)" \
+                -e "K6_NO_COLOR=true" \
+                "$K6_IMAGE" run "/k6/capacity-baseline.js" > "$log_file" 2>&1 || true
+
+            kill "$mem_pid" "$stats_pid" 2>/dev/null || true
+            wait "$mem_pid" "$stats_pid" 2>/dev/null || true
+
+            if [ -f "${OUT_DIR}/k6_${tag}.json" ]; then
+                tail -n 2 "$log_file" | head -1 | sed 's/^/   /'
+            else
+                log_warn "k6 nao produziu resumo; ultimas linhas de ${log_file}"
+                tail -n 15 "$log_file" || true
+            fi
+        done
+    done
+done
+
+# ------------------------------------------------------------------
+log_step "4/4 · Consolidando"
+
+python3 "$REPO_ROOT/scripts/capacity-summary.py" "$OUT_DIR" > "${OUT_DIR}/summary.md"
+log_pass "tabela crua em ${OUT_DIR}/summary.md"
+log_pass "resumo k6 por corrida em ${OUT_DIR}/k6_*.json"
+
+purge_test_users
+log_pass "usuarios de teste removidos do Mongo"
+
+echo
+log_pass "matriz concluida"

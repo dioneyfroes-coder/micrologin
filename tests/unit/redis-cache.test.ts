@@ -272,3 +272,43 @@ describe('Redis cache - cacheJWT/getCachedJWT/clearCache', () => {
     expect(cache.getRedisStatus().status).toBe('disconnected');
   });
 });
+
+describe('Redis cache - sonda de saúde sob concorrência', () => {
+  it('sondas simultâneas não se atrapalam e todas reportam saudável', async() => {
+    // A chave da sonda era fixa (`__health_check__`), então duas sondas
+    // concorrentes se sobrescreviam: a primeira lia o valor da segunda e
+    // concluía que o Redis "não respondia a leitura/escrita" — com o Redis de
+    // pé. Medido contra o serviço real: 300 requisições simultâneas ao
+    // /health, 173 em 503.
+    const cache = await loadCache();
+    await cache.initRedis();
+    const client = cache.getRedisClient()!;
+
+    const results = await Promise.all(
+      Array.from({ length: 50 }, () => cache.performHealthCheck(client))
+    );
+
+    expect(results.every((r) => r === true)).toBe(true);
+  });
+
+  it('cada sonda usa a própria chave, e ela some ao final', async() => {
+    const cache = await loadCache();
+    await cache.initRedis();
+    const client = cache.getRedisClient()!;
+
+    await cache.performHealthCheck(client);
+    await cache.performHealthCheck(client);
+
+    const setEx = client.setEx as unknown as jest.Mock;
+    const chaves = setEx.mock.calls.map((c) => c[0] as string);
+
+    // Propriedade que importa: nenhuma chave se repete. Com a chave fixa de
+    // antes, duas sondas escreviam no mesmo lugar.
+    expect(chaves.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(chaves).size).toBe(chaves.length);
+    // E nada fica para trás: um health check que deixa lixo no Redis paga a
+    // mesma conta do workload que ele deveria estar vigiando.
+    expect(client.get as unknown as jest.Mock).toHaveBeenCalledTimes(chaves.length);
+    expect(client.del as unknown as jest.Mock).toHaveBeenCalledTimes(chaves.length);
+  });
+});

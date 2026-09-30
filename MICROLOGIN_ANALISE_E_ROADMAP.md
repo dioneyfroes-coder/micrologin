@@ -311,19 +311,41 @@ perdido).
 
 ## 3.1 Baseline de capacidade
 
-**Status: pendente.**
+**Status: feito (2026-09-30).**
 
-- [ ] rodar `npm run test:load` com p50/p95/p99 e taxa de erro para: 1 worker, 100/200/400 VUs em /health, /login, /refresh, /register
-- [ ] medirmemória RSS e heap com `--max-memory-restart` do PM2 (hoje 500M) e limites do compose (512m)
-- [ ] guardar resultado em `docs/metricas.md` (ou no README) como referência "quanto um worker aguenta"
+- [x] p50/p95/p99 e taxa de erro por endpoint, 1 worker x 100/200/400 VUs em /health, /login, /refresh, /register — `npm run test:capacity` (o `test:load` antigo foi preservado)
+- [x] memória RSS e heap por processo via `/observability`, com `docker stats` do container ao lado; 12 linhas, zero 5xx, zero erro de transporte
+- [x] resultado em `docs/metricas.md` §3 como referência de quanto um worker aguenta
 - [x] custo de autenticação já medido: o hash era 13x mais caro que o argon2id mínimo e dominava o `/login` (p95 de 491 ms → 45.4 ms em c=1)
 
-**Definição de pronto:** tabela publicada com capacidade por worker e por réplica, e o gargalo identificado com número.
+**Definição de pronto: cumprida.** Gargalo com número: **22 logins/s por 2.0 CPU,
+limitado pelo argon2id e invariante ao número de VUs** (22.13/22.20/22.15 rps a
+100/200/400 VUs, com p50 crescendo de 4.5 s para 17.7 s — vazão constante,
+latência proporcional à concorrência). `/refresh` é o segundo gargalo e o mais
+interessante porque **perde vazão** em 400 VUs (592.6 → 485.2 rps) com p99 de
+2.5 s, em vez de só ganhar latência. Teto de memória de 1 GiB nunca foi tocado:
+pico de 392.9 MB (38%). Dois achados que veio junto da medição:
+
+- `CLUSTER_ENABLED=false` no `.env.prod` — o baseline é de fato 1 processo
+- o `max_memory_restart: 500M` do PM2 não protege nada em produção, porque o
+  compose não usa PM2; e 392.9 MB são **por processo**, então `4 workers`
+  estouraria 1 GiB — o que amarra a 3.2 com o limite de requisições em andamento
+
+**Bug corrigido no meio da medição:** `/health` devolvia 503 para 173 de 300
+requisições simultâneas porque a sonda Redis usava chave fixa
+(`__health_check__`) e as sondas concorrentes se sobrescreviam. Corrigido com
+chave por pid+sequência, com regressão em `tests/unit/redis-cache.test.ts`.
+Ver `D24` em `docs/SEGURANCA.md`.
 
 ## 3.2 Tuning de Node/PM2
 
-- [ ] workers = CPUs disponíveis (não fixo 4 cego); documentar relação `PM2_INSTANCES`/`CLUSTER_WORKERS`
-- [ ] heap e GC sob carga (v8 max-old-space), timeouts, `keep-alive` no servidor HTTP
+**Status: em andamento.** A 3.1 definiu a ordem pela evidência, não por intuição.
+
+- [ ] workers = CPUs disponíveis (não fixo 4 cego): hoje `appConfig` usa `os.cpus().length`, que devolve **4** no container de `cpus: 2.0` (`os.availableParallelism()` devolve 2). Antes de subir workers, lembrar que o pico de 392.9 MB é por processo e `4 × 393 MB` estoura 1 GiB
+- [ ] `/refresh` primeiro: é o único caminho que **perde vazão** em 400 VUs (592.6 → 485.2 rps, p99 2.5 s). Alvos: paralelismo do event loop, número de idas ao Redis por refresh (verificar + revogar + emitir) e teto de `max-old-space` para GC previsível
+- [ ] `/login` e `/register`: **não espere ganho de worker** — 22/s é o argon2id em 2.0 CPU. Ganho aqui vem de `m=19MiB, t=1` (feito) ou de mais CPU, não de mais processo
+- [ ] heap e GC sob carga (v8 max-old-space), timeouts, `keep-alive` no servidor HTTP; atenção ao p50 de 17.7 s do `/register` a 400 VUs contra `SERVER_TIMEOUT` de 30 s
+- [ ] reexecutar `npm run test:capacity` depois do tuning e comparar contra a tabela da §3 do `docs/metricas.md`
 - [ ] validar que dois mecanismos de cluster (PM2 e cluster module) nunca ativos juntos (já há `CLUSTER_ENABLED=false` sob PM2 — manter como teste)
 - [ ] limites de requisção em andamento (concurrent requests) como disjuntor de memória (importa também para DDoS, Fase 6)
 

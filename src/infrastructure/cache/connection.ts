@@ -139,10 +139,32 @@ export const initRedis = async(): Promise<RedisClient | null> => {
   }
 };
 
+let healthProbeSeq = 0;
+
 /**
  * Realiza health check no Redis
  * @param redisClient - Cliente Redis
  * @returns True se healthy
+ *
+ * ## A sonda de escrita/leitura precisa de chave exclusiva
+ *
+ * A chave precisa ser EXCLUSIVA de cada sonda. Com uma chave fixa
+ * (`__health_check__`), duas sondas concorrentes se atropelam: a sonda A escreve
+ * o valor A, a sonda B sobrescreve com o valor B, a sonda A lê B e conclui que o
+ * Redis "não responde a leitura/escrita". Isso foi medido, não suposto — sob
+ * concorrência o `/health` respondia 503 em ~58% das chamadas (300 requisições
+ * simultâneas: 173 em 503) com o Redis perfeitamente de pé, e o relatório dizia
+ * "Redis conectado, mas não responde a leitura/escrita".
+ *
+ * Um health check que se sabota com a própria concorrência é pior do que um
+ * health check ausente: ele derruba o container no orquestrador e/ou manda o
+ * deploy reverter uma versão boa, por causa da própria medição.
+ *
+ * O sufixo é `pid` + contador, e não aleatório: dois processos nunca colidem
+ * (o `pid` já basta entre processos) e, dentro de um processo, o contador
+ * garante unicidade mesmo sob chamadas concorrentes. As chaves morrem sozinhas
+ * pelo TTL, então o volume é limitado pela janela de TTL e não pelo total de
+ * chamadas.
  */
 export const performHealthCheck = async(redisClient: RedisClient): Promise<boolean> => {
   try {
@@ -151,8 +173,12 @@ export const performHealthCheck = async(redisClient: RedisClient): Promise<boole
 
     if (pongResponse === 'PONG') {
       // Verificar adicionalmente se conseguimos ler/escrever
-      const testKey = '__health_check__';
-      const testValue = Date.now().toString();
+      const seq = healthProbeSeq++;
+      const testKey = `__health_check__:${process.pid}:${seq}`;
+      // O valor também carrega o número da sonda, e não só o relógio: com
+      // `Date.now()` sozinho, duas sondas dentro do mesmo milissegundo teriam o
+      // mesmo valor e a colisão passaria despercebida — inclusive num teste.
+      const testValue = `${Date.now()}:${seq}`;
 
       await redisClient.setEx(testKey, 10, testValue);
       const retrieved = await redisClient.get(testKey);

@@ -310,3 +310,103 @@ c=1 o serviço entrega ~22 logins/s: o `/login` deixou de ser o caminho crítico
 e a próxima temporada de latência deve ser medida em outro lugar (Mongo,
 Redis, TLS). K6 continua sendo a ferramenta certa para isso; o script de
 medição cobre o caso de um acesso pontual e reproduzível.
+
+---
+
+## 3. Capacidade por endpoint (Fase 3.1)
+
+Rodado com `npm run test:capacity` (k6 dentro do Docker, rede `host`), no mesmo
+orçamento de produção: **1 worker, 2.0 CPU, 1 GiB**, `CLUSTER_ENABLED=false`.
+Cada linha é uma invocação independente do k6 com rampa de 15 s, 60 s de regime
+e 10 s de rampa final; `/register` é limitado a 5 iterações por VU.
+
+| endpoint | VUs | reqs | rps | p50 | p95 | p99 | max | falha | RSS pico | heap pico | CPU pico |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| /health | 100 | 58914 | 693.0 | 138.6 ms | 180.5 ms | 212.0 ms | 268.0 ms | 0% | 134.7 MB | 51.7 MB | 139% |
+| /health | 200 | 58721 | 690.7 | 274.1 ms | 356.6 ms | 411.2 ms | 492.1 ms | 0% | 137.5 MB | 51.6 MB | 122% |
+| /health | 400 | 56985 | 670.3 | 554.4 ms | 725.6 ms | 784.6 ms | 837.1 ms | 0% | 144.1 MB | 60.3 MB | 123% |
+| /login | 100 | 1882 | 22.13 | 4474.6 ms | 4734.3 ms | 4952.3 ms | 5206.5 ms | 0% | 346.4 MB | 48.5 MB | 205% |
+| /login | 200 | 1889 | 22.20 | 8886.3 ms | 9927.3 ms | 10025.3 ms | 10670.3 ms | 0% | 392.9 MB | 55.8 MB | 205% |
+| /login | 400 | 1923 | 22.37 | 17690.4 ms | 18621.8 ms | 18851.4 ms | 19889.7 ms | 0% | 365.8 MB | 59.1 MB | 211% |
+| /refresh | 100 | 51569 | 606.6 | 144.3 ms | 200.6 ms | 235.5 ms | 284.9 ms | 0% | 209.5 MB | 54.4 MB | 155% |
+| /refresh | 200 | 50380 | 592.6 | 293.7 ms | 415.5 ms | 502.7 ms | 709.0 ms | 0% | 232.6 MB | 56.1 MB | 184% |
+| /refresh | 400 | 41246 | 485.2 | 612.4 ms | 867.1 ms | **2483.1 ms** | **7927.0 ms** | 0% | 375.4 MB | 60.4 MB | 200% |
+| /register | 100 | 500 | 21.86 | 4252.4 ms | 6039.5 ms | 8666.9 ms | 12444.2 ms | 0% | 325.0 MB | 42.2 MB | 205% |
+| /register | 200 | 1000 | 21.49 | 7604.4 ms | 14578.4 ms | 17142.9 ms | 17598.2 ms | 0% | 338.6 MB | 45.1 MB | 202% |
+| /register | 400 | 1709 | 22.15 | 17904.5 ms | 18963.3 ms | 24229.5 ms | 25814.2 ms | 0% | 372.7 MB | 52.4 MB | 208% |
+
+Zero 5xx e zero erro de transporte em todas as doze linhas. `RSS pico` e
+`heap pico` são o máximo de `/observability` durante a janela de carga;
+`CPU pico` vem de `docker stats` do container (100% = 1 CPU, teto do
+container = 200%).
+
+### Leitura
+
+**1. `/login` e `/register` são limitados pelo argon2id, e o número é 22/s.**
+A vazão é praticamente idêntica nos três níveis (22.13, 22.20, 22.15 rps) enquanto
+a latência cresce linearmente com a concorrência: p50 de 4.5 s para 17.7 s ao
+subir de 100 para 400 VUs. É a lei de Little aparecendo como deve — vazão
+constante, latência = concorrência / vazão. Com 400 VUs o p50 de 17.9 s do
+`/register` fica a 12 s do `SERVER_TIMEOUT` de 30 s; a 700 VUs o endpoint
+começaria a devolver 503 por timeout, não por falta de memória. **Conclusão
+prática: aumentar VUs nesse caminho só piora a latência, não entrega mais
+login.** O número que decide o quanto de tráfego o serviço aceita não é o
+`p95`, é as **22 operações de hash por segundo** — logo, o caminho a otimizar é
+`m=19MiB, t=1` (já aplicado) ou o número de workers, nunca o `p95` do login.
+
+**2. `/refresh` satura antes de quebrar, e quebra feio em 400 VUs.**
+Vazão de 606.6 para 592.6 rps entre 100 e 200 VUs — ainda estável. Em 400 VUs a
+vazão **cai 18%** (592.6 → 485.2 rps) enquanto a latência p99 sai de 502.7 ms
+para 2483.1 ms (5x) e o máximo toca 7.9 s. Vazão que cai com a carga subindo é a
+assinatura de fila passando do joelho, não de saturação limpa: o processo está
+aceitando requisição,enchendo a fila e respondendo cada uma mais tarde. O RSS
+declarado como pico (375 MB) acontece **na virada da rampa de subida**, quando os
+400 VUs ficam ativos ao mesmo tempo; em regime o mesmo processo senta em ~150 MB
+e o container em ~105 MiB (`docker stats`), com o heap em dente de serra entre
+38 e 60 MB. Ou seja: não é vazamento, é pico transitório de alocação no momento
+de concorrência máxima. Candidatos a testar na 3.2: `availableParallelism()` para
+tirar o gargalo do event loop, teto de `max-old-space` para dar GC mais previsível
+e o número de idas ao Redis por refresh (verificar + revogar + emitir).
+
+**3. `/health` é o endpoint mais rápido e o mais fácil de abusar.**
+~690 rps com p50 de 134 ms a 100 VUs, e ainda assim é o que mais cresce em
+latência proporcional (554 ms de p50 a 400 VUs). O detalhe de projeto: cada
+`/health` custa um `ping` no Mongo **e quatro idas ao Redis** (a sonda de
+escrita/leitura mais as três leituras de rate limit). O suficiente para um
+`/health` não-trivial em 400 VUs consumir ~123% de CPU. Não é prioridade de
+desempenho, mas é vetor de negação de serviço e por isso entra na Fase 6.
+
+**4. Memória: folgado, com um asterisco.**
+Pico global de 392.9 MB (`/login` a 200 VUs) contra 1 GiB de teto — 38% de
+ocupação, e nenhum reinício no meio da corrida. Dois pontos que o número não
+esconde: (a) o `max_memory_restart: 500M` do PM2 está a 107 MB do pico, mas
+**não protege nada em produção porque o compose não usa PM2** — quem roda é
+`node dist/app.js` direto; (b) se a Fase 3.2 ligar mais de um worker, esses
+392.9 MB são **por processo**, e `4 × 393 MB` estoura 1 GiB com folga. É por
+isso que a 3.2 não pode ser só "mais workers": tem que vir com teto de
+requisições em andamento e orçamento de heap por processo.
+
+### Conclusão da Fase 3.1
+
+Gargalo identificado com número: **22 logins/s por 2.0 CPU, limitado pelo
+argon2id, invariante ao número de VUs.** `/refresh` é o segundo gargalo, e é
+mais interessante porque **perde vazão** em vez de só ganhar latência. Nenhum
+dos dois é memória: o teto de 1 GiB não foi tocado em nenhuma das doze linhas.
+O caminho para 3.2 é mostrado pelos dados — mais paralelismo para
+`/refresh` (workers por CPU disponível), nenhum ganho para `/login`
+(aí é o custo do hash), e teto de requisições em andamento para que nenhum dos
+dois possa transformar pico de tráfego em pico de memória.
+
+### Bug encontrado e corrigido no meio da medição
+
+O `/health` devolvia 503 sob concorrência: com 300 requisições simultâneas,
+**127 respondiam 200 e 173 respondiam 503** — com o Redis conectado e a mensagem
+de degradation dizendo que ele não respondia a leitura/escrita. A causa era a
+própria sonda: `src/infrastructure/cache/connection.ts` escrevia e lia sempre na
+chave fixa `__health_check__`, então N sondas concorrentes se atropelavam e uma
+sondagem concluída com o valor de outra parecia falha. Agora a chave carrega
+`${process.pid}` e um contador de sequência, e o valor carrega um timestamp, o
+que garante unicidade mesmo dentro do mesmo milissegundo. Depois do fix, as 300
+requisições simultâneas respondem **300 × 200**. Regressão coberta por
+`tests/unit/redis-cache.test.ts` (50 sondas concorrentes, unicidade de chave e
+de valor), que falha contra a versão antiga da função.
