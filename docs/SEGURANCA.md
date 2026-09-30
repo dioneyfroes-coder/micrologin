@@ -586,6 +586,60 @@ recebia `NOPERM` — vazio. A conferência passou a ser feita no sistema de arqu
 do volume e no comportamento observável, que é o que não depende de permissão
 nenhuma.
 
+### D23 — A fonte da verdade do backup de configuração é o container em execução, não o arquivo em disco
+
+A 2.3 fecha um buraco silencioso e específico do rollback: o deploy guarda a
+imagem anterior e, na volta, sobe essa imagem com o `.env.prod` que está em
+disco no momento — o da versão nova. Configurar é mais do que "ter o arquivo":
+é ter o arquivo QUE RODAVA, com as chaves que a imagem usava. Um backup
+ingênuo que copie o `.env.prod` do disco captura uma configuração que nunca
+foi ao ar.
+
+A decisão, em duas partes:
+
+1. **O backup lê o container, não o host.** `backup-config.sh` resolve o
+   container pelos labels do compose e tira de `docker inspect` o ambiente
+   interpolado em execução (`env` + limites do compose com `${X}` e
+   `${X:-...}`), os arquivos que o compose monta, o env file original e as
+   referências da imagem (`image_ref`, `image_id`). O material de segredo é
+   coletado por `docker cp` do container — em produção os arquivos são
+   `600` do uid 1001/999 e o operador do backup pode não ter leitura deles no
+   host; o daemon, não. A assinatura disso é o controle negativo do drill:
+   editar o env file sem redeployar deixa disco e container divergidos, e o
+   restore tem de devolver o valor EM EXECUÇÃO, não o do disco editado.
+2. **Restaurar bytes é só metade; restaurar o dono é a outra.** O `docker cp`
+   descarta uid/gid (extrai como o usuário corrente). O backup registra no
+   manifest o dono/modo reais de cada segredo — a mesma primitiva de container
+   descartável que `generate-*-secrets.sh --for-container` usa — e o restore
+   os reaplica. Sem isso, "restaurar" devolveria arquivos que o app (uid 1001)
+   e as dependências (uid 999) não conseguem abrir, e o deploy seguinte cairia.
+
+Consequências que são decisão, não detalhe:
+
+- **O archive é autônomo e verificável.** Cifrado gpg AES-256 (passphrase em
+  arquivo, nunca argv, mesmo regime da D21), manifest interno com sha256 de
+  cada arquivo (`--match-tag`/`--match-image` usam só o `.meta.json`, sem
+  segredos), `--check` para alertar backup velho, retenção por poda e RPO
+  padrão 24h. O rollback restaura pelo tag ou pela imagem: o archive sabe de
+  qual imagem a configuração era.
+- **Os deploys trancam o ciclo.** `deploy.sh` taggeia a config com o mesmo tag
+  do backup de imagem; `remote-deploy.sh` taggeia pelo digest da versão
+  (`deployed-<digest>`) e, após o sucesso, snapshota a config da versão que
+  subiu. No rollback, a config É restaurada ANTES do `docker compose up -d`
+  se passphrase estiver configurada; em `remote-deploy.sh` a passphrase é
+  obrigatória — sem ela, o deploy não captura a config em execução e o
+  rollback voltaria só a imagem, o buraco desta fase.
+- **O drill usa um stack com os MESMOS alvos de mount de produção**
+  (`/run/secrets` e `/run/secrets/deps`, binds read-only, envs `*_PATH`). Um
+  gate de CI (`tests/unit/config-backup-policy.test.ts`) trava essa
+  semelhança e o acoplamento dos deploys: se o drill passar a provar um layout
+  que ninguém roda, o portão fica vermelho antes do próximo deploy.
+
+O que a fase **não** faz: não substitui o backup do Mongo (D21), não vira
+hosting de chave gerenciada (KMS/etc.), e não resolve a D20 — se o volume do
+Redis for perdido, a revogação volta sem histórico, que continua pendência
+declarada.
+
 
 
 ## 7. O que este serviço não é

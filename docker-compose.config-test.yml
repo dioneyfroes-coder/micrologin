@@ -1,0 +1,138 @@
+# ====================================
+# STACK DO DRILL DE BACKUP DE CONFIGURAÇÃO - Fase 2.3
+# Authentication Microservice
+# ====================================
+#
+# Stack separado (nome, porta, rede e volumes próprios) usado só por
+# `scripts/test-config-backup.sh`. O drill existe porque a falha que esta fase
+# fecha é silenciosa e específica: o rollback volta a imagem anterior mas usa o
+# `.env.prod` que está em disco no momento — o da versão nova. O backup de
+# configuração tem de capturar o que ESTÁ RODANDO (o container), não o que o
+# arquivo diz; este stack entrega um app com montagens iguais às de produção:
+#
+#   - chaves ES256 em bind => /run/secrets         (igual a docker-compose.prod.yml:
+#     `secrets` montado inteiro no destino /run/secrets, e as envs *PATH apontam
+#     para /run/secrets/jwt-es256-*.pem)
+#   - credenciais de dependência => /run/secrets/deps
+#
+# O CI trava essa semelhança em tests/unit/config-backup-policy.test.ts: se o
+# drill deixar de espelhar o layout do prod, ele passa a provar uma
+# configuração que ninguém roda.
+#
+# Uso (o script cuida de build, env e teardown):
+#   docker compose -p micrologin-config -f docker-compose.config-test.yml \
+#     --env-file .cfg-test.env up -d
+
+services:
+  auth-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    image: micrologin-config:local
+    container_name: micrologin-config-app
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      VERSION: ${CFG_TEST_VERSION:-config-test}
+      URI_MONGODB: mongodb://mongodb:27017/auth_cfg
+      MONGODB_USER: auth-service
+      MONGODB_PASSWORD_PATH: /run/secrets/deps/mongo-app-password
+      MONGODB_AUTH_SOURCE: admin
+      REDIS_URL: redis://redis:6379/0
+      REDIS_USERNAME: auth-service
+      REDIS_PASSWORD_PATH: /run/secrets/deps/redis-password
+      DEPENDENCY_NETWORK_ISOLATED: "true"
+      JWT_ALGORITHM: ES256
+      JWT_ES256_KID: ${CFG_TEST_KID:-cfg-test-v1}
+      JWT_ES256_PRIVATE_KEY_PATH: /run/secrets/jwt-es256-private.pem
+      JWT_ES256_PUBLIC_KEY_PATH: /run/secrets/jwt-es256-public.pem
+      SECURITY_DASHBOARD_TOKEN: cfg-test-dashboard-token-99999999
+      SSL_ENABLED: "false"
+      CLUSTER_ENABLED: "false"
+      RATE_LIMIT_PROD_LOGIN_POINTS: "500"
+      RATE_LIMIT_PROD_LOGIN_DURATION: "60"
+      RATE_LIMIT_PROD_IP_POINTS: "500"
+      LOG_LEVEL: info
+    volumes:
+      - type: bind
+        source: ${CFG_TEST_KEYS_DIR:-./.cfg-secrets}
+        target: /run/secrets
+        read_only: true
+      - type: bind
+        source: ${CFG_TEST_KEYS_DIR:-./.cfg-secrets}/deps
+        target: /run/secrets/deps
+        read_only: true
+    ports:
+      - "${CFG_TEST_PORT:-3302}:3000"
+    networks:
+      - cfg-test-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/readiness"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
+
+  mongodb:
+    image: mongo:7-jammy
+    container_name: micrologin-config-mongo
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/deps/mongo-root-password
+      MONGO_APP_USER: auth-service
+      MONGO_APP_DB: auth_cfg
+      MONGO_APP_PASSWORD_PATH: /run/secrets/deps/mongo-app-password
+    volumes:
+      - cfg-test-mongo:/data/db
+      - type: bind
+        source: ${CFG_TEST_KEYS_DIR:-./.cfg-secrets}/deps
+        target: /run/secrets/deps
+        read_only: true
+      - type: bind
+        source: ./docker/mongo/10-app-user.sh
+        target: /docker-entrypoint-initdb.d/10-app-user.sh
+        read_only: true
+    networks:
+      - cfg-test-network
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --host 127.0.0.1 --username \"$$MONGO_APP_USER\" --password \"$$(cat $$MONGO_APP_PASSWORD_PATH)\" --authenticationDatabase admin --eval 'quit(db.adminCommand(\"ping\").ok ? 0 : 1)'"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: micrologin-config-redis
+    command: redis-server --aclfile /etc/redis/users.acl --appendonly no
+    volumes:
+      - type: bind
+        source: ${CFG_TEST_KEYS_DIR:-./.cfg-secrets}/deps/redis-app.acl
+        target: /etc/redis/users.acl
+        read_only: true
+      - type: bind
+        source: ${CFG_TEST_KEYS_DIR:-./.cfg-secrets}/deps/redis-password
+        target: /run/secrets/redis-password
+        read_only: true
+    networks:
+      - cfg-test-network
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$(cat /run/secrets/redis-password)\" redis-cli --no-auth-warning --user auth-service ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+networks:
+  cfg-test-network:
+    driver: bridge
+
+volumes:
+  cfg-test-mongo:
+    driver: local

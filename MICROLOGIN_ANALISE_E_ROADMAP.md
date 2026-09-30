@@ -302,8 +302,8 @@ perdido).
 
 ## 2.3 Backup da configuração e da versão em vigor
 
-- [ ] já existe (Fase 6 v1): imagem anterior + `deployed-version`. Estender com backup de `.env.prod` e compose usados
-- [ ] teste de que o deploy consegue restaurar imagem **e** configuração
+- [x] já existe (Fase 6 v1): imagem anterior + `deployed-version`. Estender com backup de `.env.prod` e compose usados
+- [x] teste de que o deploy consegue restaurar imagem **e** configuração
 
 ---
 

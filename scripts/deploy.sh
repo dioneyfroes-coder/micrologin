@@ -25,6 +25,11 @@ ENVIRONMENT=${1:-staging}
 VERSION=${2:-latest}
 SERVICE_NAME="auth-service"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+CFG_BACKUPS_DIR="${CFG_BACKUPS_DIR:-${ROOT_DIR}/cfg-backups}"
+CFG_TOOL_LOG="${ROOT_DIR}/deploy-config-backup.log"
+
 echo -e "${BLUE}🚀 Starting deployment of ${SERVICE_NAME} to ${ENVIRONMENT}${NC}"
 
 # ====================================
@@ -157,6 +162,28 @@ backup_current_version() {
         docker push "${REGISTRY}/${IMAGE_NAME}:${backup_tag}" || true
     fi
     log_success "Backup created: ${backup_tag}"
+
+    # Fase 2.3: além da IMAGEM, guarda a CONFIGURAÇÃO EM EXECUÇÃO (fonte da
+    # verdade = container). O tag do archive é o mesmo do backup de imagem, para
+    # o rollback achar os dois com a mesma chave. Sem passphrase configurada, o
+    # backup de config é pulado com aviso (o rollback só volta a imagem).
+    if [ "$ENVIRONMENT" = "production" ] \
+        && [ -n "${CONFIG_BACKUP_PASSPHRASE_FILE:-}" ] && [ -r "${CONFIG_BACKUP_PASSPHRASE_FILE}" ]; then
+        log_info "Capturando a configuração em execução (backup-config.sh)..."
+        if ! bash "${SCRIPT_DIR}/backup-config.sh" \
+            --project "${COMPOSE_PROJECT:-micrologin}" \
+            --service "$SERVICE_NAME" \
+            --env-file "$ENV_FILE" \
+            --backups-dir "$CFG_BACKUPS_DIR" \
+            --tag "${backup_tag}" \
+            --passphrase-file "$CONFIG_BACKUP_PASSPHRASE_FILE" >>"$CFG_TOOL_LOG" 2>&1; then
+            log_warning "Backup de configuração falhou (detalhes em ${CFG_TOOL_LOG}); a imagem continua com o tag de backup."
+        else
+            log_success "Configuração em execução capturada (tag ${backup_tag})"
+        fi
+    else
+        log_warning "CONFIG_BACKUP_PASSPHRASE_FILE não configurado; backup de configuração pulado."
+    fi
 }
 
 deploy_production() {
@@ -202,6 +229,28 @@ rollback() {
     log_info "Restaurando imagem de backup: ${REGISTRY}/${IMAGE_NAME}:${latest_backup}"
     docker pull "${REGISTRY}/${IMAGE_NAME}:${latest_backup}" || true
     docker tag "${REGISTRY}/${IMAGE_NAME}:${latest_backup}" "${REGISTRY}/${IMAGE_NAME}:${VERSION}"
+
+    # Fase 2.3: o rollback NÃO pode subir a imagem antiga com o `.env.prod` da
+    # versão nova — esse é o buraco que a fase fecha. Restaura pelo mesmo tag de
+    # backup (metadado sem segredo), e só então sobe o compose. Se a config não
+    # restaurar, aborta: subir config nova com imagem antiga é o estrago.
+    if [ "$ENVIRONMENT" = "production" ]; then
+        if [ -n "${CONFIG_BACKUP_PASSPHRASE_FILE:-}" ] && [ -r "$CONFIG_BACKUP_PASSPHRASE_FILE" ]; then
+            log_info "Restaurando a configuração que rodava com ${latest_backup}..."
+            if ! bash "${SCRIPT_DIR}/restore-config.sh" \
+                --match-tag "$latest_backup" \
+                --passphrase-file "$CONFIG_BACKUP_PASSPHRASE_FILE" \
+                --backups-dir "$CFG_BACKUPS_DIR" \
+                --target-dir "$ROOT_DIR" \
+                --env-file-out "$ENV_FILE" \
+                --yes >>"$CFG_TOOL_LOG" 2>&1; then
+                log_error "Restauração da configuração falhou (detalhes em ${CFG_TOOL_LOG}); abortando para não subir imagem antiga com config nova."
+                exit 1
+            fi
+        else
+            log_warning "CONFIG_BACKUP_PASSPHRASE_FILE não configurado; rollback volta só a imagem."
+        fi
+    fi
 
     if [ "$ENVIRONMENT" = "production" ]; then
         docker compose --env-file ".env.prod" -f docker-compose.prod.yml up -d

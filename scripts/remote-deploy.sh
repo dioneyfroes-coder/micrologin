@@ -49,6 +49,9 @@ STATE_DIR="${DEPLOY_STATE_DIR:-/var/lib/micrologin}"
 LOCK_FILE="${STATE_DIR}/deploy.lock"
 VERSION_FILE="${STATE_DIR}/deployed-version"
 BACKUP_DIR="${STATE_DIR}/backups"
+CONFIG_BACKUP_DIR="${STATE_DIR}/config-backups"
+COMPOSE_PROJECT="${COMPOSE_PROJECT:-micrologin}"
+COMPOSE_SERVICE="${COMPOSE_SERVICE:-auth-service}"
 READY_TIMEOUT="${DEPLOY_READY_TIMEOUT:-120}"
 READY_INTERVAL="${DEPLOY_READY_INTERVAL:-3}"
 
@@ -60,6 +63,8 @@ while [ $# -gt 0 ]; do
         --base-url)     BASE_URL="${2:-}"; shift 2 ;;
         --keep-images)  KEEP_IMAGES="${2:-}"; shift 2 ;;
         --ready-timeout) READY_TIMEOUT="${2:-}"; shift 2 ;;
+        --project)      COMPOSE_PROJECT="${2:-}"; shift 2 ;;
+        --service)      COMPOSE_SERVICE="${2:-}"; shift 2 ;;
         --skip-smoke)   SKIP_SMOKE="true"; shift ;;
         -h|--help)      sed -n '2,20p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "Argumento desconhecido: $1" ;;
@@ -204,6 +209,25 @@ backup_current_image() {
     docker tag "$current" "${IMAGE_REPO}:${backup_tag}"
     echo "$current" > "${BACKUP_DIR}/previous-image"
     log_success "Backup da versão anterior: ${IMAGE_REPO}:${backup_tag} (era ${current})"
+
+    # Fase 2.3: a imagem anterior perde valor sem a CONFIGURAÇÃO que ela
+    # rodava. Captura a config em execução (fonte da verdade = container) com a
+    # tag = digest da imagem anterior; o rollback restaura por --match-tag.
+    local current_digest
+    current_digest="$(digest_of "$current")"
+    if [ -n "$current_digest" ] && [ "$current_digest" != "none" ]; then
+        if bash "${SCRIPT_DIR}/backup-config.sh" \
+            --project "$COMPOSE_PROJECT" --service "$COMPOSE_SERVICE" \
+            --env-file "$ENV_FILE" --backups-dir "$CONFIG_BACKUP_DIR" \
+            --tag "deployed-${current_digest}" \
+            --passphrase-file "$CONFIG_BACKUP_PASSPHRASE_FILE" \
+            >/dev/null 2>&1; then
+            echo "deployed-${current_digest}" > "${BACKUP_DIR}/previous-config-backup"
+            log_success "Configuração em execução capturada (tag deployed-${current_digest})"
+        else
+            log_warning "Backup da configuração falhou; o rollback não terá a config antiga."
+        fi
+    fi
 }
 
 rollback() {
@@ -229,6 +253,25 @@ rollback() {
 
     PREVIOUS_DIGEST="$(digest_of "$previous")"
     log_info "Voltando para ${previous}"
+
+    # Fase 2.3: o rollback NÃO pode subir a imagem anterior com o env file da
+    # versão nova. Restaura a config que a imagem anterior rodava (--match-tag
+    # usa metadata SEM segredo) e só então sobe o compose.
+    if [ -n "$PREVIOUS_DIGEST" ] && [ "$PREVIOUS_DIGEST" != "none" ]; then
+        log_info "Restaurando a configuração da versão anterior (deployed-${PREVIOUS_DIGEST})..."
+        if ! bash "${SCRIPT_DIR}/restore-config.sh" \
+            --match-tag "deployed-${PREVIOUS_DIGEST}" \
+            --passphrase-file "$CONFIG_BACKUP_PASSPHRASE_FILE" \
+            --backups-dir "$CONFIG_BACKUP_DIR" \
+            --target-dir "$(dirname "$ENV_FILE")" \
+            --env-file-out "$(basename "$ENV_FILE")" \
+            --yes >/dev/null 2>&1; then
+            log_error "Restauração da configuração falhou; abortando para não subir imagem antiga com config nova."
+            record_version "$PREVIOUS_DIGEST" "rollback-config-failed" "$IMAGE_DIGEST" || true
+            exit 1
+        fi
+        log_success "Configuração anterior restaurada"
+    fi
     # IMAGE_REF, e não só VERSION: o compose usa IMAGE_REF quando definido, e
     # manter a referência antiga aqui significaria "rollback" que sobe a mesma
     # imagem quebrada e ainda reporta sucesso.
@@ -305,7 +348,13 @@ run_smoke_test() {
 # ====================================
 # MAIN
 # ====================================
-mkdir -p "$STATE_DIR" "$BACKUP_DIR"
+mkdir -p "$STATE_DIR" "$BACKUP_DIR" "$CONFIG_BACKUP_DIR"
+
+# Fase 2.3: o deploy guarda a configuração em execução de cada versão; sem a
+# passphrase o rollback voltaria só a imagem — o buraco que a fase fecha.
+if [ -z "${CONFIG_BACKUP_PASSPHRASE_FILE:-}" ] || [ ! -r "${CONFIG_BACKUP_PASSPHRASE_FILE}" ]; then
+    die "CONFIG_BACKUP_PASSPHRASE_FILE é obrigatória (arquivo legível) para o deploy: sem ela a configuração em execução não é capturada."
+fi
 
 # Dois deploys simultâneos no mesmo host se atropelam: o segundo `up -d` roda
 # com a imagem do primeiro no meio do readiness. flock serializa.
@@ -383,4 +432,19 @@ esac
 
 record_version "$IMAGE_DIGEST" "deployed" "$(digest_of "$PREVIOUS_IMAGE")"
 prune_images
+
+# Fase 2.3: o sucesso vira o alvo do próximo rollback. Guarda a config da
+# versão que acabou de subir sob a tag do digest (a próxima volta precisa dela).
+if bash "${SCRIPT_DIR}/backup-config.sh" \
+    --project "$COMPOSE_PROJECT" --service "$COMPOSE_SERVICE" \
+    --env-file "$ENV_FILE" --backups-dir "$CONFIG_BACKUP_DIR" \
+    --tag "deployed-${IMAGE_DIGEST}" \
+    --passphrase-file "$CONFIG_BACKUP_PASSPHRASE_FILE" \
+    >/dev/null 2>&1; then
+    echo "deployed-${IMAGE_DIGEST}" > "${BACKUP_DIR}/previous-config-backup"
+    log_success "Configuração da versão nova capturada (tag deployed-${IMAGE_DIGEST})"
+else
+    log_warning "Backup da configuração nova falhou; o próximo rollback usará a anterior."
+fi
+
 log_success "🎉 Deploy concluído e validado: ${IMAGE_REPO}@${IMAGE_DIGEST}"

@@ -17,6 +17,13 @@ secrets/
 .backup-deps/
 .redis-keys/
 .redis-deps/
+# Material do drill de configuração (2.3) e backups reais de configuração.
+.cfg-secrets/
+.cfg-backups/
+.cfg-test.env
+.cfg-passphrase
+cfg-backups/
+deploy-config-backup.log
 backups/
 *.pem
 

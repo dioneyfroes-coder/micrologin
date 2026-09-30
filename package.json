@@ -24,6 +24,7 @@
     "test:infra": "bash scripts/infra-resilience-test.sh",
     "test:backup": "bash scripts/test-backup.sh",
     "test:redis": "bash scripts/test-redis-persistence.sh",
+    "test:config-backup": "bash scripts/test-config-backup.sh",
     "test:secrets": "bash scripts/secret-scan.sh",
     "test:coverage:fast": "cross-env NODE_ENV=test NODE_OPTIONS=\"--experimental-vm-modules\" jest --coverage --detectOpenHandles --runInBand",
     "test:all": "npm run test:unit && npm run test:integration",

@@ -5,7 +5,8 @@
 .PHONY: help install setup dev dev-watch stop logs build build-docker build-docker-prod \
  test test-unit test-integration test-coverage test-watch lint lint-fix typecheck audit \
  deploy-local deploy-staging deploy-prod smoke-test docker-up docker-down docker-rebuild docker-logs docker-clean \
- health observability docs shell redis-cli mongo-shell pre-commit secrets backup-test redis-test status watch reset clean
+ health observability docs shell redis-cli mongo-shell pre-commit secrets backup-test redis-test \
+ config-backup-test backup-config restore-config status watch reset clean
 
 # Porta pública do app: lida de .env (fonte da verdade); default 3000.
 APP_PORT:=$(shell grep -E '^APP_PORT=[0-9]+' .env 2>/dev/null | cut -d= -f2-)
@@ -92,6 +93,15 @@ backup-test: ## Drill de backup/restauração do Mongo (Fase 2.1)
 
 redis-test: ## Drill de persistência da revogação no Redis (Fase 2.2)
 	bash scripts/test-redis-persistence.sh
+
+config-backup-test: ## Drill de backup/restauração da configuração em vigor (Fase 2.3)
+	bash scripts/test-config-backup.sh
+
+backup-config: ## Captura da configuração EM EXECUÇÃO (Fase 2.3)
+	bash scripts/backup-config.sh --env-file .env.prod --backups-dir cfg-backups --tag manual --passphrase-file $(CONFIG_BACKUP_PASSPHRASE_FILE)
+
+restore-config: ## Restaura a configuração em vigor pelo tag (Fase 2.3)
+	bash scripts/restore-config.sh $(CONFIG_RESTORE_TAG) --passphrase-file $(CONFIG_BACKUP_PASSPHRASE_FILE) --backups-dir cfg-backups --target-dir . --env-file-out .env.prod --yes
 
 pre-commit: ## Verificações pré-commit
 	npm run lint

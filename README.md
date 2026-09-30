@@ -44,6 +44,7 @@ Projeto de portfólio em Node.js para demonstrar uma API de autenticação com a
 | [`docs/ROTACAO.md`](docs/ROTACAO.md) | rotação da chave ES256, do pepper e das senhas de Mongo/Redis, e onde o material privado deve viver |
 | [`docs/BACKUP.md`](docs/BACKUP.md) | backup/restauração do Mongo (Fase 2.1): RPO/RTO medidos, retenção, `--check` de alerta e o drill |
 | [`docs/REDIS.md`](docs/REDIS.md) | o que o Redis guarda e o que se perde sem ele (Fase 2.2): persistência da revogação, RPO/RTO medidos, por que não há backup de Redis |
+| [`docs/CONFIG.md`](docs/CONFIG.md) | backup/restauração da configuração EM EXECUÇÃO (Fase 2.3): container é a fonte da verdade, dono dos segredos, rollback de imagem+config e o drill |
 | [`docs/DASHBOARD_SEGURANCA_GUIA.md`](docs/DASHBOARD_SEGURANCA_GUIA.md) | como usar `GET /security/*` e o dashboard |
 | [`MICROLOGIN_ANALISE_E_ROADMAP.md`](MICROLOGIN_ANALISE_E_ROADMAP.md) | análise e plano de fases executado |
 
@@ -253,6 +254,7 @@ npm run test:e2e            # E2E contra MongoDB e Redis reais (sobe via compose
 npm run test:infra          # resiliência de infraestrutura (derruba Redis e container de verdade)
 npm run test:backup         # backup/restauração do Mongo de ponta a ponta (apaga o banco e restaura)
 npm run test:redis          # persistência da revogação (revoga, reinicia o Redis e exige que continue revogado)
+npm run test:config-backup  # backup/restauração da config EM EXECUÇÃO (devolve o valor do container, não o do disco)
 npm run test:secrets        # varredura de segredo: gitleaks + material/.env versionado
 npm run test:coverage       # cobertura (text + html + lcov)
 npm run lint                # ESLint em src/ e tests/
@@ -311,14 +313,29 @@ revogado voltava a valer depois de um restart, sem erro e sem log. O que o Redis
 guarda, o que cada chave custa perder, e por que não há backup dele estão em
 [`docs/REDIS.md`](docs/REDIS.md).
 
+`test:config-backup` (`scripts/test-config-backup.sh`) é o drill da Fase 2.3:
+sobe um stack isolado com a **mesma topologia de mount de produção** (`/run/secrets`
+e `/run/secrets/deps`), captura a configuração EM EXECUÇÃO, **edita o env file sem
+redeployar** (o controle negativo — disco e container divergidos), apaga env e
+segredos, restaura pelo metadata da imagem (o caminho que os deploys usam no
+rollback) e prova em runtime que o app voltou a exibir a configuração capturada,
+não a do disco editado. O `backup-config.sh` lê do container (fonte da verdade) e
+registra dono/modo de cada segredo; o `restore-config.sh` valida sha/caminho antes
+de escrever e reaplica o dono por container descartável. O rollback dos deploys
+restaura a config **antes** de subir o compose (`deploy.sh` usa o mesmo tag;
+`remote-deploy.sh` taggeia por digest e exige a passphrase). Runbook em
+[`docs/CONFIG.md`](docs/CONFIG.md).
+
 O pipeline de CI usa `test:unit:fast`, `test:integration:app`,
 `test:coverage:fast` (com `--runInBand` para CI) e `test:secrets`. O `test:infra`,
-o `test:backup` e o `test:redis` ficam fora do CI de propósito: derrubam serviço
-de verdade, restauram um banco apagado e reiniciam o Redis — o trabalho disso é
-provar que a versão que você está para implantar reage como deve — rodados
-localmente ou no host de deploy, antes do corte. No lugar do `test:redis`, o CI
-fica com `tests/unit/redis-persistence-config.test.ts`, que lê o compose de
-produção e falha se a persistência do Redis for desligada.
+o `test:backup`, o `test:redis` e o `test:config-backup` ficam fora do CI de
+propósito: derrubam serviço de verdade, restauram um banco apagado e reiniciam o
+Redis — o trabalho disso é provar que a versão que você está para implantar reage
+como deve — rodados localmente ou no host de deploy, antes do corte. No lugar
+desses drills, o CI fica com os gates de configuração
+(`tests/unit/redis-persistence-config.test.ts` e
+`tests/unit/config-backup-policy.test.ts`), que leem os composes e os scripts e
+falham se as invariantes forem desligadas.
 
 ## CI/CD
 
