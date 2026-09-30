@@ -16,6 +16,28 @@ import { getRedisConfig } from './redisConfig.js';
 import { logger } from '../../shared/utils/logger.js';
 
 /**
+ * CPUs que o processo pode de fato usar, respeitando a cota do container.
+ *
+ * `os.cpus().length` devolve a quantidade de CPUs da MÁQUINA, não as do
+ * container. No stack de produção (2.0 CPU) ele devolvia 4, então o default
+ * pedia 4 workers para 2 CPUs: o dobro do que o processador comporta, com o
+ * custo de 4 vezes a memória por processo. E a memória por processo não é
+ * pequena — a Fase 3.1 mediu 392.9 MB de RSS no pico do `/login`, então 4
+ * workers passariam de 1 GiB.
+ *
+ * `os.availableParallelism()` (Node 18.14+) é a função que olha a cota do
+ * cgroup e devolve 2 no mesmo container. O fallback existe para runtimes
+ * antigos: sem ela, ao menos continuamos com o que o Node antigo sabia.
+ */
+const availableCpus = (): number => {
+  if (typeof os.availableParallelism === 'function') {
+    return os.availableParallelism();
+  }
+
+  return os.cpus().length;
+};
+
+/**
  * Converte `TRUST_PROXY` em algo que o Express aceite como `trust proxy`.
  *
  * Aceita:
@@ -69,8 +91,8 @@ export const serverConfig = {
     enabled: process.env.NODE_ENV === 'production'
       ? process.env.CLUSTER_ENABLED !== 'false'
       : process.env.CLUSTER_ENABLED === 'true',
-    workers: parseEnvNumber(process.env.CLUSTER_WORKERS, os.cpus().length),
-    maxWorkers: parseEnvNumber(process.env.CLUSTER_MAX_WORKERS, os.cpus().length * 2),
+    workers: parseEnvNumber(process.env.CLUSTER_WORKERS, availableCpus()),
+    maxWorkers: parseEnvNumber(process.env.CLUSTER_MAX_WORKERS, availableCpus() * 2),
     respawnDelay: parseEnvNumber(process.env.CLUSTER_RESPAWN_DELAY, 1000)
   },
 

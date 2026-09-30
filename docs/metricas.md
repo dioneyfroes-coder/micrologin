@@ -410,3 +410,56 @@ que garante unicidade mesmo dentro do mesmo milissegundo. Depois do fix, as 300
 requisições simultâneas respondem **300 × 200**. Regressão coberta por
 `tests/unit/redis-cache.test.ts` (50 sondas concorrentes, unicidade de chave e
 de valor), que falha contra a versão antiga da função.
+
+---
+
+## 4. Efeito de 2 workers (Fase 3.2, primeira rodada)
+
+Mesma matriz, agora com `CLUSTER_WORKERS=2` no teto de 2.0 CPU. O objetivo
+não era melhorar número, era **testar duas previsões** que a §3 deixou na
+mesa: workers ajudam o `/refresh` (que perdia vazão) e não ajudam o `/login`
+(limitado pelo argon2id). As duas se confirmaram, e uma delas confirmou o
+pior.
+
+| endpoint | VUs | 1 worker | 2 workers | Δ | p99 1w → 2w |
+| --- | --- | --- | --- | --- | --- |
+| /refresh | 100 | 606.6 rps | **675.7 rps** | +11.4% | 235.5 → 246.4 ms |
+| /refresh | 200 | 592.6 rps | **691.8 rps** | +16.7% | 502.7 → 445.6 ms |
+| /refresh | 400 | 485.2 rps | **541.8 rps** | +11.7% | 2483.1 → 2147.0 ms |
+| /login | 100 | 22.13 rps | 21.96 rps | −0.8% | 4952.3 → 6587.9 ms |
+| /login | 200 | 22.20 rps | 22.07 rps | −0.6% | 5551.1 → 11439.6 ms |
+| /login | 400 | 22.37 rps | 21.51 rps | −3.8% | 18851.4 → 22607.5 ms |
+
+Zero 5xx nas seis linhas. Detalhe honesto: em 2 workers o `/refresh` ainda
+degrada de 691.8 para 541.8 rps entre 200 e 400 VUs (−22%). Workers não
+resolveram o fila; só adiaram o joelho.
+
+### As três leituras
+
+**1. Workers servem para `/refresh`, e é o único caminho que ganhou.** De
+485.2 para 541.8 rps a 400 VUs, e o p99 cai de 2.48 s para 2.15 s. A
+assinatura de "perde vazão" fica mais fraca, não some: com 2 workers a queda
+de 200 → 400 VUs ainda é de 22%. Ou seja, `/refresh` tem um segundo gargalo
+depois do event loop — a suspeita agora vai para as **idas ao Redis por
+refresh** (verificar JWT + `SET NX` + emitir par), que são serializadas por
+worker, não para a CPU.
+
+**2. Workers não servem para `/login`, e o número é categórico.** 21.96 e
+22.07 rps contra 22.13 e 22.20 — dentro do ruído, e o p99 piora (6588 ms
+contra 4952 ms a 100 VUs) porque os dois processos disputam as mesmas 2.0 CPU
+com o argon2id usando a threadpool. Isso fecha a discussão: **o `/login` só
+ganha com mais CPU ou com hash mais barato, nunca com mais processo.** Qualquer
+plano que prometa escalar login com réplicas está errado nesta arquitetura,
+e agora isso está medido em vez de suposto.
+
+**3. E o custo é o que limita os dois: 720 MB de RSS com 2 workers.** No pico
+do `/login` a 400 VUs, os dois processos somam **720.0 MB** — 70% do teto de
+1 GiB — contra 365.8 MB com 1 worker. Heap contava 105.7 MB; o resto é o
+argon2id nativo e o buffer de pool, que não volta ao GC. O `/refresh` a
+400 VUs chegou a 587.4 MB.
+
+É aqui que a §3 estava certa e o default antigo estava errado: `os.cpus().length`
+devolvia **4** no container de 2.0 CPU, e 4 workers a ~370 MB por processo
+seriam ~1.4 GB — **OOM killer garantido**, não um risco teórico. A correção
+para `os.availableParallelism()` em `src/interfaces/config/appConfig.ts` não é
+ajuste fino: é o que impede o serviço de subir e morrer em produção.

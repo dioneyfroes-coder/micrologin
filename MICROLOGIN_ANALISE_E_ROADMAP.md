@@ -341,11 +341,13 @@ Ver `D24` em `docs/SEGURANCA.md`.
 
 **Status: em andamento.** A 3.1 definiu a ordem pela evidência, não por intuição.
 
-- [ ] workers = CPUs disponíveis (não fixo 4 cego): hoje `appConfig` usa `os.cpus().length`, que devolve **4** no container de `cpus: 2.0` (`os.availableParallelism()` devolve 2). Antes de subir workers, lembrar que o pico de 392.9 MB é por processo e `4 × 393 MB` estoura 1 GiB
-- [ ] `/refresh` primeiro: é o único caminho que **perde vazão** em 400 VUs (592.6 → 485.2 rps, p99 2.5 s). Alvos: paralelismo do event loop, número de idas ao Redis por refresh (verificar + revogar + emitir) e teto de `max-old-space` para GC previsível
-- [ ] `/login` e `/register`: **não espere ganho de worker** — 22/s é o argon2id em 2.0 CPU. Ganho aqui vem de `m=19MiB, t=1` (feito) ou de mais CPU, não de mais processo
+- [x] workers = CPUs disponíveis: `os.cpus().length` → `os.availableParallelism()`, que respeita a cota do cgroup. Não é ajuste fino: o valor antigo devolvia 4 workers num container de 2.0 CPU, e a 3.1 mediu ~370 MB de RSS **por processo**, ou seja ~1.4 GB — OOM killer garantido. Regressão em `tests/unit/cluster-config.test.ts` (5 casos, incluindo o fallback para runtimes sem `availableParallelism`), que falha contra a versão antiga
+- [x] **medido o efeito de 2 workers** (`docs/metricas.md` §4): `/refresh` ganha de verdade (+11.7% a 400 VUs: 485.2 → 541.8 rps, p99 2.48 s → 2.15 s) e `/login` não ganha nada (21.96 contra 22.13 rps, p99 piorando). As duas previsões da 3.1 se confirmaram
+- [ ] `/refresh` ainda degrada de 691.8 para 541.8 rps entre 200 e 400 VUs com 2 workers: passou a segunda rodada, mas o fila continua. Próximo alvo são as **idas ao Redis por refresh** (verificar JWT + `SET NX` + emitir par), serializadas por worker, e não a CPU
 - [ ] heap e GC sob carga (v8 max-old-space), timeouts, `keep-alive` no servidor HTTP; atenção ao p50 de 17.7 s do `/register` a 400 VUs contra `SERVER_TIMEOUT` de 30 s
-- [ ] reexecutar `npm run test:capacity` depois do tuning e comparar contra a tabela da §3 do `docs/metricas.md`
+- [ ] **limite de requisições em andamento é o que trava o resto**: com 2 workers o `/login` a 400 VUs soma 720.0 MB de RSS (70% de 1 GiB) e o `/refresh` 587.4 MB. Sem disjuntor de memória, mais workers é OOM; com ele, dá para escolher 2 com folga e entender que 4 é impossível neste teto
+- [x] `/login` e `/register`: confirmado que **não ganham com worker** (22/s é o argon2id em 2.0 CPU). Ganho aqui vem de `m=19MiB, t=1` (feito) ou de mais CPU, nunca de mais processo — qualquer plano de escala horizontal baseado em réplicas para autenticação está errado nesta arquitetura
+- [ ] reexecutar `npm run test:capacity` depois do tuning e comparar contra a §3 e a §4 do `docs/metricas.md`
 - [ ] validar que dois mecanismos de cluster (PM2 e cluster module) nunca ativos juntos (já há `CLUSTER_ENABLED=false` sob PM2 — manter como teste)
 - [ ] limites de requisção em andamento (concurrent requests) como disjuntor de memória (importa também para DDoS, Fase 6)
 
