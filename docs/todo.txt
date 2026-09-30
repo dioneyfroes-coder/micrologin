@@ -7,6 +7,9 @@
 > com [x] foram verificados e/ou corrigidos no código. Itens que dependem
 > de decisão/setup externo (GitHub, ambientes reais, orquestração) seguem
 > abertos com nota.
+>
+> ⚠️ Atualizado em 2026-09-30 (Fase 2.3 — backup da configuração em vigor).
+> Consolidação da linha "rollback" abaixo.
 
 ## Processo / Repositório
 - [x] CI ativo (`.github/workflows/ci-cd.yml`): build + lint + typecheck + testes a cada push/PR. ✅ Corrigido: ESLint usava `--ext` (inválido no ESLint 9), adicionado `npm run typecheck`, build real `npm run build` e tag `type=sha` p/ o job Trivy.
@@ -60,6 +63,7 @@
 - [x] Rollback documentado e **implementado** em `scripts/deploy.sh`: backup automático ANTES do build prod (captura a versão em execução) + `rollback()` restaura a última imagem de backup e sobe o compose de volta. ✅ **Validado ao vivo** no teste acima.
 - [x] Versionamento semântico + changelog: `release.yml` gera changelog automático em tags `v*.*.*` (GitHub Release). Definir cadência de major/minor/patch.
 - [x] Nomes de containers/serviços alinhados: `auth-service-dev` (dev) / `auth-service-prod` (prod), rede `auth-network` — coerentes com o compose e o script de deploy.
+- [x] 🔥 **Rollback agora restaura imagem E configuração** (Fase 2.3): o buraco do rollback da v1 — subir a imagem antiga com o `.env.prod` da versão nova — fechado com `backup-config.sh`/`restore-config.sh`. A fonte da verdade é o **container em execução**, não o disco: o backup lê env/compose/segredos do container por `docker cp` (que perde dono/modo ⇒ registra uid/gid reais, 1001 app / 999 deps, e os reaplica no restore), cifra gpg AES-256 com manifest interno (sha256 de cada arquivo + metadata da imagem p/ `--match-tag`/`--match-image`), `--check` de alerta e `--prune-only`. `deploy.sh` e `remote-deploy.sh` restauram a config **antes** do `docker compose up -d` no rollback; `remote-deploy.sh` exige a passphrase. Drill `scripts/test-config-backup.sh` (mesma topologia de mount de prod; controle negativo edita o env sem redeployar e exige que o restore devolva o valor EM EXECUÇÃO) e gate de CI `tests/unit/config-backup-policy.test.ts`. Runbook em `docs/CONFIG.md` e decisão D23 em `docs/SEGURANCA.md`. `npm run test:config-backup`. Unit: 587 verdes.
 
 ## Observabilidade (por logs — path próprio, sem coletor externo)
 - [x] **`GET /observability`** (path próprio no serviço, protegido por `x-metrics-token`): manifesto JSON que consolida **agregados derivados dos logs de requisição** (janela rolante de 500 em memória — volumes, por status/rota, P50/P95/P99, taxas de erro), health de mongo/redis, estatísticas de segurança e serviço (tag `sha-data`, uptime, memória RSS/heap). Sem coletor externo: a fonte é o mesmo `requestLogger` que alimenta o agregador (`src/application/observability/requestLogAggregator.ts`). ✅ Validado ao vivo em produção (Docker local): 401 sem token / 200 com token; tráfego real refletido (register 201, login 200, 401s, 400 de JSON inválido).
