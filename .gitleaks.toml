@@ -5,11 +5,37 @@ title = "micrologin gitleaks config"
 useDefault = true
 
 # Valores de exemplo/teste que NÃO são segredos reais.
+#
+# Cada entrada aqui é um ponto cego da varredura, e é por isso que cada uma
+# precisa ser justificada e estreita: um valor de exemplo aceito aqui em
+# silêncio pode ser o lugar onde alguém cola a chave de verdade. A regra é
+# inverta — só entra na lista o que é reconhecível como exemplo (placeholder
+# truncado, literal de teste, nome de arquivo), nunca "o arquivo inteiro" nem
+# "o diretório de teste".
+#
+# O passo 3 de `scripts/secret-scan.sh` compensa a folga: ele relê os `.env*`
+# versionados e reclama de valor sem placeholder, que é o jeito de um exemplo
+# virar segredo sem o gitleaks notar.
 [allowlist]
 description = "Payloads de teste e exemplos documentais"
 regexes = [
+  # Literais dos próprios testes. Existem DOIS valores diferentes no
+  # repositório, e a lista precisa dos dois: `security-config.test.ts` usa
+  # "...-with-at-least-32-chars-123" e `jwt-token-service.test.ts` usa
+  # "...-with-at-least-32-characters-for-tests". Uma allowlist com só um dos
+  # dois deixa o CI vermelho com falso positivo, e uma allowlist "corrigida"
+  # para o valor errado esconde o problema em vez de resolvê-lo.
+  '''test-secret-key-with-at-least-32-chars-123''',
   '''test-secret-key-with-at-least-32-characters-for-tests''',
   '''senhaSegura123''',
+  # Chave truncada de propósito na documentação (`MIIE...`): não é chave,
+  # é o texto que mostra o formato esperado.
+  '''MIIE\.\.\.''',
+  # Identificador e nome de arquivo, não material. O gitleaks casa a
+  # allowlist contra o SEGREDO detectado (`jwt.es256.privateKey`), e não
+  # contra a linha inteira, então a entrada precisa ser o valor.
+  '''jwt\.es256\.privateKey''',
+  '''jwt-es256-(private|public)\.pem''',
 ]
 paths = [
   '''.*\.gitleaks\.toml$''',

@@ -212,9 +212,45 @@ marcador errado e o teste de unidade recalcula o SHA-256 por fora.
 
 ## 1.4 Ciclo de vida de chaves e segredos
 
-- [ ] ROTAÇÃO documentada e testada para: JWT ES256 (1.1), pepper (se aceitar), senhas de Mongo/Redis (D18)
-- [ ] guarda da chave privada ES256 fora do repositório (secrets manager/KMS)
-- [ ] gitleaks + audit contínuo já existem; validar que as chaves novas não caem em `.env*` versionado
+**Status: concluída.** Runbook em `docs/ROTACAO.md`, decisão D19 em
+`docs/SEGURANCA.md`.
+
+- [x] ROTAÇÃO documentada e testada para: JWT ES256 (1.1), pepper (se aceitar), senhas de Mongo/Redis (D18)
+- [x] guarda da chave privada ES256 fora do repositório (secrets manager/KMS)
+- [x] gitleaks + audit contínuo já existem; validar que as chaves novas não caem em `.env*` versionado
+
+**O que foi implementado.** `scripts/rotate-dependency-secrets.sh` gira a senha do
+Redis com janela (a ACL passa a aceitar os hashes novo e antigo, e o app continua
+funcionando com a antiga até ser reiniciado) e a do Mongo sem janela, na ordem
+obrigatória servidor → arquivo → app. A escrita é no mesmo inode de propósito:
+o material é montado como *arquivo*, e um `.tmp` + `mv` deixaria o container
+lendo o inode antigo para sempre. Com `--for-container` o material fica no dono
+certo (uid 1001 do app, 999 do Redis) e o próprio usuário que provisionou perde
+o acesso — então o script faz a rotação por um container descartável em vez de
+exigir `sudo`. Os passos 4 e 5 de `test:infra` provam a rotação contra o stack
+no ar: 13 passos no total.
+
+**Correção que a implementação expôs.** Depois de `--for-container`, o arquivo
+de ACL e a senha do Redis são de uid 999 em modo 600 — o usuário do host não
+consegue mais ler nem escrever neles, que é o comportamento desejado e também o
+que fazia a primeira versão do script falhar com `Permission denied`. Rotacionar
+material que você mesmo tornou ilegível é a operação de manutenção mais comum
+de banco, e ela não pode depender de `sudo` num host de CI. Daí a leitura e a
+escrita passarem por um container descartável como root, com o segredo entrando
+por stdin: em `argv` ele apareceria no `ps` de qualquer usuário da máquina, que é
+exatamente o que D18 veio eliminar.
+
+**Defeito de fundo que o item do gitleaks revelou.** O gitleaks rodava no CI
+desde a primeira entrega e estava **vermelho**: 9 achados, todos falsos, porque a
+allowlist do repositório citava um literal de teste que não existe no código e por
+isso não cobria os dois que existem. Um scanner que grita lobo é desligado. Agora
+`npm run test:secrets` é o mesmo comando no CI e na máquina, com três
+checagens: gitleaks no conteúdo e no histórico, material no índice do git
+(`git ls-files`, porque `.gitignore` não protege contra `git add -f`) e valor de
+credencial nos `.env*` versionados. A terceira fechou um buraco da própria
+checagem: ela usava `grep -nE '^[A-Z...]'`, e o `-n` prefixa `148:` na linha, o
+que quebra a âncora — o portão não achava nada e nunca falhava, nem com um
+segredo plantado. D19 registra isso.
 
 ---
 
@@ -243,12 +279,13 @@ Redis = tokens revogados voltam a valer e rate limit reseta** (controle de
 sessão amnésico até expirar). Decisões:
 
 - [ ] persistência explícita: AOF `fsync=everysec` + RDB snapshot no compose prod (hoje só AOF default)
-- [ ] política quando Redis some de vez (falha de disco): fail-closed derruba revogação? ou religa e aceita janela curta? decidir `D19`
+- [ ] política quando Redis some de vez (falha de disco): fail-closed derruba revogação? ou religa e aceita janela curta? decidir `D20`
 - [ ] backup de Redis **intencionalmente não é o objetivo primário**: re-registrar sessões revogadas é inviável; documentar que o Redis é regenerável (login novo) e o Mongo é a fonte de verdade
 - [ ] snapshots de Redis (por fora) só para diagnóstico forense, não para restore de serviço
 
 **Definição de pronto:** RPO/RTO documentados separando Mongo (restaurável do
-dump) de Redis (regenerável por design); decisão D19 registrada.
+dump) de Redis (regenerável por design); decisão D20 registrada (D19 foi usada pela
+varredura de segredo, em 1.4).
 
 ## 2.3 Backup da configuração e da versão em vigor
 

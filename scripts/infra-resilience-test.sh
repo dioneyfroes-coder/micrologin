@@ -28,6 +28,11 @@
 # isso o teste conecta anônimo e com senha errada em cada serviço real, e mostra
 # que o container da aplicação lê as próprias senhas mas não a do root do Mongo.
 #
+# E prova a Fase 1.4: as duas senhas das dependências giram contra o stack no ar.
+# A do Redis gira com janela (a antiga e a nova autenticam ao mesmo tempo, e o
+# app não sente nada); a do Mongo gira sem janela, com a ordem obrigatória
+# servidor → arquivo → app, e o login continua funcionando nas duas.
+#
 # Uso:
 #   scripts/infra-resilience-test.sh [--keep] [--skip-build]
 #
@@ -86,7 +91,7 @@ BLUE='\033[0.34m'
 NC='\033[0m'
 
 STEP=0
-TOTAL_STEPS=11
+TOTAL_STEPS=13
 
 log_step()  { STEP=$((STEP + 1)); echo -e "\n${BLUE}[${STEP}/${TOTAL_STEPS}] $1${NC}"; }
 log_info()  { echo -e "${BLUE}ℹ️  $1${NC}"; }
@@ -317,6 +322,22 @@ restart_count() {
     docker inspect -f '{{.RestartCount}}' micrologin-resilience-app 2>/dev/null || echo "?"
 }
 
+# Le um segredo de dentro do container que tem permissão para ele.
+#
+# Os arquivos de material são do uid 1001 (app) ou 999 (dependência), em modo
+# 640/600: quem provisionou no host não é dono nem entra no grupo, e `cat` no host
+# devolve "Permission denied". A leitura é feita de dentro do container que vai
+# usar a credencial — que é quem precisa conseguir ler, e é o que o teste quer
+# afirmar. A senha do root do Mongo só é legível no container do Mongo, que roda
+# como o mesmo uid 999; no app ela é recusada (e o passo 3 mostra que é).
+read_app_secret() {
+    docker exec micrologin-resilience-app cat "/run/secrets/deps/$1"
+}
+
+read_mongo_root_password() {
+    docker exec micrologin-resilience-mongo cat /run/secrets/deps/mongo-root-password | tr -d '\n'
+}
+
 is_running() {
     [ "$(docker inspect -f '{{.State.Running}}' micrologin-resilience-app 2>/dev/null || echo false)" = "true" ]
 }
@@ -455,7 +476,113 @@ fi
 log_pass "app lê só as próprias senhas; a do root do Mongo fica fora do alcance dele"
 
 # ============================================================
-# 4. Redis cai
+# 4. Rotação das senhas das dependências (Fase 1.4)
+# ============================================================
+log_step "Rotacionar a senha do Redis sem derrubar quem já está conectado"
+
+# A rotação usa o mesmo script que vai para produção. O ponto não é que a senha
+# nova funciona: é que a janela exista. Sem ela, trocar a senha exigiria parar o
+# Redis e o app na ordem certa, e o instante em que nenhuma credencial vale
+# viraria uma janela de 503.
+REDIS_PASSWORD_BEFORE="$(read_app_secret redis-password)"
+
+bash "${SCRIPT_DIR}/rotate-dependency-secrets.sh" "$RESILIENCE_DEPS_DIR" \
+    --for-container --skip-verify >/dev/null
+
+REDIS_PASSWORD_AFTER="$(read_app_secret redis-password)"
+if [ "$REDIS_PASSWORD_BEFORE" = "$REDIS_PASSWORD_AFTER" ]; then
+    fail "a rotação reescreveu a mesma senha do Redis: nada foi rotacionado"
+fi
+
+# O Redis só relê a ACL quando o processo sobe. O arquivo é montado como
+# arquivo (mesmo inode), então o restart já enxerga a ACL nova.
+"${COMPOSE[@]}" restart redis >/dev/null
+
+# As duas credenciais têm de valer ao mesmo tempo. A antiga é a que o processo
+# do app ainda está usando em memória agora — se ela parasse de valer, a rotação
+# derrubaria o serviço no exato instante em que deveria ser transparente.
+redis_auth_ok() {
+    local password="$1" out
+    out="$(printf 'AUTH auth-service %s\nPING\n' "$password" \
+        | docker exec -i micrologin-resilience-redis redis-cli --no-auth-warning 2>&1 || true)"
+    case "$out" in *PONG*) return 0 ;; *) return 1 ;; esac
+}
+
+redis_auth_ok "$REDIS_PASSWORD_BEFORE" \
+    || fail "a senha anterior do Redis parou de valer com a janela aberta: rotacionar derrubaria o serviço"
+redis_auth_ok "$REDIS_PASSWORD_AFTER" \
+    || fail "a senha nova do Redis não autentica depois da rotação"
+log_pass "janela aberta: senha nova e anterior autenticam no mesmo Redis"
+
+# O app continua no ar com a credencial antiga em memória: é a prova de que a
+# janela é transparente, e não só que o arquivo ficou bonito.
+wait_for "$WAIT_RECOVER_TIMEOUT" "o app voltar a ver o Redis saudável" redis_reported_healthy
+login_works || fail "o app deixou de autenticar logo após a rotação, ainda com a janela aberta"
+log_pass "app no ar, com a senha antiga em memória, segue autenticando"
+
+# Agora o app passa a usar a senha nova. É o passo que fecha a janela com
+# segurança: a partir daqui a credencial antiga já não é mais necessária.
+"${COMPOSE[@]}" restart auth-service >/dev/null
+wait_for "$WAIT_READY_TIMEOUT" "readiness depois de reiniciar com a senha nova" is_ready
+wait_for "$WAIT_RECOVER_TIMEOUT" "login com a senha nova do Redis" login_works
+log_pass "app reiniciado autenticando com a senha nova"
+
+# ============================================================
+# 5. Rotação do Mongo e fechamento da janela
+# ============================================================
+log_step "Rotação da senha do Mongo e o fim da janela do Redis"
+
+# O Mongo não aceita duas senhas por usuário: `changeUserPassword` invalida a
+# anterior no mesmo instante. Por isso a ordem é obrigatória — servidor, arquivo,
+# app — e o app só sobe depois que o servidor já conhece a senha nova.
+MONGO_PASSWORD_BEFORE="$(read_app_secret mongo-app-password)"
+
+bash "${SCRIPT_DIR}/rotate-dependency-secrets.sh" "$RESILIENCE_DEPS_DIR" \
+    --mongo-only --for-container --skip-verify >/dev/null
+
+MONGO_PASSWORD_AFTER="$(read_app_secret mongo-app-password)"
+if [ "$MONGO_PASSWORD_BEFORE" = "$MONGO_PASSWORD_AFTER" ]; then
+    fail "a senha do app no Mongo não foi rotacionada"
+fi
+
+MONGO_ROOT_PASSWORD="$(read_mongo_root_password)"
+
+# O usuario vive no banco `admin` (e e ai que o role `readWrite` sobre o banco da
+# aplicacao e concedido) — ver docker/mongo/10-app-user.sh. Sem o
+# getSiblingDB, `db` apontaria para `test` e a troca falharia com "user not
+# found" num banco onde o usuario nao esta.
+if ! MONGO_CHANGE_OUT="$(docker exec micrologin-resilience-mongo mongosh --quiet --host 127.0.0.1 \
+    --username root --password "$MONGO_ROOT_PASSWORD" --authenticationDatabase admin \
+    --eval "db.getSiblingDB('admin').changeUserPassword('auth-service', '$MONGO_PASSWORD_AFTER')" 2>&1)"; then
+    echo "$MONGO_CHANGE_OUT" >&2
+    fail "changeUserPassword falhou: a rotação do Mongo não chegou ao servidor"
+fi
+
+"${COMPOSE[@]}" restart auth-service >/dev/null
+wait_for "$WAIT_READY_TIMEOUT" "readiness depois da rotação do Mongo" is_ready
+wait_for "$WAIT_RECOVER_TIMEOUT" "login com a senha nova do Mongo" login_works
+log_pass "app autenticando com a senha nova do Mongo (servidor trocado antes do app subir)"
+
+# Fechar a janela: a senha antiga do Redis deixa de valer, e o serviço segue
+# funcionando na senha nova. Se a janela fechasse tarde demais, a credencial
+# antiga continuaria um caminho vivo para o cache e para a blacklist.
+bash "${SCRIPT_DIR}/rotate-dependency-secrets.sh" "$RESILIENCE_DEPS_DIR" \
+    --close-window --for-container --skip-verify >/dev/null
+"${COMPOSE[@]}" restart redis >/dev/null
+
+if redis_auth_ok "$REDIS_PASSWORD_BEFORE"; then
+    fail "a janela fechou mas a senha anterior do Redis continua autenticando"
+fi
+redis_auth_ok "$REDIS_PASSWORD_AFTER" \
+    || fail "a janela fechou e derrubou a senha que o app está usando"
+log_pass "janela fechada: a senha antiga foi recusada e a nova continua valendo"
+
+wait_for "$WAIT_RECOVER_TIMEOUT" "o app se recompor com a janela fechada" redis_reported_healthy
+login_works || fail "o app deixou de autenticar depois do fechamento da janela"
+log_pass "app autenticando de ponta a ponta depois das duas rotações"
+
+# ============================================================
+# 6. Redis cai
 # ============================================================
 log_step "Derrubando o Redis com a aplicação no ar"
 
@@ -469,7 +596,7 @@ RESTARTS_BEFORE=$(restart_count)
 log_pass "health check parou de dizer 'Redis disponível' com o Redis no chão"
 
 # ============================================================
-# 5. O comportamento sob Redis fora (fail-closed)
+# 7. O comportamento sob Redis fora (fail-closed)
 # ============================================================
 log_step "Redis fora: o serviço se recusa a autenticar, e diz por quê"
 
@@ -515,7 +642,7 @@ log_pass "token pré-queda não é aceito (não vira fail-open na prática)"
 log_pass "container não reiniciou (RestartCount segue ${RESTARTS_BEFORE})"
 
 # ============================================================
-# 6. Redis volta
+# 8. Redis volta
 # ============================================================
 log_step "Religando o Redis: o app precisa voltar sozinho"
 
@@ -538,7 +665,7 @@ wait_for "$WAIT_RECOVER_TIMEOUT" "rate limiting voltar ao armazenamento comparti
 log_pass "rate limiting voltou ao Redis (limite compartilhado entre processos)"
 
 # ============================================================
-# 7. Estado restaurado
+# 9. Estado restaurado
 # ============================================================
 log_step "Autenticação completa depois da queda"
 
@@ -554,7 +681,7 @@ expect_status 200 "logout após recuperação"
 log_pass "login, refresh e logout funcionando novamente"
 
 # ============================================================
-# 8. Restart do container
+# 10. Restart do container
 # ============================================================
 log_step "Reiniciando o container da aplicação"
 
@@ -575,7 +702,7 @@ wait_for "$WAIT_READY_TIMEOUT" "readiness após restart" is_ready
 log_pass "readiness 200 depois do restart"
 
 # ============================================================
-# 9. O serviço volta a autenticar
+# 11. O serviço volta a autenticar
 # ============================================================
 log_step "O container reiniciado autentica de verdade"
 
@@ -588,7 +715,7 @@ SMOKE_BASE="$BASE_URL" bash "${SCRIPT_DIR}/smoke-test.sh" "$BASE_URL" \
 log_pass "smoke test completo passou na instância reiniciada"
 
 # ============================================================
-# 10. Segundo restart, com o Redis fora
+# 12. Segundo restart, com o Redis fora
 # ============================================================
 log_step "Reiniciar o container com o Redis fora não pode ser deadlock"
 
@@ -608,7 +735,7 @@ wait_for "$WAIT_RECOVER_TIMEOUT" "o container novo reconectar sozinho ao Redis" 
 log_pass "processo novo religou a saúde do Redis sozinho"
 
 # ============================================================
-# 11. Diagnóstico
+# 13. Diagnóstico
 # ============================================================
 log_step "Diagnóstico final"
 
@@ -629,4 +756,6 @@ echo -e "${GREEN}   • Redis voltou: autenticação e rate limit compartilhado 
 echo -e "${GREEN}   • Container reiniciou: saiu rápido e voltou a autenticar${NC}"
 echo -e "${GREEN}   • Dependências autenticadas: anônimo e senha errada recusados${NC}"
 echo -e "${GREEN}   • App lê só as próprias senhas; a do root do Mongo fica fora do alcance${NC}"
+echo -e "${GREEN}   • Rotação do Redis: janela com as duas senhas, depois só a nova${NC}"
+echo -e "${GREEN}   • Rotação do Mongo: servidor trocado antes do app subir, sem quebrar o login${NC}"
 echo -e "${GREEN}══════════════════════════════════════════════════════════════${NC}"

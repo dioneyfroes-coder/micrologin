@@ -41,6 +41,7 @@ Projeto de portfólio em Node.js para demonstrar uma API de autenticação com a
 | --- | --- |
 | [`docs/ARQUITETURA.md`](docs/ARQUITETURA.md) | camadas, ordem dos middlewares, fluxo de login/refresh/logout e onde o estado mora |
 | [`docs/SEGURANCA.md`](docs/SEGURANCA.md) | threat model, riscos aceitos e log de decisões (o que foi decidido e o que foi recusado) |
+| [`docs/ROTACAO.md`](docs/ROTACAO.md) | rotação da chave ES256, do pepper e das senhas de Mongo/Redis, e onde o material privado deve viver |
 | [`docs/DASHBOARD_SEGURANCA_GUIA.md`](docs/DASHBOARD_SEGURANCA_GUIA.md) | como usar `GET /security/*` e o dashboard |
 | [`MICROLOGIN_ANALISE_E_ROADMAP.md`](MICROLOGIN_ANALISE_E_ROADMAP.md) | análise e plano de fases executado |
 
@@ -238,7 +239,7 @@ Principais campos:
 - `SECURITY_DASHBOARD_TOKEN` (obrigatório em produção; envia-se no header `X-Security-Token`)
 - `RATE_LIMIT_*_POINTS` (pontos por janela)
 
-Nenhuma credencial real fica versionada: apenas exemplos (`.env.example` e `.env.prod.example`) são commitados; `.env` e `.env.prod` ficam no `.gitignore`. Os segredos das dependências são gerados por `scripts/generate-dependency-secrets.sh <dir> --for-container` (Mongo/Redis) e `scripts/generate-jwt-keys.sh <dir> <kid> --for-container` (ES256), e nunca entram no repositório.
+Nenhuma credencial real fica versionada: apenas exemplos (`.env.example` e `.env.prod.example`) são commitados; `.env` e `.env.prod` ficam no `.gitignore`. Os segredos das dependências são gerados por `scripts/generate-dependency-secrets.sh <dir> --for-container` (Mongo/Redis) e `scripts/generate-jwt-keys.sh <dir> <kid> --for-container` (ES256), e nunca entram no repositório. A rotação é `scripts/rotate-dependency-secrets.sh <dir> --for-container` (Redis com janela, Mongo com `--mongo-only`), e a ordem de cada troca está em [`docs/ROTACAO.md`](docs/ROTACAO.md).
 
 ## Testes
 
@@ -248,6 +249,7 @@ npm run test:unit           # suítes unitárias
 npm run test:integration    # suíte de integração
 npm run test:e2e            # E2E contra MongoDB e Redis reais (sobe via compose)
 npm run test:infra          # resiliência de infraestrutura (derruba Redis e container de verdade)
+npm run test:secrets        # varredura de segredo: gitleaks + material/.env versionado
 npm run test:coverage       # cobertura (text + html + lcov)
 npm run lint                # ESLint em src/ e tests/
 ```
@@ -260,6 +262,11 @@ observando o serviço por HTTP:
 credenciais → Redis recusa anônimo (NOAUTH) e senha errada (WRONGPASS),
               Mongo recusa leitura anônima, e o container do app lê as próprias
               senhas mas não a do root do Mongo
+rotação     → a senha do Redis gira com janela (a antiga e a nova autenticam no
+              mesmo Redis, e o app que estava no ar não sente nada), o app
+              reinicia com a nova, e a janela fecha: a antiga é recusada.
+              A do Mongo gira sem janela, na ordem servidor → arquivo → app, e
+              o login continua funcionando
 Redis para  → 503 REVOCATION_UNAVAILABLE no login (não 401, não 429),
               liveness 200, readiness 200 e degradado, container sem restart
 Redis volta → autenticação e rate limit compartilhado restaurados sem
@@ -268,9 +275,18 @@ restart     → o container encerra em ~1s e volta a autenticar, mesmo com o
               Redis fora (o shutdown não depende de dependência disponível)
 ```
 
-O pipeline de CI usa `test:unit:fast`, `test:integration:app` e
-`test:coverage:fast` (com `--runInBand` para CI). O `test:infra` fica de fora do
-CI de propósito: ele derruba serviço de verdade, e o trabalho disso é provar que
+`test:secrets` (`scripts/secret-scan.sh`) roda as três checagens que não são a
+mesma coisa: gitleaks no conteúdo **e no histórico** (é o que acha segredo pelo
+formato, inclusive no que já foi apagado), material de segredo no índice do git
+(`git ls-files` — o `.gitignore` não protege contra `git add -f`), e valor de
+credencial em `.env*` versionado, que tem que ser vazio, um caminho de arquivo ou
+um placeholder. É o mesmo comando no CI e local, e é ele que impede a chave nova
+de acabar num `.env` commitado. A rotação de chaves e senhas está descrita em
+[`docs/ROTACAO.md`](docs/ROTACAO.md).
+
+O pipeline de CI usa `test:unit:fast`, `test:integration:app`,
+`test:coverage:fast` (com `--runInBand` para CI) e `test:secrets`. O `test:infra`
+fica de fora do CI de propósito: ele derruba serviço de verdade, e o trabalho disso é provar que
 a versão que você está para implantar reage como deve — rodado localmente ou no
 host de deploy, antes do corte.
 

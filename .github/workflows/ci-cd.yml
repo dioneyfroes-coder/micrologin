@@ -47,10 +47,12 @@ jobs:
         if: github.event_name == 'pull_request'
         run: npx --no -- commitlint --from ${{ github.event.pull_request.base.sha }} --to ${{ github.event.pull_request.head.sha }}
 
-      - name: 🕵️ Secret scanning (gitleaks)
-        run: |
-          docker run --rm -v "$(pwd):/repo" -w /repo \
-            ghcr.io/gitleaks/gitleaks:v8.24.0 detect --source /repo --verbose
+      - name: 🕵️ Secret scanning (gitleaks + material versionado)
+        # O mesmo comando da máquina de desenvolvimento. A versão anterior rodava
+        # o gitleaks avulso aqui e em nenhum outro lugar, e foi por isso que a
+        # allowlist desatualizada passou: um passo que só existe no CI não tem
+        # ninguém rodando contra ele antes do push.
+        run: npm run test:secrets
 
       - name: 🎨 ESLint check
         run: npx eslint src/ tests/ --format stylish

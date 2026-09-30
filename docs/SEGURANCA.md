@@ -462,6 +462,51 @@ anônimo e com senha errada em cada serviço real: Redis responde `NOAUTH` e
 senha do root. Um health check verde não provaria nada disso — o app estaria
 saudável com o banco aberto.
 
+### D19 — A verificação de segredo é um comando só, e ela precisa falhar
+
+O gitleaks já rodava no CI desde a primeira entrega. Rodando de verdade, ele
+encontrou **9 achados** — todos falsos: um literal de teste
+(`test-secret-key-with-at-least-32-chars-123`), um identificador
+(`privateKeyPem: jwt.es256.privateKey`), nomes de arquivo de chave e o
+placeholder truncado (`MIIE...`) da documentação. A causa não era o gitleaks: a
+allowlist do repositório citava um valor de teste que não existe no código, e
+por isso não cobria nenhum dos dois literais de teste que existem. Ou seja, o
+pipeline estava vermelho, e vermelho por ruído é o caminho mais curto para
+alguém desligar o scanner.
+
+*Um scanner que grita lobo é desligado; um que nunca grita não é usado.* Então a
+regra é: a allowlist existe, é estreita e justifica cada entrada no comentário
+— placeholder truncado, literal de teste, nome de arquivo, identificador. Nenhum
+caminho de arquivo e nenhum diretório inteiro é autorizado, porque aí qualquer
+segredo colado ali vira invisível. O que sobra é o `--config` explícito em toda
+execução, inclusive na local: o gitleaks procura a configuração no diretório de
+trabalho, e sem isso a varredura de mesa de trabalho acusa o que o CI não acusa
+(o inverso também é verdade, e foi o que aconteceu aqui).
+
+*`npm run test:secrets` é a verificação.* Um único comando, o mesmo no CI e na
+máquina, com três checagens que falham de jeitos diferentes:
+
+1. **gitleaks** no conteúdo e no histórico — é o que acha segredo pelo
+   *formato*, inclusive dentro de arquivo que ninguém achou que fosse material,
+   e inclusive no que já foi apagado (apagar o arquivo não apaga o blob).
+2. **arquivos de material no índice** (`git ls-files`, não o disco) — chave,
+   certificado, ACL ou diretório de segredo versionado. Aqui não há formato a
+   reconhecer: o `.gitignore` não protege contra `git add -f`, e o diretório de
+   chaves precisa existir localmente para o app rodar sem ser um problema.
+3. **conteúdo dos `.env*` versionados** — só as variáveis cujo *nome* é de
+   credencial podem ter valor, e esse valor tem que ser vazio, um caminho de
+   arquivo (`*_PATH`) ou um placeholder. É a folha que cobre a folga da
+   allowlist: um exemplo que virou segredo de verdade é barrado aqui, porque o
+   nome dele continua legítimo.
+
+A terceira checagem nasceu de um defeito da própria checagem: ela usava
+`grep -nE '^[A-Z...]'`, e o `-n` prefixa `148:` na linha, o que quebra a âncora
+`^`. O resultado era um portão que não achava nada e portanto nunca falhava —
+inclusive quando plantamos um segredo de verdade no `.env.example` para testá-lo.
+A versão que está no repositório passa com o arquivo atual e falha com o
+segredo plantado; os dois caminhos foram verificados, porque a diferença entre
+eles é a única coisa que faz o portão valer alguma coisa.
+
 ---
 
 ## 7. O que este serviço não é
