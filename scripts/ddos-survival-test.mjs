@@ -104,22 +104,63 @@ const measureLivenessP95 = async(baseUrl, samples = 20) => {
   return percentile(durations);
 };
 
+/**
+ * Identidade de uma réplica, lida do `/observability`.
+ *
+ * Por que não o `pid` do `/liveness`: PID é um número por namespace de
+ * container, não um identificador de processo na máquina. Medido na stack de
+ * três réplicas, duas delas responderam `pid: 8` — o mesmo número em
+ * containers diferentes. Contar PIDs distintos mede quantos *números* o proxy
+ * escolheu, não quantas réplicas ele alcançou, e a contagem vira acaso:
+ * passou em uma execução e reprovou na outra, sem nada ter mudado no serviço.
+ *
+ * `service.instance_id` é o campo que a Fase 4.1 criou para isto: `INSTANCE_ID`
+ * quando provisionado, o hostname como fallback. Duas réplicas do mesmo
+ * Compose têm hostnames diferentes, então o número só cresce com réplicas
+ * reais.
+ *
+ * @returns o identificador, ou `undefined` quando a resposta não traz
+ *   identidade utilizável (o chamador conta só o que reconheceu como réplica).
+ */
+export const readReplicaIdentity = (body) => {
+  let parsed;
+  try {
+    parsed = typeof body === 'string' ? JSON.parse(body) : body;
+  } catch {
+    return undefined;
+  }
+  const identity = parsed?.service?.instance_id;
+  return typeof identity === 'string' && identity.length > 0 ? identity : undefined;
+};
+
+/**
+ * Agrega as respostas em um conjunto de réplicas distintas.
+ *
+ * A deduplicação mora aqui, e não no laço de rede, porque é a parte que já
+ * esteve errada: o conjunto precisa contar *réplicas*, e identificar por PID
+ * produzia um número que crescia por acaso. Um teste que só exercita
+ * `readReplicaIdentity` não pegaria uma troca de volta para `pid` no ponto de
+ * uso, então a agregação também é função testável.
+ */
+export const collectReplicaIdentities = (bodies) => new Set(
+  (Array.isArray(bodies) ? bodies : [])
+    .map(readReplicaIdentity)
+    .filter(identity => identity !== undefined)
+);
+
 const observeReplicaPids = async(baseUrl, samples = 30) => {
-  const pids = new Set();
+  const bodies = [];
   for (let index = 0; index < samples; index++) {
-    const response = await request(baseUrl, '/liveness', {
+    const response = await request(baseUrl, '/observability', {
       headers: { Connection: 'close' },
       agent: false
     });
     if (response.status !== 200) {
-      throw new Error(`liveness durante identificação de réplicas respondeu ${response.status}`);
+      throw new Error(`observability durante identificação de réplicas respondeu ${response.status}`);
     }
-    const body = JSON.parse(response.body);
-    if (Number.isInteger(body.pid)) {
-      pids.add(body.pid);
-    }
+    bodies.push(response.body);
   }
-  return pids;
+  return collectReplicaIdentities(bodies);
 };
 
 const readRestartCounts = (composeArgs) => {
@@ -277,11 +318,29 @@ const runK6Flood = ({ baseUrl, username, password, summaryPath }) => {
   }
 };
 
+/**
+ * Lê as métricas do `--summary-export` do k6.
+ *
+ * Por que `.count` e não `.values.count`: o `--summary-export` grava a métrica
+ * como `{ rate, count }`, direto. O wrapper `values` pertence ao JSON do
+ * dashboard web do k6, que é outro formato. Ler `values.count` aqui não gerava
+ * erro — gerava `undefined`, que o `?? 0` convertia em zero, e as três
+ * asserções que dependem dela viravam código morto: `rateLimited` nunca via
+ * um 429 (a suíte reprovava mesmo com 3848 deles) e, pior, uma falha real de
+ * liveness ou um 5xx durante o flood passavam sem reclamar.
+ */
+export const parseK6Summary = (summary) => {
+  const parsed = typeof summary === 'string' ? JSON.parse(summary) : summary;
+  const count = name => Number(parsed?.metrics?.[name]?.count ?? 0);
+  return {
+    rateLimited: count('ddos_rate_limited'),
+    livenessFailures: count('ddos_liveness_failures'),
+    serverErrors: count('ddos_server_errors')
+  };
+};
+
 const assertK6Summary = (summaryPath) => {
-  const summary = JSON.parse(readFileSync(summaryPath, 'utf8'));
-  const rateLimited = summary.metrics?.ddos_rate_limited?.values?.count ?? 0;
-  const livenessFailures = summary.metrics?.ddos_liveness_failures?.values?.count ?? 0;
-  const serverErrors = summary.metrics?.ddos_server_errors?.values?.count ?? 0;
+  const { rateLimited, livenessFailures, serverErrors } = parseK6Summary(readFileSync(summaryPath, 'utf8'));
   if (rateLimited < 1) {
     throw new Error('k6 não observou 429; os limites de borda/rate limit não engajaram');
   }
