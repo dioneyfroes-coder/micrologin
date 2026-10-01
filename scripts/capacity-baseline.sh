@@ -249,14 +249,20 @@ teardown() {
 # ------------------------------------------------------------------
 log_step "1/4 · Subindo o servico com o orcamento de medicao"
 
+# O trap entra ANTES do primeiro `compose up`, e nao depois da readiness. O
+# motivo e concreto: se o container nao sobe ou nao fica pronto -- um
+# `NODE_OPTIONS` invalido, por exemplo -- o `fail` sai antes de um trap
+# instalado mais abaixo, e o servico fica parado no orcamento de medicao, ou
+# em crash-loop, ate alguem lembrar de rodar o teardown a mao. A medicao nao
+# pode custar ao ambiente o estado de producao.
+trap teardown EXIT
+
 FIRST_WORKERS="${WORKERS_LIST%%,*}"
 compose "$FIRST_WORKERS" up -d --force-recreate "$SERVICE" >/dev/null
 CID="$(compose "$FIRST_WORKERS" ps -q "$SERVICE")"
 [ -n "$CID" ] || fail "o container do $SERVICE nao subiu"
 wait_ready "$CID" || fail "$SERVICE nao ficou pronto"
 log_pass "$(node_processes "$CID") processo(s) node, /readiness 200"
-
-trap teardown EXIT
 
 # ------------------------------------------------------------------
 log_step "2/4 · Semeando o pool de login (${USER_COUNT} usuarios, fora de medicao)"

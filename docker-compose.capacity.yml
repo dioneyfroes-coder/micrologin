@@ -38,6 +38,12 @@ services:
       # Vazio por padrao. A Fase 3.2 e que passa a medir
       # `--max-old-space-size` por worker; sem valor, o Node escolhe pelo
       # cgroup.
+      #
+      # Atencao ao depurar com isto: o Node RECUSA `--prof` em NODE_OPTIONS
+      # ("--prof is not allowed in NODE_OPTIONS") e sai antes de o container
+      # ficar pronto, o que deixa o servico em crash-loop. Para perfil de CPU
+      # use `--cpu-prof`, que o Node aceita por aqui; o profiler classico
+      # (`--prof` + `node --prof-process`) exigiria mudar o `command:`.
       NODE_OPTIONS: "${CAPACITY_NODE_OPTIONS:-}"
 
       # --- Orcamento de trafego só durante a medicao ---
