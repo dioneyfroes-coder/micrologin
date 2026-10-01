@@ -369,7 +369,7 @@ const waitForStack = async(baseUrl, timeoutMs = 180000) => {
   let lastError;
   while (Date.now() < deadline) {
     try {
-      await checkLiveness(baseUrl, 'readiness da borda');
+      await checkReadiness(baseUrl, 'readiness da borda');
       return;
     } catch (error) {
       lastError = error;

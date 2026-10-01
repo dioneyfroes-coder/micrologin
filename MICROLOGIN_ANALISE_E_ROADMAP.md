@@ -482,12 +482,12 @@ hosts remotos são recusados. O resumo coleta liveness p95, 429/5xx, Slowloris,
 payloads, `RestartCount` e pico de memória por container. A suite não foi
 executada neste host.
 
-Script novo estilo `test:infra` (`scripts/ddos-survival-test.sh` + compose
-isolado) que dispara e mede:
+`npm run test:ddos` usa `scripts/ddos-survival-test.mjs`,
+`k6/ddos-survival.js` e o perfil `ddos` de `docker-compose.resilience.yml`:
 
 | Ataque | Ferramenta | Assertiva |
 | --- | --- | --- |
-| A5 flood HTTP em /login, /refresh, /register | k6 (`k6/load-test.js` com cenário de sobrecarga) | p95 dentro do limite após rate limit engajar; 429s; **liveness 200 durante o ataque**; RestartCount 0 |
+| A5 flood HTTP em /login, /refresh, /register | k6 (`k6/ddos-survival.js`) | p95 dentro do limite após rate limit engajar; 429s; **liveness 200 durante o ataque**; RestartCount 0 |
 | A4 força bruta distribuída (muitos IPs) | k6 com `X-Forwarded-For` variado atrás do proxy | limite global (Redis) segura: nº de tentativas aceitas ≤ baseline; sem vazamento via roll-over de IP |
 | A7 payload oversized / malformados | script HTTP com corpos 10MB+, JSON inválido em lote | 400/413, sem 5xx, sem pico de memória RSS, liveness 200 |
 | A6 slowloris | script Node de sockets parciais (sem dependência externa) | conexões morrem por timeout (proxy), app continua respondendo; sem esgotar FD |
@@ -504,8 +504,8 @@ saudável sem intervenção manual.
 
 ## 6.3 O que NÃO é objetivo do teste DDoS
 
-- [ ] simular ataques de rede (SYN flood de verdade, UDP/amplificação): são da borda do provedor/CDN, não do serviço. Se entrar CDN, documentar.
-- [ ] prometer que o app sozinho segura botnet gigante: a contenção é em camadas; o teste mede **o serviço não ser o elo que cai primeiro**.
+- [x] SYN flood real e UDP/amplificação ficam na borda do provedor/CDN; não são simulados pelo teste HTTP
+- [x] não prometer resistência a botnet gigante: o teste mede o limite operacional deste serviço em camadas
 
 ---
 
