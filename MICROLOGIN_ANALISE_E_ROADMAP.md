@@ -360,7 +360,7 @@ Ver `D24` em `docs/SEGURANCA.md`.
 
 ## 4.1 Proxy na frente (nginx) e réplicas sem `container_name`
 
-**Status: pendente (era a "Fase 7 só depois" da v1 — agora é o objetivo).**
+**Status: configuração implementada em 2026-10-01; prova de Docker pendente.**
 
 ```text
        ┌─ auth-1 ─┐
@@ -368,13 +368,18 @@ client→ nginx ────┼─ auth-2 ── Redis (compartilhado)
         (TLS)     └─ auth-3 ── Mongo (single node: ver 4.3)
 ```
 
-- [ ] `auth-proxy` (nginx) no `docker-compose.prod.yml`: terminação TLS, `limit_req`/`limit_conn` (herda Fase 6)
-- [ ] remover `container_name` e bind fixo da porta do `auth-service`; apenas o proxy publica porta
-- [ ] `x-forwarded-for` confiável: `TRUST_PROXY` = faixa do proxy no prod (hoje default false — decisão consciente)
-- [ ] `upstream` com `max_fails`/`fail_timeout` usando `/readiness` como health de participação
+- [x] `auth-proxy` (nginx) no `docker-compose.prod.yml`: TLS, `limit_req`/`limit_conn`, body/header timeouts e tamanho máximo
+- [x] remover o binding de host do `auth-service`; apenas o proxy publica HTTP redirect e HTTPS
+- [x] `X-Forwarded-For` sobrescrito pelo nginx com o peer real; `TRUST_PROXY=1` no serviço
+- [x] upstream com DNS dinâmico para réplicas e `max_fails`/`fail_timeout` passivo
 - [ ] provar `docker compose up -d --scale auth-service=3` com smoke + `test:infra` verdes
 - [ ] rate limit global confirmado via Redis entre réplicas (uma réplica vê o consumo da outra); se Redis cai → fallback por processo **documentado como degradação explícita**
 - [ ] `/observability` é por réplica: expor `instance_id` no snapshot e documentar que a visão global vem do sink (`authEventSink`), não do agregador local
+
+**Limite conhecido:** nginx OSS não faz health check ativo por `/readiness`; o
+Compose marca cada réplica com esse healthcheck, enquanto o upstream nginx usa
+falhas passivas de conexão/resposta. A remoção por readiness e o scale real
+continuam sem prova até executar Docker.
 
 **Definição de pronto:** nginx distribui, readiness remove a réplica quebrada,
 autenticação de uma réplica enxerga a revogação feita na outra, e o teste
@@ -462,11 +467,11 @@ global entre workers.
 
 ## 6.1 Camadas de contenção (proxy → app → OS)
 
-- [ ] nginx: `limit_req` por IP na borda, `limit_conn`, `client_max_body_size`, `client_body_timeout`/`client_header_timeout`, `keepalive` tuning
+- [x] nginx: `limit_req` por IP, `limit_conn`, `client_max_body_size`, timeouts de body/header e keep-alive em `nginx/nginx-prod.conf`
 - [x] app: `inFlightLimit` com teto por processo, rate limit por IP/usuário/login e parser JSON limitado a 100kb
 - [x] Node HTTP/HTTPS: timeout de headers/request, keep-alive, intervalo de checagem e teto de headers/requisições por socket; teste de socket parcial sem Docker
-- [ ] OS/container: `net.core.somaxconn`, `sysctl` documentados, limites de FD, `init` já presente (dumb-init)
-- [ ] `X-Forwarded-For` : com `TRUST_PROXY` correto, IP real do cliente alimenta o rate limit (hoje default `false` — em prod atrás do proxy será faixa do nginx)
+- [x] OS/container: `net.core.somaxconn=4096`, backlog Node `1024` e `nofile` 8192 (app)/4096 (nginx) declarados no Compose; `init` já presente (dumb-init). Compatibilidade com os limites do host aguarda o teste Docker.
+- [x] `X-Forwarded-For`: nginx substitui o valor de entrada pelo IP do peer e o app confia em um salto (`TRUST_PROXY=1`)
 
 ## 6.2 Suite de sobrevivência DDoS
 

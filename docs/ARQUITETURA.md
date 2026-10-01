@@ -61,6 +61,29 @@ quem monta o objeto decide a implementação. `core/bootstrap.ts` e o
 
 ---
 
+## Topologia de produção
+
+```text
+cliente -- HTTPS :443 / HTTP :80 --> auth-proxy (nginx)
+                  | limit_req / limit_conn / TLS
+                  +--> auth-service:3000 (réplicas)
+                     |--> MongoDB (deps-network)
+                     +--> Redis (deps-network)
+```
+
+No `docker-compose.prod.yml`, somente `auth-proxy` publica portas no host. A
+API fica em `auth-network` com `expose: 3000`, e também alcança as dependências
+pela rede interna `deps-network`. O proxy termina TLS usando
+`PROXY_TLS_CERT_DIR` (arquivos `fullchain.pem` e `privkey.pem`), redireciona
+HTTP para HTTPS e substitui `X-Forwarded-For` pelo IP do peer; por isso o app
+usa `TRUST_PROXY=1`. Réplicas são resolvidas pelo DNS do Compose no upstream.
+
+O upstream nginx OSS usa falhas passivas (`max_fails`/`fail_timeout`); ele não
+consulta o healthcheck `/readiness` do Compose. Scale e failover precisam ser
+exercitados com Docker antes de afirmar remoção ativa de réplicas.
+
+---
+
 ## 2. Ordem dos middlewares
 
 A ordem em `src/app.ts:setupMiddleware` não é arbitrária:

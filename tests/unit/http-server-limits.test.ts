@@ -19,6 +19,7 @@ describe('HTTP server limits', () => {
     expect(server.maxRequestsPerSocket).toBe(serverConfig.timeout.maxRequestsPerSocket);
     expect(server.maxHeadersCount).toBe(serverConfig.timeout.maxHeadersCount);
     expect(server.headersTimeout).toBeLessThanOrEqual(server.requestTimeout);
+    expect(serverConfig.timeout.listenBacklog).toBeGreaterThan(0);
   });
 
   it('fecha conexoes que deixam os headers incompletos', async() => {

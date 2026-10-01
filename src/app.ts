@@ -145,7 +145,7 @@ class AuthService {
         this.server = server;
         setupErrorHandlers(server, serverConfig.timeout.gracefulShutdown);
 
-        server.listen(port, () => {
+        server.listen({ port, backlog: serverConfig.timeout.listenBacklog }, () => {
           logger.info(`🚀 Servidor HTTPS rodando em https://${serverConfig.host}:${port}`);
           logger.info(`📚 API Docs: https://${serverConfig.host}:${port}/api-docs | 🏥 Health: https://${serverConfig.host}:${port}/health`);
         });
@@ -154,7 +154,7 @@ class AuthService {
         const server = createHttpServer(httpServerOptions(serverConfig.timeout), this.app);
         configureHttpServerLimits(server, serverConfig.timeout);
         this.server = server;
-        server.listen(port, () => {
+        server.listen({ port, backlog: serverConfig.timeout.listenBacklog }, () => {
           logger.info(`🚀 Servidor HTTP rodando em http://${serverConfig.host}:${port}`);
           logger.info(`📚 API Docs: http://${serverConfig.host}:${port}/api-docs | 🏥 Health: http://${serverConfig.host}:${port}/health`);
           if (serverConfig.nodeEnv !== 'production') {

@@ -720,9 +720,9 @@ access token do vencedor também seja recusado.
 
 ### D26 — Limites HTTP do Node complementam a contenção da borda
 
-Enquanto o proxy reverso da Fase 4.1 não existe, o próprio Node precisa limitar
-quanto tempo um socket pode consumir esperando headers ou corpo. Os dois
-listeners (HTTP e HTTPS) aplicam a mesma política: `HTTP_HEADERS_TIMEOUT=15000`,
+Mesmo atrás do proxy reverso, o próprio Node limita quanto tempo um socket pode
+consumir esperando headers ou corpo. Os dois listeners (HTTP e HTTPS) aplicam
+a mesma política: `HTTP_HEADERS_TIMEOUT=15000`,
 `HTTP_REQUEST_TIMEOUT=30000`, `SERVER_TIMEOUT=30000`,
 `HTTP_KEEP_ALIVE_TIMEOUT=5000`, `HTTP_CONNECTIONS_CHECKING_INTERVAL=1000`,
 `HTTP_MAX_REQUESTS_PER_SOCKET=1000` e `HTTP_MAX_HEADERS_COUNT=100`. O timeout de
@@ -733,7 +733,30 @@ O body JSON já tem limite de 100kb e o disjuntor de requests em andamento roda
 antes do parser. A regressão `tests/unit/http-server-limits.test.ts` verifica a
 configuração do servidor e envia headers parciais por TCP, esperando 408 sem
 Docker. Isto reduz sockets lentos no app, mas não substitui os limites de
-conexão/body e a terminação TLS no nginx; os testes com proxy continuam pendentes.
+conexão/body e a terminação TLS na borda; a integração do proxy ainda aguarda
+validação de Docker.
+
+### D27 — Nginx é a única entrada pública e sobrescreve o IP encaminhado
+
+No Compose de produção, só `auth-proxy` publica portas. O serviço da API expõe
+3000 apenas na `auth-network`; Mongo e Redis continuam isolados em
+`deps-network`. O nginx termina TLS com `fullchain.pem` e `privkey.pem` montados
+de diretório externo ao repositório, redireciona HTTP para HTTPS e aplica
+20 req/s por IP com burst 40, 40 conexões por IP, body máximo de 100kb e
+timeouts de 10s para headers/body. O keep-alive de borda é 10s.
+
+O nginx substitui `X-Forwarded-For` por `$remote_addr`; o app confia em um salto
+(`TRUST_PROXY=1`). Assim, um cliente não escolhe o IP usado pelo rate limit. O
+upstream resolve dinamicamente `auth-service` no DNS do Docker e usa falha
+passiva (`max_fails=2`, `fail_timeout=5s`). Nginx OSS não verifica
+`/readiness` ativamente nem consulta o estado `unhealthy` do Compose; não
+prometemos remoção por readiness até haver um mecanismo ativo ou uma prova real.
+O Compose configura `net.core.somaxconn=4096`, backlog Node 1024 e `nofile` 8192
+para a API/4096 para nginx. Os testes atuais validam YAML e diretivas sem Docker;
+`nginx -t`, TLS, limites do host, `--scale` e failover permanecem para execução
+no host com Docker. `/liveness` e `/readiness` não recebem `limit_req` nem
+`limit_conn`; o disjuntor do app também já os exclui, evitando que sobrecarga
+converta a própria sonda em motivo para reinício.
 
 ---
 

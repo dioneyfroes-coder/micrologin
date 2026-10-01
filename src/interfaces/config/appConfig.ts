@@ -156,6 +156,7 @@ export const serverConfig = {
     request: httpRequestTimeout,
     keepAlive: parsePositiveEnvNumber(process.env.HTTP_KEEP_ALIVE_TIMEOUT, 5000),
     connectionsCheckingInterval: parsePositiveEnvNumber(process.env.HTTP_CONNECTIONS_CHECKING_INTERVAL, 1000),
+    listenBacklog: parsePositiveEnvNumber(process.env.HTTP_LISTEN_BACKLOG, 1024),
     maxRequestsPerSocket: parsePositiveEnvNumber(process.env.HTTP_MAX_REQUESTS_PER_SOCKET, 1000),
     maxHeadersCount: parsePositiveEnvNumber(process.env.HTTP_MAX_HEADERS_COUNT, 100),
     gracefulShutdown: parsePositiveEnvNumber(process.env.GRACEFUL_SHUTDOWN_TIMEOUT, 5000)

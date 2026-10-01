@@ -11,7 +11,8 @@ ENV_FILE="${ENV_FILE:-$PROJECT_DIR/.env}"
 
 # Porta pública do app vem do .env (next-port.sh resolve a APP_PORT configurada).
 resolved_port="$(bash "$SCRIPT_DIR/next-port.sh" --env "$ENV_FILE" 2>/dev/null | sed -n 's/^APP_PORT=//p')"
-SERVICE_URL="${SERVICE_URL:-http://localhost:${resolved_port:-3000}}"
+configured_base_url="${PROD_BASE_URL:-$(grep -E '^PROD_BASE_URL=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-)}"
+SERVICE_URL="${SERVICE_URL:-${configured_base_url:-http://localhost:${resolved_port:-3000}}}"
 ALERT_EMAIL="${ALERT_EMAIL:-admin@company.com}"
 SLACK_WEBHOOK="${SLACK_WEBHOOK:-}" # deixe vazio para desativar Slack
 LOG_FILE="${LOG_FILE:-$PROJECT_DIR/logs/auth-service-monitor.log}"
