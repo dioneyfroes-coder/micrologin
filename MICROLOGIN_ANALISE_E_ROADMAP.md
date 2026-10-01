@@ -145,6 +145,49 @@ produção.
 mesmo resultado; a detecção de reuso acontece em ≤ 1 rotação; e o atacante
 não tira 200 de `/profile` depois da revogação. Registrar o tempo medido.
 
+**Resolvido.** `npm run test:credential-theft:real-redis`
+(`tests/security/credential-theft.real-redis.test.ts`). Os corpos de T1–T6 foram
+extraídos para `tests/security/credential-theft.scenarios.ts` e são registrados
+pelas duas suítes — a de memória e a de Redis real. É a mesma forma de garantir
+"mesmo resultado" nas duas: se cada suíte tivesse o seu próprio corpo, a segunda
+estaria medindo o próprio teste em vez do código.
+
+Contra o Redis do compose (DB 15, exclusivo), assinatura ES256 com `kid`, e o
+mesmo par de chaves e store usados pelo app real no booted da prova HTTP:
+
+| Medida | Valor |
+| --- | --- |
+| Cenários T1–T6 contra Redis real | 6/6, mesmos desfechos que em memória |
+| Rotação concedida ao atacante antes da detecção | 0 |
+| Repetições do refresh roubado detectadas como reuso | 5 de 5 |
+| Latência da detecção de reuso | 5,56 ms (1ª tentativa) / 4,82 ms |
+| `/profile` com token do atacante após revogação | 401 |
+| Segundo device da mesma identidade após revogação | 401 |
+| Refresh roubado em nova tentativa | 401 `REFRESH_TOKEN_INVALID` |
+
+O último item importa mais que o `REFRESH_TOKEN_REUSED` da primeira: a segunda
+tentada dizer `INVALID`, e não `REUSED`, o que mostra que a primeira gravou
+estado de verdade, e não respondeu com uma string.
+
+Guardas contra passar pelo motivo errado, cada uma checada por mutação:
+
+| Mutação | Efeito |
+| --- | --- |
+| `SET NX` perde o `NX` em `consumeRefreshToken` | T4 reprova — sem atomicidade real não há vencedor único |
+| Harness cai para um `Map` local | 10 de 14 reprovam; a guarda que pega é a leitura por conexão independente |
+
+O `Map` em memória continua no lugar, e continua útil: ele roda sem Docker e
+é onde a detecção de reuso é exercitada sem custo. O que ele **não** prova é
+atomicidade — T4 passa lá por serialização do event loop, e é por isso que a
+suíte real existe.
+
+**Limite conhecido, não coberto:** estas suítes são escritas do ponto de vista
+do atacante. Substituir o `INCR` da versão de sessão por um valor arbitrário
+(over-revocation, todo usuário deslogado) **não** reprova nenhuma delas, porque
+revogar demais produz o mesmo 401 que revogar o suficiente. A direção oposta —
+revogação que é no-op — é o que P3 fecha, com a sessão nova aceita após a troca
+de senha.
+
 ## P5 — Fase 6.2: limites operacionais atingidos não documentados
 
 O roadmap v2 deixou este item aberto porque a suíte nunca passou. Medido na
