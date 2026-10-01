@@ -42,6 +42,7 @@ describe('production reverse proxy configuration', () => {
     expect(api.container_name).toBeUndefined();
     expect(api.expose).toContain('3000');
     expect(api.environment?.TRUST_PROXY).toBe('1');
+    expect(api.environment?.INSTANCE_ID).toBe('${INSTANCE_ID:-}');
     expect(proxy.image).toBe('nginx:1.28-alpine');
     expect(proxy.ports).toEqual(expect.arrayContaining([
       '${APP_PORT:-80}:80',

@@ -266,6 +266,10 @@ As duas últimas linhas são o limite honesto do desenho: com PM2 em cluster sã
 cópias, não uma. O manifesto de `GET /observability` reporta o agregado do
 processo que respondeu, e por isso ele é por processo.
 
+Cada snapshot expõe `service.instance_id` para identificar a réplica que
+respondeu (`INSTANCE_ID` ou hostname do container). Isso não agrega contadores:
+requisições, eventos em memória e sinais de risco permanecem locais ao processo.
+
 Nenhum desses estados é alcançável sem credencial (decisão `D18` em
 [SEGURANCA.md](SEGURANCA.md)). O Mongo autentica com um usuário `readWrite`
 restrito ao banco do serviço (`authSource=admin`), criado na primeira

@@ -41,6 +41,8 @@ services:
       # Versão imutável em execução, para /observability e para identificar o
       # deploy em log (scripts/remote-deploy.sh exporta VERSION=sha256:...)
       VERSION: ${VERSION:-latest}
+      # Sobrescrevível pelo orquestrador; vazio usa o hostname único do container.
+      INSTANCE_ID: ${INSTANCE_ID:-}
       # O container expõe a porta interna 3000; APP_PORT é o binding do host
       PORT: 3000
       # --- Assinatura ES256 ---

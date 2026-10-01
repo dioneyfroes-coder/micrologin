@@ -375,7 +375,7 @@ client→ nginx ────┼─ auth-2 ── Redis (compartilhado)
 - [x] stack de resiliência sem `container_name`/binding fixo para a API; o runner DDoS sobe 3 réplicas e exige observar PIDs distintos
 - [ ] executar `docker compose up -d --scale auth-service=3`/runner com smoke + `test:infra` verdes em host Docker
 - [ ] rate limit global confirmado via Redis entre réplicas (uma réplica vê o consumo da outra); se Redis cai → fallback por processo **documentado como degradação explícita**
-- [ ] `/observability` é por réplica: expor `instance_id` no snapshot e documentar que a visão global vem do sink (`authEventSink`), não do agregador local
+- [x] `/observability` expõe `service.instance_id` (override `INSTANCE_ID`, fallback hostname); agregados e alertas continuam por processo, sem prometer soma global
 
 **Limite conhecido:** nginx OSS não faz health check ativo por `/readiness`; o
 Compose marca cada réplica com esse healthcheck, enquanto o upstream nginx usa

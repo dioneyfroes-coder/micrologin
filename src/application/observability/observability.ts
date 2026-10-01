@@ -15,6 +15,7 @@ import { securityAuditLogger } from '../middleware/securityAudit.js';
 import { inFlightSnapshot } from '../middleware/inFlightLimit.js';
 import { requestLogAggregator } from './requestLogAggregator.js';
 import { getAuthEventSnapshot } from './authEventSink.js';
+import { hostname } from 'node:os';
 
 interface HealthReportLike {
   status: string;
@@ -39,6 +40,7 @@ export interface ObservabilitySnapshot {
     name: string;
     version: string;
     environment: string;
+    instance_id: string;
     pid: number;
     uptime_s: number;
     started_at: string;
@@ -84,6 +86,7 @@ export const buildObservabilitySnapshot = async(deps: ObservabilityDeps = {}): P
       name: process.env.APP_NAME || 'auth-service',
       version: process.env.VERSION || process.env.npm_package_version || 'dev',
       environment: process.env.NODE_ENV || 'development',
+      instance_id: process.env.INSTANCE_ID || process.env.HOSTNAME || `${hostname()}-${process.pid}`,
       pid: process.pid,
       uptime_s: uptimeSec,
       started_at: new Date(now() - uptimeSec * 1000).toISOString(),

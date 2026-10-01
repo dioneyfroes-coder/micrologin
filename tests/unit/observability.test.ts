@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+import { hostname } from 'node:os';
 import { buildObservabilitySnapshot } from '../../src/application/observability/observability.js';
 import { requestLogAggregator } from '../../src/application/observability/requestLogAggregator.js';
 import { getAuthEventSnapshot, recordSecurityEvent } from '../../src/application/observability/authEventSink.js';
@@ -8,13 +9,15 @@ describe('buildObservabilitySnapshot', () => {
     APP_NAME: process.env.APP_NAME,
     VERSION: process.env.VERSION,
     NODE_ENV: process.env.NODE_ENV,
-    LOG_FORMAT: process.env.LOG_FORMAT
+    LOG_FORMAT: process.env.LOG_FORMAT,
+    INSTANCE_ID: process.env.INSTANCE_ID
   };
 
   beforeEach(() => {
     requestLogAggregator.reset();
     process.env.LOG_FORMAT = 'structured';
     process.env.NODE_ENV = 'test';
+    process.env.INSTANCE_ID = 'auth-test-replica-3';
   });
 
   afterEach(() => {
@@ -22,6 +25,11 @@ describe('buildObservabilitySnapshot', () => {
     process.env.VERSION = original.VERSION;
     process.env.NODE_ENV = original.NODE_ENV;
     process.env.LOG_FORMAT = original.LOG_FORMAT;
+    if (original.INSTANCE_ID === undefined) {
+      delete process.env.INSTANCE_ID;
+    } else {
+      process.env.INSTANCE_ID = original.INSTANCE_ID;
+    }
   });
 
   it('consolida service, requests, health, security e logging', async() => {
@@ -41,6 +49,7 @@ describe('buildObservabilitySnapshot', () => {
     expect(snapshot.service.name).toBe('auth-service');
     expect(snapshot.service.version).toBe('1.2.3');
     expect(snapshot.service.environment).toBe('test');
+    expect(snapshot.service.instance_id).toBe('auth-test-replica-3');
     expect(snapshot.service.uptime_s).toBeGreaterThanOrEqual(0);
     expect(snapshot.service.memory.heap_used_mb).toBeGreaterThan(0);
 
@@ -57,9 +66,11 @@ describe('buildObservabilitySnapshot', () => {
   });
 
   it('usa os defaults reais (healthCheck/security) quando nenhuma dependência é injetada', async() => {
+    delete process.env.INSTANCE_ID;
     const snapshot = await buildObservabilitySnapshot({ now: () => 1700000000000 });
     expect(snapshot.health).toBeDefined();
     expect(snapshot.security).toBeDefined();
+    expect(snapshot.service.instance_id).toBe(process.env.HOSTNAME || `${hostname()}-${process.pid}`);
     expect(snapshot.requests.total).toBe(0);
   });
 
