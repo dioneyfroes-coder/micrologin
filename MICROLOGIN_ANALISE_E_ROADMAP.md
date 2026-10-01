@@ -387,18 +387,21 @@ autenticação de uma réplica enxerga a revogação feita na outra, e o teste
 
 ## 4.2 Mongo com réplicas (HA) ou single node documentado
 
-- [ ] decidir: **replica set (3 nós, primário+2)** para o repositório ficar à altura do proxy, **ou** manter single node com backup (Fase 2) e declarar o limite
+- [x] decisão: manter Mongo single-node com backup cifrado/restaurável (Fase 2); um replica set de 3 nós não traz failover operacional sem eleição/monitoramento e aumentaria o custo do stack de demonstração
 - [ ] se replica set: `docker-compose.prod.yml` com 3 nodos, scripts de inicialização, app usa `replicaSet=` na URI
-- [ ] se single node: registrar em `docs/ARQUITETURA.md` que o Mongo é o ponto de falha único **ainda que** a API escale
+- [x] registrar em `docs/ARQUITETURA.md` que Mongo é SPOF mesmo com API escalada; backup diário documentado com RPO 24h e restore exercitado
 
-**Definição de pronto:** decisão registrada, e o teste de failover (se aplicável)
-executa: primário cai, leitura/escrita seguem no novo primário, app reconecta.
+**Definição de pronto: decisão cumprida.** Não há failover de Mongo nesta
+topologia; perda do nó exige restore do backup, com RPO 24h. Se o requisito
+mudar para HA, replica set e seu drill de eleição/reconexão são trabalho
+separado, não uma promessa implícita do Compose atual.
 
 ## 4.3 Sessão e identidade em escala
 
-- [ ] revogação entre réplicas (já via Redis) — teste com 2 réplicas: logout na A derruba token validado na B
-- [ ] rate limit de login global entre réplicas (brute force distribuído não ganha orçamento ×N)
-- [ ] consistência do Mongo em réplicas: único writer (primary) — leituras de `findByUsername` no login, aceitáveis com `readConcern` local; documentar
+- [x] revogação compartilhada no contrato: teste com duas instâncias JWT e Redis compartilhado prova que revogar na A invalida token na B
+- [ ] confirmar a mesma propriedade com duas réplicas/container e logout HTTP através do proxy (Docker pendente)
+- [ ] rate limit de login global entre réplicas (brute force distribuído não ganha orçamento ×N); exige Redis real compartilhado
+- [x] Mongo desta topologia é standalone, com um writer e sem replicação/`readConcern` de replica set; limite documentado em `docs/ARQUITETURA.md`
 
 ---
 

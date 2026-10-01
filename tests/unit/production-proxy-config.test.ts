@@ -50,6 +50,7 @@ describe('production reverse proxy configuration', () => {
     expect(api.sysctls?.['net.core.somaxconn']).toBe('${NET_CORE_SOMAXCONN:-4096}');
     expect(api.ulimits?.nofile).toEqual({ soft: 8192, hard: 8192 });
     expect(proxy.ulimits?.nofile).toEqual({ soft: 4096, hard: 4096 });
+    expect(Object.keys(compose.services).filter(service => /^mongodb(?:-|$)/.test(service))).toEqual(['mongodb']);
   });
 
   it('enforces edge limits and overwrites client-controlled forwarding headers', () => {

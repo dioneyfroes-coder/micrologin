@@ -78,6 +78,15 @@ pela rede interna `deps-network`. O proxy termina TLS usando
 HTTP para HTTPS e substitui `X-Forwarded-For` pelo IP do peer; por isso o app
 usa `TRUST_PROXY=1`. Réplicas são resolvidas pelo DNS do Compose no upstream.
 
+O Mongo continua single-node e é o ponto de falha único, mesmo com várias
+réplicas da API. Não há eleição nem failover automático de banco. A recuperação
+após perda do nó depende do backup cifrado da Fase 2.1 (RPO 24h); HA requer uma
+decisão e um replica set de três membros com drill próprio.
+
+Como o Mongo deste Compose é standalone, não há read preference ou
+`readConcern` de replica set para ajustar: todas as leituras/escritas vão para
+o mesmo nó. A API pode compartilhar sessões e rate limit via Redis, mas isso não
+remove o SPOF do armazenamento de usuários.
 O upstream nginx OSS usa falhas passivas (`max_fails`/`fail_timeout`); ele não
 consulta o healthcheck `/readiness` do Compose. Scale e failover precisam ser
 exercitados com Docker antes de afirmar remoção ativa de réplicas.

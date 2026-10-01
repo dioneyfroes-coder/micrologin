@@ -551,6 +551,20 @@ describe('JWTTokenService - versão de sessão', () => {
     expect(access.sv).toBe(0);
   });
 
+  it('propaga revogação entre instâncias que compartilham Redis', async() => {
+    const redis = makeRedisClient();
+    const instanceA = new JWTTokenService(SECRET, SECRET, redis as never);
+    const instanceB = new JWTTokenService(SECRET, SECRET, redis as never);
+    const pair = await instanceA.generateTokenPair({ id: 'shared-user', username: 'replica' });
+
+    expect((await instanceB.verifyAccessToken(pair.accessToken)).id).toBe('shared-user');
+    await instanceA.revokeUserTokens('shared-user');
+
+    await expect(instanceB.verifyAccessToken(pair.accessToken)).rejects.toMatchObject({
+      code: 'TOKEN_INVALID'
+    });
+  });
+
   it('login após revogação em massa recebe a nova versão e funciona', async() => {
     const redis = makeRedisClient();
     const service = new JWTTokenService(SECRET, SECRET, redis as never);

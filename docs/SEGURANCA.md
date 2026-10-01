@@ -782,3 +782,13 @@ Compose de produção por padrão.
 - Política de revogação, sessão e senha: [`../README.md`](../README.md)
 - Dashboard de segurança: [`DASHBOARD_SEGURANCA_GUIA.md`](DASHBOARD_SEGURANCA_GUIA.md)
 - Custo medido de hash e latência de `/login`: [`metricas.md`](metricas.md)
+
+### D28 — Mongo single-node com backup é o limite explícito desta topologia
+
+O Compose mantém um único MongoDB. Escalar a API atrás do nginx não transforma
+o banco em HA; o nó Mongo continua sendo SPOF. Para o perfil atual, de uma
+coleção `users` e com backup cifrado/restore exercitado, a decisão é aceitar
+esse limite com RPO 24h em vez de adicionar três membros que exigiriam operação
+de eleição, monitoramento e drills próprios. Perda do nó significa restaurar o
+backup; não há failover automático. Se HA virar requisito, replica set de três
+membros e teste de eleição/reconexão serão uma mudança explícita.
