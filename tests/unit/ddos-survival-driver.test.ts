@@ -23,11 +23,34 @@ describe('DDoS survival driver', () => {
     expect(result.stdout).toContain('https://127.0.0.1:3203');
   });
 
+  it('usa loopback IPv4 por padrão, alinhado ao binding do Compose isolado', () => {
+    const result = spawnSync(process.execPath, [runner, '--preflight-only'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      env: { ...process.env, DDOS_BASE_URL: '' }
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('https://127.0.0.1:3203');
+  });
+
   it('recusa host externo mesmo quando DDOS_ALLOW_REMOTE foi definido', () => {
     const result = preflight('https://example.com');
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('Alvo não local recusado');
+  });
+
+  it('recusa host externo antes de verificar Docker ou criar a stack', () => {
+    const result = spawnSync(process.execPath, [runner], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      env: { ...process.env, DDOS_BASE_URL: 'https://example.com' }
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Alvo não local recusado');
+    expect(result.stderr).not.toContain('Docker CLI/daemon indisponível');
   });
 
   it('inclui flood, sondagem viva e thresholds por rota no k6', () => {
@@ -45,5 +68,20 @@ describe('DDoS survival driver', () => {
     expect(runnerSource).not.toContain('docker-compose.prod.yml');
     expect(runnerSource).toContain('\'down\', \'-v\', \'--remove-orphans\'');
     expect(runnerSource).toContain('peakContainerMemoryMiB');
+  });
+
+  it('usa consumo de memória do docker stats sem confundir com o limite', () => {
+    const sample = 'api 410.52MiB / 1GiB\nnginx 45.11MiB / 128MiB';
+    const source = [
+      'import { parseDockerMemoryStats } from \'./scripts/ddos-survival-test.mjs\'',
+      `console.log(parseDockerMemoryStats(${JSON.stringify(sample)}))`
+    ].join(';');
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', source], {
+      cwd: ROOT,
+      encoding: 'utf8'
+    });
+
+    expect(result.status).toBe(0);
+    expect(Number(result.stdout.trim())).toBeCloseTo(410.52);
   });
 });

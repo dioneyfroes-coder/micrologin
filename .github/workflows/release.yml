@@ -36,6 +36,8 @@ jobs:
       - name: 🧪 Run full test suite
         run: |
           npm run test:unit:fast
+          npm run test:credential-theft:unit
+          npm run test:ddos -- --preflight-only
           npm run test:integration:app
 
       - name: 📝 Generate changelog

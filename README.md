@@ -436,6 +436,17 @@ scripts/remote-deploy.sh --image <imagem> --env-file .env.prod \
 - branches de trabalho são **efêmeras**: criadas para um PR pequeno e apagadas após o merge em `main`
 - o CI dispara em push/PR para `main`; o **deploy só roda em `workflow_dispatch`**, porque não há servidor configurado neste repositório — um job de deploy que roda sozinho e imprime sucesso sem deployar é pior do que nenhum job
 
+## Resiliência
+
+- `npm run test:backup` prova dump cifrado, perda e restauração real do usuário no Mongo.
+- `npm run test:redis` prova que revogações sobrevivem ao restart do Redis; perda do volume permanece risco documentado.
+- `npm run test:credential-theft:unit` cobre T1–T6 com JWT real e Redis em memória, incluindo fail-closed. `npm run test:credential-theft` também executa E2E com Mongo/Redis reais.
+- `npm run test:ddos` cria stack de resiliência efêmero e mede flood por rota, 429, liveness, malformed/oversized, Slowloris, memória, recuperação e `RestartCount`. É uma prova de host; requer Docker Compose, Bash, OpenSSL e k6.
+- O Compose de produção contém nginx, TLS, limites de taxa/conexões e API sem porta pública. `nginx -t`, `docker compose --scale` e failover ainda precisam ser executados em host com Docker.
+
+O preflight DDoS no CI só verifica que o alvo default é loopback e que hosts
+externos são recusados; não dispara carga nem contata serviços.
+
 ## Observações importantes
 
 - este projeto é um estudo de arquitetura e autenticação

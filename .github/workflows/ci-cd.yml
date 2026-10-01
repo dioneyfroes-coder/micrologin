@@ -100,6 +100,8 @@ jobs:
         if: matrix.test-type == 'unit-fast'
         run: |
           npm run test:unit:fast
+          npm run test:credential-theft:unit
+          npm run test:ddos -- --preflight-only
           echo "✅ Unit tests completed successfully"
 
       - name: 🔗 Run integration tests

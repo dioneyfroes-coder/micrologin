@@ -511,10 +511,10 @@ saudável sem intervenção manual.
 
 # Fase 7 — fechamento de portfólio
 
-- [ ] README: nova seção "Resiliência" com o que cada suite prova (backup restaured, escala, roubo de credenciais, DDoS) e como rodar (`test:backup`, `test:ddos`, `test:credential-theft`)
-- [ ] `docs/SEGURANCA.md`: decisões D15–D18 + threat model atualizado com os 7 ataques
-- [ ] `docs/ARQUITETURA.md`: diagrama com proxy, réplicas e + fluxo de backup/restore
-- [ ] CI: rodar as suítes novas no que couber (unit/survival sem derrubar serviço de verdade); `test:infra`/`test:ddos` documentados como provas locais/de host
+- [x] README: seção "Resiliência" com suites e comandos, incluindo credenciais e DDoS
+- [x] `docs/SEGURANCA.md`: decisões D15–D18 e cobertura rastreada de A1–A7
+- [x] `docs/ARQUITETURA.md`: topologia nginx/API/dependências e fluxo de backup/restore; limitações de readiness registradas
+- [x] CI: suíte unitária de credential theft e preflight DDoS sem containers; provas Docker documentadas como execução de host
 - [ ] validar `deploy.sh` + smoke + rollback com ES256 e com Redis/Mongo autenticados
 
 ---

@@ -763,6 +763,17 @@ resiliência, destrói volumes no fim e só aceita loopback. Ele gera credenciai
 certificado temporários, mede os contêineres envolvidos e nunca aponta para o
 Compose de produção por padrão.
 
+### Cobertura do modelo de ataque
+
+| Ameaça | Controle/prova | Estado |
+| --- | --- | --- |
+| A1/A2 roubo e reuso de token | `sv`, consumo único, revogação automática e T1–T4 | unidade/integrado passou; E2E real aguarda host Docker |
+| A3 credential stuffing | login genérico e T5; hashes salgados não permitem correlação barata entre contas | limite aceito e documentado |
+| A4 força bruta distribuída | rate limit por IP/conta e cenário XFF no k6 através do proxy | código pronto; medição Docker/k6 pendente |
+| A5 flood HTTP | limites nginx/app, thresholds k6, liveness e recuperação | código pronto; medição Docker/k6 pendente |
+| A6 Slowloris | timeout de headers Node/nginx e socket parcial | Node validado localmente; medição de borda pendente |
+| A7 oversized/malformados/XFF forjado | parser e body limits, proxy sobrescreve XFF, probes 400/413 | código e testes estáticos prontos; execução integrada pendente |
+
 ---
 
 ## Referências

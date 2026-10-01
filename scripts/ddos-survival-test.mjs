@@ -12,7 +12,7 @@ import { performance } from 'node:perf_hooks';
 import { randomBytes } from 'node:crypto';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const DEFAULT_BASE_URL = `https://localhost:${process.env.DDOS_PROXY_TLS_PORT || 3203}`;
+const DEFAULT_BASE_URL = `https://127.0.0.1:${process.env.DDOS_PROXY_TLS_PORT || 3203}`;
 const HEALTH_PATH = '/liveness';
 
 export const isLoopbackHost = (hostname) => {
@@ -85,6 +85,13 @@ const checkLiveness = async(baseUrl, label) => {
   return response.durationMs;
 };
 
+const checkReadiness = async(baseUrl, label) => {
+  const response = await request(baseUrl, '/readiness');
+  if (response.status !== 200) {
+    throw new Error(`${label}: /readiness respondeu ${response.status}`);
+  }
+};
+
 const measureLivenessP95 = async(baseUrl, samples = 20) => {
   const durations = [];
   for (let index = 0; index < samples; index++) {
@@ -131,6 +138,17 @@ const toMib = (value, unit) => {
   }
 };
 
+export const parseDockerMemoryStats = (output) => {
+  const values = output.split(/\r?\n/)
+    .map(line => line.match(/^\S+\s+([\d.]+)\s*(B|KiB|MiB|GiB|KB|MB|GB)\s*\//i))
+    .filter(Boolean)
+    .map(([, value, unit]) => toMib(value, unit));
+  if (values.length === 0) {
+    throw new Error('docker stats não forneceu amostras de memória');
+  }
+  return Math.max(...values);
+};
+
 const startMemorySampler = (containerIds) => {
   const child = spawn('docker', [
     'stats', '--format', '{{.Name}} {{.MemUsage}}', ...containerIds
@@ -145,14 +163,7 @@ const startMemorySampler = (containerIds) => {
         await new Promise(resolveClose => child.once('close', resolveClose));
       }
       const output = chunks.join('');
-      const values = output.split(/\r?\n/)
-        .map(line => line.match(/^\S+\s+([\d.]+)\s*(B|KiB|MiB|GiB|KB|MB|GB)\s*\//i))
-        .filter(Boolean)
-        .map(([, value, unit]) => toMib(value, unit));
-      if (values.length === 0) {
-        throw new Error('docker stats não forneceu amostras de memória');
-      }
-      return Math.max(...values);
+      return parseDockerMemoryStats(output);
     }
   };
 };
@@ -223,15 +234,21 @@ const runK6Flood = ({ baseUrl, username, password, summaryPath }) => {
   const result = spawnSync('k6', [
     'run',
     '--summary-export', summaryPath,
-    '-e', `BASE_URL=${baseUrl}`,
-    '-e', `LOGIN_USER=${username}`,
-    '-e', `LOGIN_PASS=${password}`,
-    '-e', `DURATION=${duration}`,
-    '-e', `VUS=${vus}`,
-    '-e', `MAX_P95_MS=${maxP95}`,
-    '-e', `INSECURE_TLS=${isLoopbackHost(new URL(baseUrl).hostname) ? 'true' : 'false'}`,
     'k6/ddos-survival.js'
-  ], { cwd: ROOT, stdio: 'inherit', env: process.env });
+  ], {
+    cwd: ROOT,
+    stdio: 'inherit',
+    env: {
+      ...process.env,
+      BASE_URL: baseUrl,
+      LOGIN_USER: username,
+      LOGIN_PASS: password,
+      DURATION: duration,
+      VUS: vus,
+      MAX_P95_MS: maxP95,
+      INSECURE_TLS: isLoopbackHost(new URL(baseUrl).hostname) ? 'true' : 'false'
+    }
+  });
 
   if (result.error || result.status !== 0) {
     throw new Error(`k6 encerrou com código ${result.status ?? 'desconhecido'}${result.error ? `: ${result.error.message}` : ''}`);
@@ -308,7 +325,8 @@ const createTemporaryStack = (tempDir) => {
   const tlsDir = join(tempDir, 'tls');
   const appPort = process.env.DDOS_APP_PORT || '3202';
   const httpPort = process.env.DDOS_PROXY_HTTP_PORT || '3201';
-  const tlsPort = process.env.DDOS_PROXY_TLS_PORT || '3203';
+  const requestedTarget = new URL(process.env.DDOS_BASE_URL || DEFAULT_BASE_URL);
+  const tlsPort = process.env.DDOS_PROXY_TLS_PORT || requestedTarget.port || '3203';
   const project = `micrologin-ddos-${process.pid}`;
   const suffix = `${process.pid}`;
 
@@ -343,7 +361,7 @@ const createTemporaryStack = (tempDir) => {
     DDOS_PROXY_TLS_PORT: tlsPort
   };
   const composeArgs = ['-p', project, '--profile', 'ddos', '-f', 'docker-compose.resilience.yml'];
-  return { env, composeArgs, baseUrl: process.env.DDOS_BASE_URL || `https://localhost:${tlsPort}` };
+  return { env, composeArgs, baseUrl: process.env.DDOS_BASE_URL || `https://127.0.0.1:${tlsPort}` };
 };
 
 const waitForStack = async(baseUrl, timeoutMs = 180000) => {
@@ -362,9 +380,10 @@ const waitForStack = async(baseUrl, timeoutMs = 180000) => {
 };
 
 const main = async() => {
+  const requestedTarget = resolveTarget(process.env.DDOS_BASE_URL || DEFAULT_BASE_URL);
+
   if (process.argv.includes('--preflight-only')) {
-    const target = resolveTarget(process.env.DDOS_BASE_URL || DEFAULT_BASE_URL);
-    const baseUrl = target.toString().replace(/\/$/, '');
+    const baseUrl = requestedTarget.toString().replace(/\/$/, '');
     console.log(`Alvo aceito: ${baseUrl}`);
     return;
   }
@@ -395,6 +414,7 @@ const main = async() => {
     const target = resolveTarget(stack.baseUrl);
     const baseUrl = target.toString().replace(/\/$/, '');
     await waitForStack(baseUrl);
+    await checkReadiness(baseUrl, 'stack antes dos ataques');
     const restartsBefore = readRestartCounts(['compose', ...stack.composeArgs]);
     memorySampler = startMemorySampler([...restartsBefore.keys()]);
     const baselineP95 = await measureLivenessP95(baseUrl);
@@ -405,9 +425,15 @@ const main = async() => {
     const k6Metrics = assertK6Summary(summaryPath);
     const slowlorisConnectionsClosed = await exerciseSlowHeaders(target);
     const recoveryP95 = await measureLivenessP95(baseUrl);
-    const recoveryLimit = Number(process.env.DDOS_RECOVERY_P95_MS || 1000);
+    await checkReadiness(baseUrl, 'stack após os ataques');
+    const absoluteRecoveryLimit = Number(process.env.DDOS_RECOVERY_P95_MS || 1000);
+    const baselineRecoveryLimit = Math.max(baselineP95 * 2, baselineP95 + 100);
+    const recoveryLimit = Math.min(absoluteRecoveryLimit, baselineRecoveryLimit);
     if (recoveryP95 > recoveryLimit) {
-      throw new Error(`Recuperação p95 ${recoveryP95.toFixed(1)}ms excede limite ${recoveryLimit}ms`);
+      throw new Error(
+        `Recuperação p95 ${recoveryP95.toFixed(1)}ms excede limite ${recoveryLimit.toFixed(1)}ms ` +
+        `(baseline ${baselineP95.toFixed(1)}ms, teto absoluto ${absoluteRecoveryLimit}ms)`
+      );
     }
 
     const peakContainerMemoryMiB = await memorySampler.stop();

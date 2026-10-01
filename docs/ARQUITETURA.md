@@ -82,6 +82,19 @@ O upstream nginx OSS usa falhas passivas (`max_fails`/`fail_timeout`); ele não
 consulta o healthcheck `/readiness` do Compose. Scale e failover precisam ser
 exercitados com Docker antes de afirmar remoção ativa de réplicas.
 
+### Backup e restauração
+
+```text
+MongoDB --mongodump --archive--> archive --gpg AES-256--> retenção cifrada
+                                                            |
+MongoDB <--mongorestore --drop-- gpg --dryRun valida ------+
+```
+
+O backup é um archive único cifrado e validado antes de qualquer restore; o
+restore exercitado apaga e reconstrói o banco do serviço. RPO/RTO e retenção
+medidos estão em [`BACKUP.md`](BACKUP.md); o Redis não é restaurado de snapshot,
+pois isso poderia revalidar estado antigo de sessão.
+
 ---
 
 ## 2. Ordem dos middlewares
