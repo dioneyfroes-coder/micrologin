@@ -39,7 +39,6 @@ services:
       dockerfile: Dockerfile
       target: production
     image: ${RESILIENCE_IMAGE:-micrologin-resilience:local}
-    container_name: ${RESILIENCE_APP_CONTAINER_NAME:-micrologin-resilience-app}
     environment:
       NODE_ENV: production
       PORT: 3000
@@ -94,8 +93,8 @@ services:
         source: ${RESILIENCE_DEPS_DIR:-./.resilience-deps}
         target: /run/secrets/deps
         read_only: true
-    ports:
-      - "127.0.0.1:${RESILIENCE_PORT:-3200}:3000"
+    expose:
+      - "3000"
     networks:
       - resilience-network
     restart: unless-stopped

@@ -68,6 +68,9 @@ describe('DDoS survival driver', () => {
     expect(runnerSource).not.toContain('docker-compose.prod.yml');
     expect(runnerSource).toContain('\'down\', \'-v\', \'--remove-orphans\'');
     expect(runnerSource).toContain('peakContainerMemoryMiB');
+    expect(runnerSource).toContain('\'--scale\'');
+    expect(runnerSource).toContain('`auth-service=${stack.apiReplicas}`');
+    expect(runnerSource).toContain('observeReplicaPids');
   });
 
   it('usa consumo de memória do docker stats sem confundir com o limite', () => {

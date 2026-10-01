@@ -372,7 +372,8 @@ client→ nginx ────┼─ auth-2 ── Redis (compartilhado)
 - [x] remover o binding de host do `auth-service`; apenas o proxy publica HTTP redirect e HTTPS
 - [x] `X-Forwarded-For` sobrescrito pelo nginx com o peer real; `TRUST_PROXY=1` no serviço
 - [x] upstream com DNS dinâmico para réplicas e `max_fails`/`fail_timeout` passivo
-- [ ] provar `docker compose up -d --scale auth-service=3` com smoke + `test:infra` verdes
+- [x] stack de resiliência sem `container_name`/binding fixo para a API; o runner DDoS sobe 3 réplicas e exige observar PIDs distintos
+- [ ] executar `docker compose up -d --scale auth-service=3`/runner com smoke + `test:infra` verdes em host Docker
 - [ ] rate limit global confirmado via Redis entre réplicas (uma réplica vê o consumo da outra); se Redis cai → fallback por processo **documentado como degradação explícita**
 - [ ] `/observability` é por réplica: expor `instance_id` no snapshot e documentar que a visão global vem do sink (`authEventSink`), não do agregador local
 
@@ -398,7 +399,7 @@ separado, não uma promessa implícita do Compose atual.
 
 ## 4.3 Sessão e identidade em escala
 
-- [x] revogação compartilhada no contrato: teste com duas instâncias JWT e Redis compartilhado prova que revogar na A invalida token na B
+- [x] revogação compartilhada no contrato: teste com duas instâncias JWT e Redis compartilhado prova que revogar na A invalida token na B; o runner mede PIDs via proxy
 - [ ] confirmar a mesma propriedade com duas réplicas/container e logout HTTP através do proxy (Docker pendente)
 - [ ] rate limit de login global entre réplicas (brute force distribuído não ganha orçamento ×N); exige Redis real compartilhado
 - [x] Mongo desta topologia é standalone, com um writer e sem replicação/`readConcern` de replica set; limite documentado em `docs/ARQUITETURA.md`

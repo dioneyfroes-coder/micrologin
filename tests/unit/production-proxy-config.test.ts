@@ -22,11 +22,16 @@ const resilienceCompose = load(readFileSync(resolve(ROOT, 'docker-compose.resili
   services: Record<string, {
     profiles?: string[];
     ports?: string[];
+    expose?: string[];
     container_name?: string;
     networks?: string[];
   }>;
 };
+const resilienceDirectCompose = load(readFileSync(resolve(ROOT, 'docker-compose.resilience.direct.yml'), 'utf8')) as {
+  services: Record<string, { ports?: string[] }>;
+};
 const proxyConfig = readFileSync(resolve(ROOT, 'nginx/nginx-prod.conf'), 'utf8');
+const resilienceScript = readFileSync(resolve(ROOT, 'scripts/infra-resilience-test.sh'), 'utf8');
 
 describe('production reverse proxy configuration', () => {
   it('keeps the application private and publishes only the proxy', () => {
@@ -83,7 +88,16 @@ describe('production reverse proxy configuration', () => {
       '127.0.0.1:${DDOS_PROXY_TLS_PORT:-3203}:443'
     ]));
     expect(proxy.networks).toEqual(['resilience-network']);
-    expect(api.ports?.[0]).toContain('127.0.0.1:');
-    expect(api.container_name).toContain('${RESILIENCE_APP_CONTAINER_NAME:-');
+    expect(api.ports).toBeUndefined();
+    expect(api.expose).toContain('3000');
+    expect(api.container_name).toBeUndefined();
+    expect(resilienceDirectCompose.services['auth-service'].ports).toEqual([
+      '127.0.0.1:${RESILIENCE_PORT:-3200}:3000'
+    ]);
+  });
+
+  it('resolve o container da API pelo serviço Compose em vez de nome fixo', () => {
+    expect(resilienceScript).toMatch(/APP_CONTAINER_ID=.*ps -q auth-service/);
+    expect(resilienceScript).not.toContain('micrologin-resilience-app');
   });
 });

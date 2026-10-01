@@ -57,7 +57,7 @@ cd "$ROOT_DIR"
 
 PROJECT="micrologin-resilience"
 COMPOSE_FILE="docker-compose.resilience.yml"
-COMPOSE=(docker compose -p "$PROJECT" -f "$COMPOSE_FILE")
+COMPOSE=(docker compose -p "$PROJECT" -f "$COMPOSE_FILE" -f docker-compose.resilience.direct.yml)
 
 KEEP_STACK=0
 SKIP_BUILD=0
@@ -83,6 +83,7 @@ WAIT_RECOVER_TIMEOUT="${WAIT_RECOVER_TIMEOUT:-90}" # app voltando sozinho
 RESTART_TIMEOUT="${RESTART_TIMEOUT:-60}"          # encerrar + subir de novo
 
 DASHBOARD_TOKEN="resilience-test-dashboard-token-22222"
+APP_CONTAINER_ID=""
 
 RED='\033[0.31m'
 GREEN='\033[0.32m'
@@ -146,7 +147,7 @@ cleanup() {
     rm -f "$BODY_FILE"
     if [ "$KEEP_STACK" -eq 1 ]; then
         log_warn "Stack mantido (--keep). Remova com:"
-        echo "  docker compose -p ${PROJECT} -f ${COMPOSE_FILE} down -v"
+        echo "  docker compose -p ${PROJECT} -f ${COMPOSE_FILE} -f docker-compose.resilience.direct.yml down -v"
         if [ "$KEYS_GENERATED" -eq 1 ]; then
             echo "  rm -rf ${RESILIENCE_KEYS_DIR}   # par ES256 do teste"
         fi
@@ -319,7 +320,8 @@ login_works() {
 # ESTADO DO CONTAINER
 # ============================================================
 restart_count() {
-    docker inspect -f '{{.RestartCount}}' micrologin-resilience-app 2>/dev/null || echo "?"
+    [ -n "$APP_CONTAINER_ID" ] || return 1
+    docker inspect -f '{{.RestartCount}}' "$APP_CONTAINER_ID" 2>/dev/null || echo "?"
 }
 
 # Le um segredo de dentro do container que tem permissão para ele.
@@ -331,7 +333,7 @@ restart_count() {
 # afirmar. A senha do root do Mongo só é legível no container do Mongo, que roda
 # como o mesmo uid 999; no app ela é recusada (e o passo 3 mostra que é).
 read_app_secret() {
-    docker exec micrologin-resilience-app cat "/run/secrets/deps/$1"
+    docker exec "$APP_CONTAINER_ID" cat "/run/secrets/deps/$1"
 }
 
 read_mongo_root_password() {
@@ -339,7 +341,7 @@ read_mongo_root_password() {
 }
 
 is_running() {
-    [ "$(docker inspect -f '{{.State.Running}}' micrologin-resilience-app 2>/dev/null || echo false)" = "true" ]
+    [ -n "$APP_CONTAINER_ID" ] && [ "$(docker inspect -f '{{.State.Running}}' "$APP_CONTAINER_ID" 2>/dev/null || echo false)" = "true" ]
 }
 
 rate_limit_using_redis() {
@@ -389,6 +391,9 @@ else
     "${COMPOSE[@]}" build >/dev/null
     "${COMPOSE[@]}" up -d >/dev/null
 fi
+
+APP_CONTAINER_ID="$("${COMPOSE[@]}" ps -q auth-service)"
+[ -n "$APP_CONTAINER_ID" ] || fail "não foi possível resolver o container do serviço auth-service"
 
 wait_for "$WAIT_READY_TIMEOUT" "readiness 200" is_ready
 log_pass "stack no ar e pronto para tráfego"
@@ -466,10 +471,10 @@ log_pass "Mongo: leitura anônima recusada"
 # negativo (não ler a senha do root) só significa alguma coisa se o positivo
 # (ler as próprias senhas) for verdade: um bind mount que não montou nada
 # também falharia em ler a do root, e passaria como se fosse isolamento.
-docker exec micrologin-resilience-app sh -c \
+docker exec "$APP_CONTAINER_ID" sh -c \
     'test -r /run/secrets/deps/mongo-app-password && test -r /run/secrets/deps/redis-password' \
     || fail "o app não consegue ler as senhas que deveria usar"
-if docker exec micrologin-resilience-app sh -c \
+if docker exec "$APP_CONTAINER_ID" sh -c \
     'cat /run/secrets/deps/mongo-root-password' >/dev/null 2>&1; then
     fail "o app leu a senha do root do Mongo: o segredo do root não está isolado do processo"
 fi

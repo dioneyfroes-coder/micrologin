@@ -41,7 +41,7 @@ const percentile = (samples, percent = 0.95) => {
   return ordered[Math.max(0, Math.ceil(ordered.length * percent) - 1)] ?? 0;
 };
 
-const request = (baseUrl, path, { method = 'GET', body, headers = {}, timeoutMs = 5000 } = {}) =>
+const request = (baseUrl, path, { method = 'GET', body, headers = {}, timeoutMs = 5000, agent } = {}) =>
   new Promise((resolveRequest, rejectRequest) => {
     const target = new URL(path, baseUrl);
     const isLocal = isLoopbackHost(target.hostname);
@@ -50,17 +50,21 @@ const request = (baseUrl, path, { method = 'GET', body, headers = {}, timeoutMs 
     const req = transport.request(target, {
       method,
       headers,
+      ...(agent === undefined ? {} : { agent }),
       timeout: timeoutMs,
       ...(target.protocol === 'https:' && isLocal ? { rejectUnauthorized: false } : {})
     }, response => {
       let responseBytes = 0;
+      const chunks = [];
       response.on('data', chunk => {
         responseBytes += chunk.length;
+        chunks.push(Buffer.from(chunk));
       });
       response.on('end', () => resolveRequest({
         status: response.statusCode ?? 0,
         durationMs: performance.now() - startedAt,
-        responseBytes
+        responseBytes,
+        body: Buffer.concat(chunks).toString('utf8')
       }));
     });
     req.on('timeout', () => req.destroy(new Error(`timeout ${timeoutMs}ms: ${target.pathname}`)));
@@ -98,6 +102,24 @@ const measureLivenessP95 = async(baseUrl, samples = 20) => {
     durations.push(await checkLiveness(baseUrl, 'liveness'));
   }
   return percentile(durations);
+};
+
+const observeReplicaPids = async(baseUrl, samples = 30) => {
+  const pids = new Set();
+  for (let index = 0; index < samples; index++) {
+    const response = await request(baseUrl, '/liveness', {
+      headers: { Connection: 'close' },
+      agent: false
+    });
+    if (response.status !== 200) {
+      throw new Error(`liveness durante identificação de réplicas respondeu ${response.status}`);
+    }
+    const body = JSON.parse(response.body);
+    if (Number.isInteger(body.pid)) {
+      pids.add(body.pid);
+    }
+  }
+  return pids;
 };
 
 const readRestartCounts = (composeArgs) => {
@@ -323,10 +345,10 @@ const createTemporaryStack = (tempDir) => {
   const keysDir = join(tempDir, 'jwt');
   const depsDir = join(tempDir, 'deps');
   const tlsDir = join(tempDir, 'tls');
-  const appPort = process.env.DDOS_APP_PORT || '3202';
   const httpPort = process.env.DDOS_PROXY_HTTP_PORT || '3201';
   const requestedTarget = new URL(process.env.DDOS_BASE_URL || DEFAULT_BASE_URL);
   const tlsPort = process.env.DDOS_PROXY_TLS_PORT || requestedTarget.port || '3203';
+  const apiReplicas = Number(process.env.DDOS_API_REPLICAS || 3);
   const project = `micrologin-ddos-${process.pid}`;
   const suffix = `${process.pid}`;
 
@@ -349,19 +371,22 @@ const createTemporaryStack = (tempDir) => {
     RESILIENCE_DEPS_DIR: depsDir,
     RESILIENCE_TLS_DIR: tlsDir,
     RESILIENCE_JWT_KID: 'ddos-v1',
-    RESILIENCE_APP_CONTAINER_NAME: `${project}-app`,
     RESILIENCE_MONGO_CONTAINER_NAME: `${project}-mongo`,
     RESILIENCE_REDIS_CONTAINER_NAME: `${project}-redis`,
     RESILIENCE_PROXY_CONTAINER_NAME: `${project}-proxy`,
     RESILIENCE_TRUST_PROXY: '1',
     RESILIENCE_LOGIN_POINTS: process.env.DDOS_LOGIN_POINTS || '50',
     RESILIENCE_IP_POINTS: process.env.DDOS_IP_POINTS || '100',
-    RESILIENCE_PORT: appPort,
     DDOS_PROXY_HTTP_PORT: httpPort,
     DDOS_PROXY_TLS_PORT: tlsPort
   };
   const composeArgs = ['-p', project, '--profile', 'ddos', '-f', 'docker-compose.resilience.yml'];
-  return { env, composeArgs, baseUrl: process.env.DDOS_BASE_URL || `https://127.0.0.1:${tlsPort}` };
+  return {
+    env,
+    composeArgs,
+    apiReplicas,
+    baseUrl: process.env.DDOS_BASE_URL || `https://127.0.0.1:${tlsPort}`
+  };
 };
 
 const waitForStack = async(baseUrl, timeoutMs = 180000) => {
@@ -410,12 +435,23 @@ const main = async() => {
   try {
     stack = createTemporaryStack(tempDir);
     stackAttempted = true;
-    runCommand('docker', ['compose', ...stack.composeArgs, 'up', '-d', '--build'], stack.env);
+    runCommand('docker', [
+      'compose', ...stack.composeArgs, 'up', '-d', '--build',
+      '--scale', `auth-service=${stack.apiReplicas}`
+    ], stack.env);
     const target = resolveTarget(stack.baseUrl);
     const baseUrl = target.toString().replace(/\/$/, '');
     await waitForStack(baseUrl);
     await checkReadiness(baseUrl, 'stack antes dos ataques');
     const restartsBefore = readRestartCounts(['compose', ...stack.composeArgs]);
+    if (restartsBefore.size < stack.apiReplicas + 3) {
+      throw new Error(`Esperava ${stack.apiReplicas} APIs + proxy/Mongo/Redis; encontrei ${restartsBefore.size} containers`);
+    }
+    const replicaPids = await observeReplicaPids(baseUrl);
+    const minimumReplicasObserved = Number(process.env.DDOS_MIN_REPLICAS_OBSERVED || 2);
+    if (replicaPids.size < minimumReplicasObserved) {
+      throw new Error(`O proxy alcançou ${replicaPids.size} PID(s); precisava observar ${minimumReplicasObserved} réplicas distintas`);
+    }
     memorySampler = startMemorySampler([...restartsBefore.keys()]);
     const baselineP95 = await measureLivenessP95(baseUrl);
     const account = await ensureK6User(baseUrl);
@@ -452,6 +488,8 @@ const main = async() => {
       baselineLivenessP95Ms: Number(baselineP95.toFixed(1)),
       recoveryLivenessP95Ms: Number(recoveryP95.toFixed(1)),
       rateLimited: k6Metrics.rateLimited,
+      apiReplicasStarted: stack.apiReplicas,
+      apiReplicasObserved: replicaPids.size,
       livenessFailures: k6Metrics.livenessFailures,
       serverErrors: k6Metrics.serverErrors,
       payloadResults,

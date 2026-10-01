@@ -1,0 +1,4 @@
+services:
+  auth-service:
+    ports:
+      - "127.0.0.1:${RESILIENCE_PORT:-3200}:3000"
