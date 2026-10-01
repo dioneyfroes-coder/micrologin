@@ -752,9 +752,13 @@ passiva (`max_fails=2`, `fail_timeout=5s`). Nginx OSS não verifica
 `/readiness` ativamente nem consulta o estado `unhealthy` do Compose; não
 prometemos remoção por readiness até haver um mecanismo ativo ou uma prova real.
 O Compose configura `net.core.somaxconn=4096`, backlog Node 1024 e `nofile` 8192
-para a API/4096 para nginx. Os testes atuais validam YAML e diretivas sem Docker;
-`nginx -t`, TLS, limites do host, `--scale` e failover permanecem para execução
-no host com Docker. `/liveness` e `/readiness` não recebem `limit_req` nem
+para a API/4096 para nginx. `nginx -t`, TLS, limites do host e `--scale` foram exercitados em Docker por
+`npm run test:ddos` (nginx sobe, TLS vale, o upstream resolver alcança as três
+réplicas) e por `npm run test:replica-session`, que prova que uma revogação
+feita pela borda é obedecida por cada réplica. **Failover ativo continua sem
+prova**: nginx OSS não remove upstream por `/readiness` e não lê o estado
+`unhealthy` do Compose, e nenhuma execução mediu a troca de um container por
+outro durante tráfego. `/liveness` e `/readiness` não recebem `limit_req` nem
 `limit_conn`; o disjuntor do app também já os exclui, evitando que sobrecarga
 converta a própria sonda em motivo para reinício.
 
@@ -767,12 +771,12 @@ Compose de produção por padrão.
 
 | Ameaça | Controle/prova | Estado |
 | --- | --- | --- |
-| A1/A2 roubo e reuso de token | `sv`, consumo único, revogação automática e T1–T4 | unidade/integrado passou; E2E real aguarda host Docker |
+| A1/A2 roubo e reuso de token | `sv`, consumo único, revogação automática e T1–T6 | passou em memória **e** contra o Redis do compose em ES256, com revogação por identidade atravessando réplicas |
 | A3 credential stuffing | login genérico e T5; hashes salgados não permitem correlação barata entre contas | limite aceito e documentado |
-| A4 força bruta distribuída | rate limit por IP/conta e cenário XFF no k6 através do proxy | código pronto; medição Docker/k6 pendente |
-| A5 flood HTTP | limites nginx/app, thresholds k6, liveness e recuperação | código pronto; medição Docker/k6 pendente |
-| A6 Slowloris | timeout de headers Node/nginx e socket parcial | Node validado localmente; medição de borda pendente |
-| A7 oversized/malformados/XFF forjado | parser e body limits, proxy sobrescreve XFF, probes 400/413 | código e testes estáticos prontos; execução integrada pendente |
+| A4 força bruta distribuída | rate limit por IP/conta e cenário XFF no k6 através do proxy | medido: 4124 respostas 429 com XFF forjado, limite que cede em vez do serviço |
+| A5 flood HTTP | limites nginx/app, thresholds k6, liveness e recuperação | medido: zero 5xx e zero reinício, p95 de liveness 3,2 → 4,5 ms |
+| A6 Slowloris | timeout de headers Node/nginx e socket parcial | medido na borda: 20/20 conexões encerradas no prazo |
+| A7 oversized/malformados/XFF forjado | parser e body limits, proxy sobrescreve XFF, probes 400/413 | medido: 400 e 413 no app real, com o XFF sobrescrito pelo proxy |
 
 ---
 
@@ -792,3 +796,34 @@ esse limite com RPO 24h em vez de adicionar três membros que exigiriam operaç�
 de eleição, monitoramento e drills próprios. Perda do nó significa restaurar o
 backup; não há failover automático. Se HA virar requisito, replica set de três
 membros e teste de eleição/reconexão serão uma mudança explícita.
+
+### D29 — O rate limit por IP é o primeiro limite a ceder; SYN e amplificação ficam na borda
+
+Medido em `npm run test:ddos` com três réplicas atrás do nginx (números em
+[`metricas.md`](metricas.md#6-contenção-na-borda-sob-flood-fase-62)): 4124
+respostas 429, zero falha de liveness, zero 5xx, zero reinício, Slowloris
+20/20 encerrado no prazo, JSON malformado 400 e payload de 10 MB 413.
+
+O que cede primeiro é o **orçamento de requisições por IP** — e cede de
+propósito. A decisão é explicitar a ordem, porque a ordem é o contrato: se a
+contenção de aplicação não bastar, o próximo a ceder é o orçamento de login por
+conta, e depois a disponibilidade. Nunca o contrário. Um limite que nunca cede é
+um limite que não existe, e um serviço que continua respondendo 5xx sob flood
+trocou contenção por indisponibilidade.
+
+A mesma medição fixa o que **não** está provado. O k6 fala HTTP de aplicação,
+com conexão estabelecida e handshake TLS completo: ele não produz SYN sem
+handshake nem pedidos amplificados de terceiros. "O flood foi absorvido" é
+verdadeiro para A5 (HTTP) e A6 (Slowloris) e **falso** se generalizado. SYN
+flood e amplificação são contidos no kernel, no backlog e na rede do provedor —
+antes de existir requisição para o rate limit agir. Por isso eles não constam do
+modelo A1–A7, e o que o serviço oferece é só configuração defensiva já declarada
+no Compose (`somaxconn=4096`, backlog 1024, `nofile` 8192/4096,
+`max_fails=2`/`fail_timeout=5s`).
+
+Também fica registrado que medir por `process.pid` produz prova falsa: as três
+réplicas responderam `pid: 8` e a contagem de réplicas colapsou. A identidade de
+réplica vem de `service.instance_id` do `/observability`, e o parser do
+`--summary-export` do k6 lê `metrics.X.count`, não `metrics.X.values.count`.
+Ambas as correções estão em `scripts/ddos-survival-test.mjs` com guarda de
+mutação em `tests/unit/ddos-survival-driver.test.ts`.

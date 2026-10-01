@@ -534,3 +534,56 @@ Os itens 1 e 3 são decisões de configuração; o 4 é o único código novo de
 rodada, e ele existe mais pela Fase 6 (DDoS) do que pela Fase 3. Dizer isso é
 melhor do que apresentar o limitador como a proteção de memória que a medição
 mostrou que ele não é.
+
+## 6. Contenção na borda sob flood (Fase 6.2)
+
+Rodado com `npm run test:ddos`, no perfil efêmero do Compose de resiliência:
+**três réplicas** de `auth-service` atrás do nginx, TLS, ES256 e um Redis
+compartilhado. Uma execução, host de desenvolvimento, k6 v1.2.2.
+
+| Métrica | Valor |
+| --- | --- |
+| Réplicas alcançadas pelo proxy (`instance_id` distinto) | 3 |
+| Respostas limited-as (429) durante o flood | 4124 |
+| Falhas de liveness durante o flood | 0 |
+| Respostas 5xx durante o flood | 0 |
+| p95 de liveness, baseline → recuperação | 3,2 ms → 4,5 ms |
+| JSON malformado | 400 |
+| Payload de 10 MB | 413 |
+| Conexões Slowloris encerradas no prazo | 20/20 |
+| Pico de memória por container | 226,3 MiB |
+| Reinícios de container | 0 |
+
+Zero 5xx e zero reinício são o resultado que importa: o flood foi absorvido
+pelo rate limit, e a contenção não custou disponibilidade nem reinício. O p95 de
+liveness subiu 1,3 ms entre o baseline e a recuperação — degrade de sonda durante
+o flood, e não de disponibilidade.
+
+### O que esta tabela **não** mede
+
+**Fica na borda, sem medição: SYN flood e amplificação.** O k6 gera tráfego
+HTTP de aplicação, com conexão já estabelecida e handshake TLS completo. Ele não
+gera SYN sem handshake, nem pedidos refletidos/amplificados de terceiros. Ambos
+são Flood**D**/SYN no qual a contenção é do kernel, do backlog e do fornecedor
+de rede — não do rate limit de aplicação, que só existe depois do handshake.
+
+Citação de "o flood foi absorvido" vale para A5/A6 (HTTP e Slowloris), e é
+**falso** se generalizado para SYN flood e amplificação, que nem constam do
+modelo de ataque A1–A7 porque não são contidos por controle de aplicação. Para
+esses dois, o que o projeto oferece é configuração defensiva declarada no
+Compose (`somaxconn=4096`, backlog 1024, `nofile` 8192 na API e 4096 no
+nginx, `max_fails=2`/`fail_timeout=5s` no upstream) e o que o provedor oferece
+(Nginx-Plus/Anycast) — nada disso é medido aqui nem é responsabilidade do
+serviço.
+
+### Primeiro limite a ceder
+
+O primeiro recurso a estourar não é memória nem CPU: é o **orçamento de
+requisições do rate limit por IP**, e ele estourou de propósito, 4124 vezes.
+Esse é o sinal de que a contenção está no caminho certo — o limite é para
+ceder, e o que não pode ceder é a disponibilidade do serviço. O segundo recurso
+a ceder, se o primeiro deixar de existir, é o **orçamento de login por conta**,
+e é por isso que A3 (credential stuffing) está classificado como limite
+aceito e não como problema resolvido: rate limit por conta reduz o volume do
+ataque, mas um atacante distribuído com uma conta por vez nunca esgota esse
+orçamento.

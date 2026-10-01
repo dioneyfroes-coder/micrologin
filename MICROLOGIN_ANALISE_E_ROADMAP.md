@@ -190,24 +190,50 @@ de senha.
 
 ## P5 — Fase 6.2: limites operacionais atingidos não documentados
 
-O roadmap v2 deixou este item aberto porque a suíte nunca passou. Medido na
-primeira execução verde:
+Medido com `npm run test:ddos` depois das correções de P1 (os números da
+primeira execução verde foram substituídos porque o parser de `.values.count`
+zerava as contagens):
 
 | Métrica | Valor |
 | --- | --- |
 | Réplicas alcançadas pelo proxy | 3 |
-| Respostas limited-as (429) | 3945 |
+| Respostas limited-as (429) | 4124 |
 | Falhas de liveness durante o flood | 0 |
 | Respostas 5xx durante o flood | 0 |
-| p95 de liveness baseline → recuperação | 3,0 ms → 6,4 ms |
+| p95 de liveness baseline → recuperação | 3,2 ms → 4,5 ms |
 | JSON malformado / payload de 10 MB | 400 / 413 |
 | Conexões Slowloris encerradas no prazo | 20/20 |
-| Pico de memória por container | 251 MiB |
+| Pico de memória por container | 226,3 MiB |
 | Reinícios de container | 0 |
 
 **Pronto quando:** a tabela acima estiver em `docs/metricas.md` com a
 ressalva do que não foi medido (SYN flood e amplificação ficam na borda) e uma
 decisão `D#` nova registrada sobre o primeiro limite a ceder.
+
+**Resolvido.** §6 de `docs/metricas.md` ("Contenção na borda sob flood"), com a
+ressalva de escopo e a seção "Primeiro limite a ceder". Decisão nova **D29** em
+`docs/SEGURANCA.md`: o que cede primeiro é o orçamento por IP (4124 respostas
+429), depois o de login por conta, e nunca a disponibilidade.
+
+O item tinha um segundo defeito, não listado: as medições já estavam feitas e a
+documentação ainda afirmava o contrário. D26, D27 e a tabela de cobertura do
+modelo de ataque diziam "medição Docker/k6 pendente" e "E2E real aguarda host
+Docker" depois de executados. Documento que afirma medir menos do que mede é o
+mesmo defeito de documento que afirma medir mais, então as linhas foram
+corrigidas — e a única lacuna real que restou foi declarada: **failover ativo**
+(nginx OSS não remove upstream por `/readiness`).
+
+Artefato: `tests/unit/operational-limits-doc.test.ts` (13 testes). Cada número
+citado na documentação é conferido contra o arquivo que o produz, não contra a
+própria documentação — `somaxconn` e `nofile` contra o Compose de produção,
+`max_fails`/`fail_timeout` contra o conf do nginx, e as chaves da tabela contra o
+JSON que o runner emite. Três mutações confirmam que as guardas mordem:
+
+| Mutação | Efeito |
+| --- | --- |
+| `nofile` da API vai de 8192 para 16384 e a doc não acompanha | reprova |
+| A5 volta a "medição pendente" | reprova |
+| Ressalva de SYN/amplificação apagada | reprova 5 de 13 |
 
 ## P6 — Fase 7: `deploy.sh` nunca é exercitado
 
