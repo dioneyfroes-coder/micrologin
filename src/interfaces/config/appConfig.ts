@@ -16,6 +16,46 @@ import { getRedisConfig } from './redisConfig.js';
 import { logger } from '../../shared/utils/logger.js';
 
 /**
+ * Se o processo é gerenciado por um PROCESS MANAGER (PM2), e por quantos.
+ *
+ * PM2 injeta `pm_id` (e `NODE_APP_INSTANCE`) em cada processo que ele gerencia.
+ * O app nunca define nenhuma das duas, então a presença é a assinatura — não
+ * há como um app "parecer" gerenciado sem estar.
+ *
+ * Isto existe para a exclusão mútua: quem gerencia os processos E quem os
+ * multiplica não podem ser dois. Com os dois ativos, cada instância do PM2
+ * ainda forka os N workers do cluster module: PM2_instances × workers
+ * processos, cada um com os ~392.9 MB de RSS medidos no pico do `/login`. Com
+ * os defaults (4 instâncias, 4 workers) são 16 processos — 4× o teto de 1 GiB
+ * do container, e o PM2 reiniciando o que morre de falta de memória, em ciclo.
+ * A garantia não pode ser "está no .env.prod": o `.env` é sobrescrito e o
+ * `ecosystem.config.cjs` pode ser editado sem que nada reclame. Precisa ser o
+ * processo recusando o arranque.
+ */
+const detectProcessManager = (): { manager: 'pm2' | 'node'; instances: number } => {
+  // `pm_id` sozinho já basta e é o mais confiável. As outras duas entradas
+  // cobrem o `exec_mode: 'fork'` do PM2 e o invocation direto, onde o app pode
+  // ser filho de um PM2 sem pm_id no ambiente herdado do bootstrap.
+  const underPm2 = process.env.pm_id !== undefined
+    || process.env.NODE_APP_INSTANCE !== undefined
+    || process.env.pm_exec_path !== undefined;
+
+  // `NODE_APP_INSTANCE` é o ÍNDICE da instância (0-based), não a contagem. Com
+  // PM2_INSTANCES=4, a última instância tem NODE_APP_INSTANCE=3 — tratar o
+  // índice como contagem subestimaria o total, e a mensagem de erro prometeria
+  // "3 processos" onde existem 4 (× os workers). `PM2_INSTANCES` é a contagem
+  // que o operador digitou; o índice só confirma que o PM2 está no comando.
+  return {
+    manager: underPm2 ? 'pm2' : 'node',
+    instances: underPm2
+      ? Math.max(1, parseEnvNumber(process.env.PM2_INSTANCES, 0)
+        || parseEnvNumber(process.env.NODE_APP_INSTANCE, 0) + 1
+        || 1)
+      : 0
+  };
+};
+
+/**
  * CPUs que o processo pode de fato usar, respeitando a cota do container.
  *
  * `os.cpus().length` devolve a quantidade de CPUs da MÁQUINA, não as do
@@ -97,6 +137,10 @@ export const serverConfig = {
 
   // Clustering
   cluster: {
+    // Quem está no comando de multiplicar processos. `pm2` significa que o
+    // cluster module NÃO pode ser o multiplicador (ver `clusterConflict`).
+    processManager: detectProcessManager().manager,
+    processManagerInstances: detectProcessManager().instances,
     // Clustering desabilitado por padrão em dev/test (rodar o app direto);
     // habilitar com CLUSTER_ENABLED=true ou em produção.
     enabled: process.env.NODE_ENV === 'production'
@@ -535,6 +579,33 @@ function validateDependencyCredentials(): string[] {
 /**
  * Validação de configurações obrigatórias
  */
+/**
+ * Conflito entre PM2 e cluster module, ou `undefined` quando não há.
+ *
+ * Fonte única da verdade da exclusão mútua: tanto o `validateConfiguration`
+ * quanto o ponto de forking do `app.ts` consultam ISTO. A alternativa — cada um
+ * refazendo a conta — é como os dois passaram a divergir, e o ponto de forking
+ * é justamente o que roda primeiro quando o cluster está ligado: o primary
+ * forka sem nunca construir o `AuthService`, logo o `validateConfiguration` não
+ * roda nesse caminho. Um guard só no `validateConfiguration` passaria verde
+ * enquanto o processo multiplicava 16 vezes.
+ */
+export function clusterConflict(): string | undefined {
+  const { manager, instances } = detectProcessManager();
+
+  if (manager === 'pm2' && serverConfig.cluster.enabled) {
+    return 'PM2 e cluster module não podem estar ativos ao mesmo tempo: '
+      + `o PM2 já gerencia ${instances} processo(s) e cada um ainda forkaria `
+      + `${serverConfig.cluster.workers} worker(s) do cluster module, dando `
+      + `${instances * serverConfig.cluster.workers} processos no total. `
+      + 'Escolha um dos dois multiplicadores — com PM2, mantenha '
+      + 'CLUSTER_ENABLED=false; sem PM2, rode `node dist/app.js` e deixe o '
+      + 'cluster module fazer o fork.';
+  }
+
+  return undefined;
+}
+
 export function validateConfiguration(): boolean {
   const errors: string[] = [];
 
@@ -648,6 +719,14 @@ export function validateConfiguration(): boolean {
   errors.push(...validateDependencyCredentials());
 
   // Validações de cluster
+  // Exclusão mútua PM2 × cluster module. Recusa, e não aviso: os dois juntos
+  // multiplicam processos sem limite superior conhecido, e o sintoma (OOM e
+  // restart-loop) aparece longe da causa.
+  const conflict = clusterConflict();
+  if (conflict) {
+    errors.push(conflict);
+  }
+
   if (serverConfig.cluster.workers < 1) {
     errors.push('CLUSTER_WORKERS deve ser pelo menos 1');
   }

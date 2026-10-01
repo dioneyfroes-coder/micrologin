@@ -289,6 +289,27 @@ afirma que PM2 e cluster module nunca ficam ativos juntos. O roadmap v2 pedia
 **Pronto quando:** um teste falha se `CLUSTER_ENABLED` e o PM2 estiverem ambos
 ativos, cobrindo o bootstrap e o `ecosystem.config.cjs`.
 
+**Feito:** `clusterConflict()` em `src/interfaces/config/appConfig.ts` é a fonte
+única da regra, e é recusada em dois pontos: `validateConfiguration` e o ponto
+de forking do `src/app.ts`. O segundo não é redundante — com o cluster ligado o
+primary forka e nunca constrói o `AuthService`, que é quem chama a validação, ou
+seja, o guard só na validação passaria verde enquanto o processo multiplicava.
+`tests/unit/pm2-cluster-exclusivity.test.ts` (21 casos) segura os dois lados.
+
+A mensagem de recusa traz a aritmética (`PM2_INSTANCES × CLUSTER_WORKERS`
+processos), porque é ela que o operador usa para escolher entre os dois
+multiplicadores.
+
+Defeito corrigido no caminho: `instances: Number(PM2_INSTANCES) || 4` tratava
+`PM2_INSTANCES=0` como ausente — quem digitava 0 para desligar o PM2 recebia 4
+instâncias. Agora só a variável realmente ausente cai no default; o valor
+digitado chega ao PM2 intacto, e um valor abaixo de 1 é erro do PM2.
+
+Verificado com mutações: remover o guard do `app.ts` (2 casos reprovam),
+desligar a condição do `clusterConflict` (4 casos) e ligar `CLUSTER_ENABLED` no
+`ecosystem.config.cjs` (2 casos). O guard também foi exercitado fora do Jest,
+no `dist/` compilado, nos dois sentidos.
+
 ## P8 — Fase 3.2: heap e GC sob carga
 
 Item aberto, sem artefato. Atenção ao p50 de 17,7 s do `/register` a 400 VUs

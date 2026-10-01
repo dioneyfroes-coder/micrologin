@@ -11,7 +11,8 @@ import { pathToFileURL } from 'url';
 // Configurações centralizadas (carrega .env automaticamente)
 import {
   serverConfig,
-  validateConfiguration
+  validateConfiguration,
+  clusterConflict
 } from './interfaces/config/appConfig.js';
 
 // Utilitários e middlewares
@@ -177,6 +178,17 @@ const isDirectExecution = process.argv[1]
 if (isDirectExecution) {
   // Configuração de clustering inteligente
   if (cluster.isPrimary && serverConfig.cluster.enabled) {
+    // Aqui o `validateConfiguration` NÃO roda: com o cluster ligado o primary
+    // forka e nunca constrói o `AuthService`, que é quem o chama. A exclusão
+    // mútua precisa ser conferida neste ponto — é o único que executa no
+    // caminho do cluster. Recusar antes de forkar é o que impede a multiplicação
+    // em cascata (cada instância do PM2 forkando os workers do cluster module).
+    const conflict = clusterConflict();
+    if (conflict) {
+      logger.error(`❌ ${conflict}`);
+      process.exit(1);
+    }
+
     logger.info(`🔧 Master ${process.pid} iniciando cluster: ${serverConfig.cluster.workers} workers (máx: ${serverConfig.cluster.maxWorkers})`);
 
     // Fork workers conforme configuração
