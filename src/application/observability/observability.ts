@@ -14,6 +14,7 @@ import { performHealthCheck } from '../../shared/utils/healthCheck.js';
 import { securityAuditLogger } from '../middleware/securityAudit.js';
 import { inFlightSnapshot } from '../middleware/inFlightLimit.js';
 import { requestLogAggregator } from './requestLogAggregator.js';
+import { getAuthEventSnapshot } from './authEventSink.js';
 
 interface HealthReportLike {
   status: string;
@@ -101,7 +102,10 @@ export const buildObservabilitySnapshot = async(deps: ObservabilityDeps = {}): P
       in_flight: inFlightSnapshot()
     },
     health: health as HealthReportLike,
-    security: security as Record<string, unknown>,
+    security: {
+      ...(security as Record<string, unknown>),
+      auth_events: getAuthEventSnapshot()
+    },
     logging: {
       format: (process.env.LOG_FORMAT || 'console') === 'structured' ? 'structured' : 'console',
       level: process.env.LOG_LEVEL || 'info',

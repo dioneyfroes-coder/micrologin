@@ -1,6 +1,7 @@
 import { describe, it, expect, jest } from '@jest/globals';
 import jwt from 'jsonwebtoken';
 import { JWTTokenService } from '../../src/infrastructure/external-services/jwtTokenService.js';
+import { AuthService } from '../../src/domain/index.js';
 
 const SECRET = 'test-secret-key-with-at-least-32-characters-for-tests';
 
@@ -117,7 +118,9 @@ describe('JWTTokenService - revogação e blacklist', () => {
 
     await service.revokeToken(result.refreshToken, 60000);
 
-    await expect(service.verifyRefreshToken(result.refreshToken)).rejects.toThrow('Refresh token inválido');
+    await expect(service.verifyRefreshToken(result.refreshToken)).rejects.toMatchObject({
+      code: 'REFRESH_TOKEN_INVALID'
+    });
   });
 
   it('revoga todos os tokens do usuário (tokens emitidos antes da revogação)', async() => {
@@ -232,7 +235,31 @@ describe('JWTTokenService - rotação de refresh token', () => {
     expect(refreshed.refreshToken).toBeDefined();
     expect(refreshed.accessToken).not.toBe(result.accessToken);
 
-    await expect(service.verifyRefreshToken(result.refreshToken)).rejects.toThrow('Refresh token inválido');
+    await expect(service.verifyRefreshToken(result.refreshToken)).rejects.toMatchObject({
+      code: 'REFRESH_TOKEN_REUSED'
+    });
+  });
+
+  it('detecta reuso sequencial e revoga também o par legítimo já emitido', async() => {
+    const redis = makeRedisClient();
+    const tokenService = new JWTTokenService(SECRET, SECRET, redis as never);
+    const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    const authService = new AuthService({}, {}, tokenService, logger);
+    const original = await tokenService.generateTokenPair(
+      { id: 'user-sequential-reuse', username: 'alice' },
+      { refreshExpiresIn: '1h' }
+    );
+
+    const rotated = await authService.refreshUserTokens(original.refreshToken);
+    expect(rotated.success).toBe(true);
+
+    const reused = await authService.refreshUserTokens(original.refreshToken);
+
+    expect(reused).toMatchObject({ success: false, code: 'REFRESH_TOKEN_REUSED' });
+    await expect(tokenService.verifyAccessToken(rotated.token!.accessToken)).rejects.toThrow();
+    await expect(tokenService.refreshTokens(rotated.token!.refreshToken)).rejects.toMatchObject({
+      code: 'REFRESH_TOKEN_INVALID'
+    });
   });
 
   it('rejeita refresh token inválido', async() => {

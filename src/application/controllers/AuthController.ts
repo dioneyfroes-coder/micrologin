@@ -9,7 +9,7 @@ import type { NextFunction, Request, Response } from 'express';
 import { validationResult } from 'express-validator';
 import { securityAuditLogger } from '../middleware/securityAudit.js';
 import { HttpError } from '../../shared/utils/errorHandler.js';
-import { recordTokenRefresh } from '../observability/authEventSink.js';
+import { recordSecurityEvent, recordTokenRefresh } from '../observability/authEventSink.js';
 import type { AuthService } from '../../domain/index.js';
 import { REVOCATION_UNAVAILABLE_CODE } from '../../domain/index.js';
 
@@ -134,6 +134,9 @@ export class AuthWebController {
       // ...) é traduzido em rótulo pelo vocabulário único. Passar o código
       // cru era o que fazia todo desfecho virar `error`.
       recordTokenRefresh(result.success ? 'success' : result.code);
+      if (result.code === 'REFRESH_TOKEN_REUSED' || result.securityEvent === 'TOKEN_REUSE_DETECTED') {
+        recordSecurityEvent('TOKEN_REUSE_DETECTED');
+      }
 
       if (result.success && result.token) {
         res.json({
@@ -152,7 +155,8 @@ export class AuthWebController {
       // 401 para refresh inválido/expirado/reusado, 400 para demais falhas
       const statusCode = result.code === 'REFRESH_TOKEN_EXPIRED' ||
                          result.code === 'REFRESH_TOKEN_INVALID' ||
-                         result.code === 'REFRESH_TOKEN_REUSED' ? 401 : 400;
+                         result.code === 'REFRESH_TOKEN_REUSED' ? 401 :
+        result.code === REVOCATION_UNAVAILABLE_CODE ? 503 : 400;
       next(new HttpError(statusCode, result.code || 'REFRESH_TOKEN_INVALID', result.error || 'Falha ao renovar tokens'));
 
     } catch (error) {

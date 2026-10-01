@@ -400,19 +400,32 @@ executa: primário cai, leitura/escrita seguem no novo primário, app reconecta.
 
 ## 5.1 Resposta automática ao reuso de refresh (detecção já existe, resposta não)
 
-**Status: pendente — hoje `REFRESH_TOKEN_REUSED` vira só 401.**
+**Status: implementado em 2026-10-01.** A detecção distingue o marcador
+`rotated` de revogação comum; o caso de uso revoga todas as sessões por `sv`,
+mantém 401 no reuso e retorna 503 se o Redis não confirmar a revogação. Os
+testes unitários/integrados passaram; a suíte E2E foi atualizada, mas não pôde
+ser executada neste host porque o Docker CLI não está instalado.
 
-- [ ] no reuso detectado (`consumeRefreshToken`), além do 401: **revogar a sessão do usuário** (`endSession`), marcando `sv` — o atacante e o token antigo morrem juntos
-- [ ] evento de segurança `token_reuse_detected` para a auditoria + alerta de gravidade alta via `authEventSink`
-- [ ] distinção honesta: reuso pode ser erro de cliente (proxy fazendo retry) — o 401 continua, e a resposta agressiva é **condicionável** (`AUTO_REVOKE_ON_REUSE`, default protocolo: revogar)
-- [ ] testes: refletir esse comportamento novo no `tests/e2e` e unit do `jwt-token-service`
-- [ ] atualizar README/SEGURANCA (contrato muda: reuso ≠ só 401)
+- [x] no reuso detectado, além do 401: revogar a sessão do usuário via `revokeUserTokens`, incrementando `sv` — o atacante e o token antigo morrem juntos
+- [x] evento de segurança `TOKEN_REUSE_DETECTED` para a auditoria + gravidade alta via `authEventSink`
+- [x] distinção honesta: reuso pode ser erro de cliente (proxy fazendo retry) — o 401 continua, e a resposta agressiva é condicionável por `AUTO_REVOKE_ON_REUSE` (padrão: revogar)
+- [x] testes unitários/integrados provam revogação, opt-out, indisponibilidade e evento; E2E atualizado para provar que o access token vencedor também morre (execução bloqueada neste host sem Docker)
+- [x] atualizar README/SEGURANCA (contrato muda: reuso não é só 401)
 
-**Definição de pronto:** um teste provando que dar um refresh já usado, com o
-usuário logado em outro device, derruba a sessão do device legítimo **e** o
-reuso em seguida dá 401 com outro código.
+**Definição de pronto: cumprida em unidade/integrado.** O teste usa o
+`AuthService`, o `JWTTokenService` real e Redis em memória: reusar o refresh
+rotacionado revoga o access token recém-emitido, e o refresh seguinte responde
+`REFRESH_TOKEN_INVALID`. O E2E equivalente está no código, aguardando execução
+em host com Docker.
 
 ## 5.2 Suite de sobrevivência a roubo de credenciais
+
+**Status: suíte de serviço implementada em 2026-10-01; prova contra Redis real pendente.**
+`tests/security/credential-theft.survival.test.ts` cobre T1–T6 com o
+`JWTTokenService` real e Redis em memória, além do caminho sem Redis em
+fail-closed (7 testes verdes). `npm run test:credential-theft` combina o E2E
+com dependências reais e essa suíte. O comando completo ainda não foi executado
+neste host: o Docker CLI está ausente.
 
 Uma suíte nova (`tests/security/credential-theft.survival.test.ts` + script) que
 encena o ataque contra a stack real e asserta que o **legítimo continua vivo**:
@@ -426,16 +439,21 @@ encena o ataque contra a stack real e asserta que o **legítimo continua vivo**:
 | T5 senha vazada aplicada em outras contas | senha da conta A usada em B/C (carta de força de "credencial stuffing") | taxa de sucesso = baseline (não há como detectar igualdade de hash barata — registrar limite no leia-me; opcional: hash igual predito = relogin forçado) |
 | T6 simulação de comprometimento | "achou" que foi roubado: muda senha + logout all | todos os tokens mortos imediatamente (já coberto; refazer na suite de sobrevivência) |
 
-- [ ] cada cenário roda **com Redis real** (compose isolado, como `test:infra`) e **também sem Redis** para medir o modo fail-closed
-- [ ] métricas de saída: tempo entre o primeiro uso do atacante e a detecção (≤ 1 rotação), e zero acesso do atacante a `/profile` depois da revogação
+- [x] cenários T1–T6 exercitados no nível de serviço com Redis em memória; fail-closed sem Redis prova que token pré-existente não é aceito
+- [ ] executar cada cenário contra Redis real e medir tempo de detecção (≤ 1 rotação) e zero acesso do atacante a `/profile` depois da revogação
 
 **Definição de pronto:** suite nova verde, documentada, e com 2 assertivas que
 quebram o build se a resposta automática for removida (mutation check).
 
 ## 5.3 Alerta e observabilidade do roubo
 
-- [ ] evento/risco "credenciais provavelmente comprometidas" no manifesto `/observability` e no sink
-- [ ] log estruturado com `auth_outcome=reused`, `auth_code=TOKEN_REUSE_DETECTED`
+**Status: implementado em 2026-10-01.** O sink registra o evento de gravidade
+alta e `/observability` expõe `security.auth_events.credential_compromise` com
+risco, contagem e última ocorrência. A contagem é por processo, não uma soma
+global entre workers.
+
+- [x] evento/risco "credenciais provavelmente comprometidas" no manifesto `/observability` e no sink
+- [x] log estruturado com `auth_outcome=reused`, `auth_code=TOKEN_REUSE_DETECTED` e `severity=high`
 
 ---
 

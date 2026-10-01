@@ -22,6 +22,7 @@ describe('authOutcomes - tradução do desfecho', () => {
     // Sinal de comprometimento. Se isto colapsar em `error`, o alerta de token
     // roubado deixa de existir e ninguém percebe.
     expect(authOutcomeFor('token_refresh', 'REFRESH_TOKEN_REUSED')).toBe('reused');
+    expect(authOutcomeFor('security', 'TOKEN_REUSE_DETECTED')).toBe('reused');
   });
 
   it('refresh inválido ou expirado vira "invalid"', () => {

@@ -322,6 +322,7 @@ export interface ServiceResult {
   success: boolean;
   error?: string;
   code?: string;
+  securityEvent?: 'TOKEN_REUSE_DETECTED';
   user?: SafeUser;
   token?: TokenPair;
 }
@@ -338,13 +339,21 @@ export class AuthService {
   private crypto: CryptoService;
   private tokenGenerator: TokenService;
   private logger: Logger;
+  private autoRevokeOnRefreshReuse: boolean;
 
-  constructor(userRepository: UserRepository, crypto: CryptoService, tokenGenerator: TokenService, logger: Logger) {
+  constructor(
+    userRepository: UserRepository,
+    crypto: CryptoService,
+    tokenGenerator: TokenService,
+    logger: Logger,
+    autoRevokeOnRefreshReuse = true
+  ) {
     // Injeção de dependência através dos PORTS
     this.userRepository = userRepository;
     this.crypto = crypto;
     this.tokenGenerator = tokenGenerator;
     this.logger = logger;
+    this.autoRevokeOnRefreshReuse = autoRevokeOnRefreshReuse;
   }
 
   /**
@@ -667,10 +676,27 @@ export class AuthService {
 
     } catch (error) {
       this.logger.error('Erro ao renovar tokens', error);
+      const tokenError = error as { code?: string; userId?: string };
+      if (tokenError.code === 'REFRESH_TOKEN_REUSED' && this.autoRevokeOnRefreshReuse && tokenError.userId) {
+        try {
+          const revoked = await this.tokenGenerator.revokeUserTokens(tokenError.userId);
+          if (!revoked) {
+            throw new Error('Revogação da sessão não confirmada');
+          }
+        } catch (revocationError) {
+          this.logger.error('Falha ao revogar sessão após reuso de refresh token', revocationError);
+          return {
+            success: false,
+            error: 'Não foi possível revogar a sessão após reuso do refresh token',
+            code: REVOCATION_UNAVAILABLE_CODE,
+            securityEvent: 'TOKEN_REUSE_DETECTED'
+          };
+        }
+      }
       return {
         success: false,
         error: domainFailureMessage(error, 'Não foi possível renovar os tokens'),
-        code: (error as { code?: string }).code || 'REFRESH_TOKEN_INVALID'
+        code: tokenError.code || 'REFRESH_TOKEN_INVALID'
       };
     }
   }

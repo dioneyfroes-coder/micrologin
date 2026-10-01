@@ -72,7 +72,13 @@ export function bootstrapServices() {
     const jwtService = container.resolve<TokenService>('jwtService');
     const logger = container.resolve<Logger>('logger');
 
-    return new AuthService(userRepository, cryptoService, jwtService, logger);
+    return new AuthService(
+      userRepository,
+      cryptoService,
+      jwtService,
+      logger,
+      securityConfig.session.autoRevokeOnRefreshReuse
+    );
   });
 
   // Registrar controllers/middleware web

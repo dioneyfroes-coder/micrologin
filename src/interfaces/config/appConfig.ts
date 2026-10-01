@@ -361,7 +361,8 @@ export const securityConfig = {
   session: {
     failOpen: sessionFailOpenEnv === undefined
       ? !isProductionEnv
-      : sessionFailOpenEnv === 'true'
+      : sessionFailOpenEnv === 'true',
+    autoRevokeOnRefreshReuse: process.env.AUTO_REVOKE_ON_REUSE !== 'false'
   },
 
   /**

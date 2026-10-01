@@ -63,7 +63,7 @@ por IP. O `liveness` foi feito para não depender disso (ver README).
 | --- | --- | --- | --- |
 | T1 | Credential stuffing / força bruta | rate limit por IP **e** por conta; login responde genérico | `advancedRateLimit.ts` |
 | T2 | Enumeração de contas | `/login` não distingue usuário inexistente de senha errada; username normalizado | `AuthService`, `usernamePolicy.ts` |
-| T3 | Roubo de refresh token | rotação de consumo único com `SET NX` antes de emitir; reuso é sempre 401 | `jwtTokenService.ts:refreshTokens` |
+| T3 | Roubo de refresh token | rotação `SET NX`; reuso publica `TOKEN_REUSE_DETECTED` (gravidade alta), revoga todas as sessões e responde 401 | `jwtTokenService.ts:refreshTokens`, `AuthService.refreshUserTokens` |
 | T4 | Token revogado ainda aceito | blacklist por `jti` + `sv` de sessão; logout revoga o par inteiro | `AuthService.endSession` |
 | T5 | Redis fora do ar | `SESSION_FAIL_OPEN=false` (padrão em produção) → `503`, nunca aceitar sem revogação | `isRevocationStoreReady` |
 | T6 | SQL/NoSQL injection | sem SQL no projeto; Mongo comongoose sanitiza o objeto; input validado por tipo | `validation.ts` |
@@ -689,6 +689,34 @@ A consequência de não ter feito isso antes é a lição registrada: **a verifi
 de saúde é código que roda em produção e precisa dos mesmos testes de
 concorrência do resto do serviço.** Ela foi a última parte do sistema a ser
 exercitada sob carga real, e a única que não aguentou.
+
+### D25 — Reuso de refresh revoga a sessão inteira, inclusive em corrida
+
+O refresh é de consumo único (`SET NX`), mas rejeitar apenas a segunda
+requisição deixa uma ambiguidade perigosa: o servidor sabe que o mesmo segredo
+foi apresentado por dois clientes e não consegue distinguir qual deles é o
+legítimo. A política padrão é encerrar todas as sessões do usuário quando o
+marcador já contém `rotated`. A resposta ao refresh reutilizado continua sendo
+401 (`REFRESH_TOKEN_REUSED`); se o Redis não confirmar a revogação, a resposta é
+503 (`REVOCATION_UNAVAILABLE`), sem fingir que a sessão foi encerrada.
+
+O adaptador associa o `userId` verificado ao erro interno, e o caso de uso
+incrementa `user_session_version:<userId>`. O par vencedor de uma disputa
+concorrente conserva o `sv` do refresh original ao ser emitido: reler a versão
+depois da revogação poderia criar um token já com a nova versão e fazê-lo
+sobreviver à detecção. O sink publica `kind=security`,
+`auth_code=TOKEN_REUSE_DETECTED`, `auth_outcome=reused` e `severity=high`, além do
+evento normal `token_refresh`. O manifesto `/observability` agrega o sinal em
+`security.auth_events.credential_compromise` (`likely_compromised`, gravidade,
+contagem e horário da última detecção). A contagem é local ao processo; ela não
+representa uma soma global entre workers ou réplicas.
+
+O comportamento agressivo pode ser desativado explicitamente com
+`AUTO_REVOKE_ON_REUSE=false` para clientes que fazem retry automático; nesse
+modo o refresh repetido ainda recebe 401 e o evento continua sendo publicado.
+O padrão é revogar (`true`). A cobertura inclui unidade para revogação,
+opt-out, indisponibilidade e evento, além do E2E concorrente que exige que o
+access token do vencedor também seja recusado.
 
 ---
 

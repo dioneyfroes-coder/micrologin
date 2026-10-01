@@ -5,6 +5,7 @@ import {
   recordAuthEvent,
   recordLoginAttempt,
   recordTokenRefresh,
+  recordSecurityEvent,
   recordPasswordChange,
   setAuthEventSink
 } from '../../src/application/observability/authEventSink.js';
@@ -94,6 +95,17 @@ describe('authEventSink - o desfecho viaja já traduzido', () => {
     // agrupar, o código serve para investigar.
     expect(events.map(event => event.code))
       .toEqual(['REFRESH_TOKEN_REUSED', 'REFRESH_TOKEN_INVALID']);
+  });
+
+  it('publica a detecção de reuso como evento de segurança', () => {
+    recordSecurityEvent('TOKEN_REUSE_DETECTED');
+
+    expect(events).toMatchObject([{
+      kind: 'security',
+      outcome: 'reused',
+      code: 'TOKEN_REUSE_DETECTED',
+      severity: 'high'
+    }]);
   });
 
   it('separa revogação indisponível de token ruim', () => {

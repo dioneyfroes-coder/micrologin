@@ -190,6 +190,57 @@ describe('AuthService - refresh e revogação', () => {
     expect(result.code).toBe('REFRESH_TOKEN_INVALID');
   });
 
+  it('revoga a sessão quando detecta reuso de refresh', async() => {
+    const logger = makeLogger();
+    const tokenGenerator = {
+      refreshTokens: jest.fn().mockRejectedValue(
+        Object.assign(new Error('refresh reutilizado'), { code: 'REFRESH_TOKEN_REUSED', userId: 'u-7' })
+      ),
+      revokeUserTokens: jest.fn().mockResolvedValue(true)
+    };
+    const service = new AuthService({}, {}, tokenGenerator, logger);
+
+    const result = await service.refreshUserTokens('reused-refresh-token');
+
+    expect(tokenGenerator.revokeUserTokens).toHaveBeenCalledWith('u-7');
+    expect(result).toMatchObject({ success: false, code: 'REFRESH_TOKEN_REUSED' });
+  });
+
+  it('permite desativar a revogação automática de sessão por configuração', async() => {
+    const logger = makeLogger();
+    const tokenGenerator = {
+      refreshTokens: jest.fn().mockRejectedValue(
+        Object.assign(new Error('refresh reutilizado'), { code: 'REFRESH_TOKEN_REUSED', userId: 'u-8' })
+      ),
+      revokeUserTokens: jest.fn().mockResolvedValue(true)
+    };
+    const service = new AuthService({}, {}, tokenGenerator, logger, false);
+
+    const result = await service.refreshUserTokens('reused-refresh-token');
+
+    expect(tokenGenerator.revokeUserTokens).not.toHaveBeenCalled();
+    expect(result.code).toBe('REFRESH_TOKEN_REUSED');
+  });
+
+  it('reporta indisponibilidade se não consegue confirmar a revogação da sessão', async() => {
+    const logger = makeLogger();
+    const tokenGenerator = {
+      refreshTokens: jest.fn().mockRejectedValue(
+        Object.assign(new Error('refresh reutilizado'), { code: 'REFRESH_TOKEN_REUSED', userId: 'u-9' })
+      ),
+      revokeUserTokens: jest.fn().mockResolvedValue(false)
+    };
+    const service = new AuthService({}, {}, tokenGenerator, logger);
+
+    const result = await service.refreshUserTokens('reused-refresh-token');
+
+    expect(result).toMatchObject({
+      success: false,
+      code: 'REVOCATION_UNAVAILABLE',
+      securityEvent: 'TOKEN_REUSE_DETECTED'
+    });
+  });
+
   it('revoga um token específico', async() => {
     const logger = makeLogger();
     const service = new AuthService({}, {}, tokenGenerator, logger);

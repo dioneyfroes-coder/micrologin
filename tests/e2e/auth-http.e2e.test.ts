@@ -472,14 +472,14 @@ describe('E2E HTTP - fluxo completo contra infra real (compose)', () => {
     expect(rejectedBody.success).toBe(false);
     expect(rejectedBody.code).toMatch(/REFRESH_TOKEN_(INVALID|REUSED)/);
 
-    // O vencedor recebeu um par novo e utilizável
+    // O vencedor recebe o par, mas a detecção do reuso revoga a sessão inteira.
     const winner = first.status === 200 ? first : second;
     const winnerBody = await winner.json() as { data?: { accessToken?: string; refreshToken?: string } };
     expect(winnerBody.data?.accessToken).toBeTruthy();
     expect(winnerBody.data?.refreshToken).not.toBe(refreshToken);
 
     const profile = await getJson('/profile', bearer(winnerBody.data?.accessToken as string));
-    expect(profile.status).toBe(200);
+    expect(profile.status).toBe(401);
   }, 30000);
 
   it('logout só com o refresh token encerra a sessão inteira', async() => {

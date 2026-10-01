@@ -49,7 +49,7 @@ const AUTH_OUTCOME_SET: ReadonlySet<string> = new Set<string>(AUTH_OUTCOMES);
 /**
  * Tipos de evento de autenticação contados.
  */
-export type AuthEventKind = 'login' | 'token_refresh' | 'password_change';
+export type AuthEventKind = 'login' | 'token_refresh' | 'password_change' | 'security';
 
 /**
  * Rótulos válidos por tipo de evento.
@@ -61,7 +61,8 @@ export type AuthEventKind = 'login' | 'token_refresh' | 'password_change';
 export const AUTH_OUTCOMES_BY_KIND: Readonly<Record<AuthEventKind, readonly AuthOutcome[]>> = {
   login: ['success', 'failure', 'unavailable', 'error'],
   token_refresh: ['success', 'invalid', 'reused', 'unavailable', 'error'],
-  password_change: ['success', 'current_password_invalid', 'rejected', 'error']
+  password_change: ['success', 'current_password_invalid', 'rejected', 'error'],
+  security: ['reused', 'error']
 };
 
 /**
@@ -93,6 +94,9 @@ const OUTCOME_BY_CODE: Readonly<Record<AuthEventKind, Readonly<Record<string, Au
     // separa "não deu para revogar" de "token ruim".
     REVOCATION_UNAVAILABLE: 'unavailable'
   },
+  security: {
+    TOKEN_REUSE_DETECTED: 'reused'
+  },
   password_change: {
     CURRENT_PASSWORD_INVALID: 'current_password_invalid',
     INVALID_PASSWORD: 'rejected',
@@ -116,7 +120,8 @@ const OUTCOME_BY_CODE: Readonly<Record<AuthEventKind, Readonly<Record<string, Au
 const OUTCOME_WITHOUT_CODE: Readonly<Record<AuthEventKind, AuthOutcome>> = {
   login: 'failure',
   token_refresh: 'invalid',
-  password_change: 'rejected'
+  password_change: 'rejected',
+  security: 'error'
 };
 
 /**

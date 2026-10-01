@@ -38,6 +38,7 @@ export interface AuthEvent {
   kind: AuthEventKind;
   outcome: AuthOutcome;
   code?: string;
+  severity?: 'high';
   at: string;
 }
 
@@ -48,6 +49,15 @@ export interface AuthEvent {
  * causa da observabilidade. Quem implementa decide se engole ou registra.
  */
 export type AuthEventSink = (event: AuthEvent) => void;
+
+export interface AuthEventSnapshot {
+  credential_compromise: {
+    likely_compromised: boolean;
+    severity: 'high' | 'none';
+    token_reuse_detections: number;
+    last_detected_at: string | null;
+  };
+}
 
 /**
  * Destino padrao: log estruturado.
@@ -62,11 +72,23 @@ const logSink: AuthEventSink = (event) => {
     auth_kind: event.kind,
     auth_outcome: event.outcome,
     ...(event.code ? { auth_code: event.code } : {}),
+    ...(event.severity ? { severity: event.severity } : {}),
     at: event.at
   });
 };
 
 let sink: AuthEventSink = logSink;
+let tokenReuseDetections = 0;
+let lastTokenReuseAt: string | null = null;
+
+export const getAuthEventSnapshot = (): AuthEventSnapshot => ({
+  credential_compromise: {
+    likely_compromised: tokenReuseDetections > 0,
+    severity: tokenReuseDetections > 0 ? 'high' : 'none',
+    token_reuse_detections: tokenReuseDetections,
+    last_detected_at: lastTokenReuseAt
+  }
+});
 
 /**
  * Troca o destino dos eventos de autenticacao.
@@ -96,17 +118,25 @@ export const setAuthEventSink = (next: AuthEventSink | null): (() => void) => {
  */
 export const recordAuthEvent = (
   kind: AuthEventKind,
-  outcomeOrCode: string | null | undefined
+  outcomeOrCode: string | null | undefined,
+  severity?: 'high'
 ): AuthOutcome => {
   const outcome = authOutcomeFor(kind, outcomeOrCode);
   const code = outcomeOrCode ?? undefined;
+  const at = new Date().toISOString();
+
+  if (kind === 'security' && code === 'TOKEN_REUSE_DETECTED' && outcome === 'reused') {
+    tokenReuseDetections++;
+    lastTokenReuseAt = at;
+  }
 
   try {
     sink({
       kind,
       outcome,
       ...(outcome !== code ? { code } : {}),
-      at: new Date().toISOString()
+      ...(severity ? { severity } : {}),
+      at
     });
   } catch {
     // Observabilidade quebrada nao pode derrubar autenticacao. O logout e o
@@ -121,6 +151,9 @@ export const recordLoginAttempt = (outcomeOrCode: string | null | undefined): Au
 
 export const recordTokenRefresh = (outcomeOrCode: string | null | undefined): AuthOutcome =>
   recordAuthEvent('token_refresh', outcomeOrCode);
+
+export const recordSecurityEvent = (outcomeOrCode: string | null | undefined): AuthOutcome =>
+  recordAuthEvent('security', outcomeOrCode, 'high');
 
 export const recordPasswordChange = (outcomeOrCode: string | null | undefined): AuthOutcome =>
   recordAuthEvent('password_change', outcomeOrCode);

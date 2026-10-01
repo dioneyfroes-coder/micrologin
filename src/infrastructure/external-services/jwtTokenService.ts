@@ -298,6 +298,14 @@ export class JWTTokenService implements TokenService {
    * @returns { accessToken, refreshToken, expiresIn }
    */
   async generateTokenPair(payload: { id: string; username: string }, options: TokenGenerationOptions = {}): Promise<TokenPair> {
+    return this.generateTokenPairAtSessionVersion(payload, options);
+  }
+
+  private async generateTokenPairAtSessionVersion(
+    payload: { id: string; username: string },
+    options: TokenGenerationOptions,
+    sessionVersion?: number
+  ): Promise<TokenPair> {
     try {
       // Emitir exige o mesmo que verificar: o armazenamento de revogação tem de
       // estar utilizável, senão o token nasce sem como morrer.
@@ -313,7 +321,9 @@ export class JWTTokenService implements TokenService {
       // A claim `sv` amarra o token à versão de sessão do usuário: logout em
       // massa (ou troca de senha) incrementa a versão e derruba todos os
       // tokens emitidos antes, sem depender da precisão do relógio.
-      const sessionClaim = await this.sessionVersionClaim(payload.id);
+      const sessionClaim = sessionVersion === undefined
+        ? await this.sessionVersionClaim(payload.id)
+        : { sv: sessionVersion };
 
       // ✅ Access Token (curta vida)
       // `jti` único por token: é a chave de revogação e o que torna dois
@@ -441,13 +451,6 @@ export class JWTTokenService implements TokenService {
     try {
       this.assertRevocationAvailable();
 
-      if (this.redisClient) {
-        const isBlacklisted = await this.isTokenBlacklisted(token);
-        if (isBlacklisted) {
-          throw new Error('Refresh token foi revogado');
-        }
-      }
-
       const payload = await this.refreshSigner.verify(token, {
         issuer: this.issuer,
         audience: this.audience
@@ -461,9 +464,21 @@ export class JWTTokenService implements TokenService {
         throw tokenError;
       }
 
+      if (this.redisClient && await this.isTokenBlacklisted(token)) {
+        const reason = await this.redisClient.get(this.blacklistKey(token));
+        if (reason === BLACKLIST_ROTATED_VALUE) {
+          const tokenError = new Error('Refresh token já utilizado - possível reuso de token');
+          (tokenError as Error & { code?: string; userId?: string }).code = 'REFRESH_TOKEN_REUSED';
+          (tokenError as Error & { code?: string; userId?: string }).userId = payload.id;
+          throw tokenError;
+        }
+        throw new Error('Refresh token foi revogado');
+      }
+
       return payload;
     } catch (error) {
-      if ((error as Error & { code?: string }).code === REVOCATION_UNAVAILABLE_CODE) {
+      const code = (error as Error & { code?: string }).code;
+      if (code === REVOCATION_UNAVAILABLE_CODE || code === 'REFRESH_TOKEN_REUSED') {
         throw error;
       }
       if ((error as Error).name === 'TokenExpiredError') {
@@ -536,9 +551,10 @@ export class JWTTokenService implements TokenService {
       await this.consumeRefreshToken(refreshToken, decoded);
 
       // Gerar novo par de tokens
-      const newTokens = await this.generateTokenPair(
+      const newTokens = await this.generateTokenPairAtSessionVersion(
         { id: decoded.id, username: decoded.username },
-        options
+        options,
+        decoded.sv ?? 0
       );
 
       return newTokens;
@@ -587,6 +603,9 @@ export class JWTTokenService implements TokenService {
           : 'Refresh token foi revogado'
       );
       (error as Error & { code?: string }).code = reused ? 'REFRESH_TOKEN_REUSED' : 'REFRESH_TOKEN_INVALID';
+      if (reused) {
+        (error as Error & { userId?: string }).userId = payload.id;
+      }
       throw error;
     } catch (error) {
       if ((error as Error & { code?: string }).code) {

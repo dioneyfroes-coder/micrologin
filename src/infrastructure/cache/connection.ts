@@ -9,7 +9,7 @@
  */
 
 import redis, { RedisClientType, RedisDefaultModules, RedisClientOptions } from 'redis';
-import { getRedisClientOptions, RedisConnectionOptions } from '../../interfaces/config/redisConfig.js';
+import { getRedisClientOptions, getRedisConfig, RedisConnectionOptions } from '../../interfaces/config/redisConfig.js';
 import { logger } from '../../shared/utils/logger.js';
 
 export type RedisClient = RedisClientType<RedisDefaultModules>;
@@ -26,6 +26,11 @@ const RECONNECT_MAX_DELAY_MS = 5000;
  * @returns Cliente Redis ou null se falhar
  */
 export const initRedis = async(): Promise<RedisClient | null> => {
+  if (!getRedisConfig().enabled) {
+    isHealthy = false;
+    return null;
+  }
+
   if (client && client.isReady) {
     return client;
   }

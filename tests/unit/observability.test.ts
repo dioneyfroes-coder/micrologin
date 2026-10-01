@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { buildObservabilitySnapshot } from '../../src/application/observability/observability.js';
 import { requestLogAggregator } from '../../src/application/observability/requestLogAggregator.js';
+import { getAuthEventSnapshot, recordSecurityEvent } from '../../src/application/observability/authEventSink.js';
 
 describe('buildObservabilitySnapshot', () => {
   const original = {
@@ -50,7 +51,7 @@ describe('buildObservabilitySnapshot', () => {
     expect(snapshot.requests.by_route).toHaveLength(2);
 
     expect(snapshot.health.status).toBe('healthy');
-    expect(snapshot.security).toEqual({ riskLevel: 'LOW' });
+    expect(snapshot.security).toMatchObject({ riskLevel: 'LOW', auth_events: getAuthEventSnapshot() });
     expect(snapshot.logging.format).toBe('structured');
     expect(snapshot.logging.request_id_header).toBe('X-Request-Id');
   });
@@ -60,5 +61,25 @@ describe('buildObservabilitySnapshot', () => {
     expect(snapshot.health).toBeDefined();
     expect(snapshot.security).toBeDefined();
     expect(snapshot.requests.total).toBe(0);
+  });
+
+  it('manifesta suspeita de comprometimento após detectar reuso de refresh', async() => {
+    const before = getAuthEventSnapshot().credential_compromise.token_reuse_detections;
+    recordSecurityEvent('TOKEN_REUSE_DETECTED');
+
+    const snapshot = await buildObservabilitySnapshot({
+      healthCheck: async() => ({ status: 'healthy', services: {} })
+    });
+
+    expect(snapshot.security).toMatchObject({
+      auth_events: {
+        credential_compromise: {
+          likely_compromised: true,
+          severity: 'high',
+          token_reuse_detections: before + 1,
+          last_detected_at: expect.any(String)
+        }
+      }
+    });
   });
 });

@@ -1,5 +1,6 @@
 import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 import { AuthWebController } from '../../src/application/controllers/AuthController.js';
+import { setAuthEventSink } from '../../src/application/observability/authEventSink.js';
 import { HttpError } from '../../src/shared/utils/errorHandler.js';
 
 describe('AuthWebController - contrato HTTP', () => {
@@ -222,6 +223,60 @@ describe('AuthWebController - contrato HTTP', () => {
 
     const err = next.mock.calls[0][0];
     expect(err.statusCode).toBe(401);
+  });
+
+  it('responde 401 e publica alerta de alta gravidade quando detecta reuso', async() => {
+    const events: Array<Record<string, unknown>> = [];
+    const restoreSink = setAuthEventSink(event => events.push(event));
+    const service = {
+      refreshUserTokens: jest.fn().mockResolvedValue({
+        success: false,
+        code: 'REFRESH_TOKEN_REUSED',
+        error: 'refresh reutilizado'
+      })
+    };
+    req.body = { refreshToken: 'reused-refresh-token' };
+
+    try {
+      await buildController(service).refresh(req, res, next);
+
+      expect(next.mock.calls[0][0]).toMatchObject({ statusCode: 401, code: 'REFRESH_TOKEN_REUSED' });
+      expect(events).toContainEqual(expect.objectContaining({
+        kind: 'security',
+        outcome: 'reused',
+        code: 'TOKEN_REUSE_DETECTED',
+        severity: 'high'
+      }));
+    } finally {
+      restoreSink();
+    }
+  });
+
+  it('responde 503 quando a revogação automática não pode ser confirmada', async() => {
+    const events: Array<Record<string, unknown>> = [];
+    const restoreSink = setAuthEventSink(event => events.push(event));
+    const service = {
+      refreshUserTokens: jest.fn().mockResolvedValue({
+        success: false,
+        code: 'REVOCATION_UNAVAILABLE',
+        error: 'indisponível',
+        securityEvent: 'TOKEN_REUSE_DETECTED'
+      })
+    };
+    req.body = { refreshToken: 'reused-refresh-token' };
+
+    try {
+      await buildController(service).refresh(req, res, next);
+
+      expect(next.mock.calls[0][0]).toMatchObject({ statusCode: 503, code: 'REVOCATION_UNAVAILABLE' });
+      expect(events).toContainEqual(expect.objectContaining({
+        kind: 'security',
+        code: 'TOKEN_REUSE_DETECTED',
+        severity: 'high'
+      }));
+    } finally {
+      restoreSink();
+    }
   });
 
   it('faz logout revogando access e refresh tokens', async() => {

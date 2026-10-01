@@ -62,6 +62,25 @@ const loadCache = async() => {
 };
 
 describe('Redis cache - conexão', () => {
+  it('não cria cliente quando REDIS_ENABLED=false', async() => {
+    const previous = process.env.REDIS_ENABLED;
+    process.env.REDIS_ENABLED = 'false';
+
+    try {
+      const cache = await loadCache();
+
+      expect(await cache.initRedis()).toBeNull();
+      expect(createClientMock).not.toHaveBeenCalled();
+      expect(cache.getRedisStatus().status).toBe('disconnected');
+    } finally {
+      if (previous === undefined) {
+        delete process.env.REDIS_ENABLED;
+      } else {
+        process.env.REDIS_ENABLED = previous;
+      }
+    }
+  });
+
   it('inicia desconectado e indisponível', async() => {
     const cache = await loadCache();
 
