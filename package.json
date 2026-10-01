@@ -23,6 +23,7 @@
     "test:e2e:down": "cross-env MONGO_PORT=27020 REDIS_PORT=6380 docker compose stop mongodb redis",
     "test:credential-theft:unit": "cross-env NODE_ENV=test NODE_OPTIONS=\"--experimental-vm-modules\" jest tests/security/credential-theft.survival.test.ts --detectOpenHandles --runInBand",
     "test:credential-theft": "npm run test:e2e && npm run test:credential-theft:unit",
+    "test:ddos": "node scripts/ddos-survival-test.mjs",
     "test:infra": "bash scripts/infra-resilience-test.sh",
     "test:backup": "bash scripts/test-backup.sh",
     "test:redis": "bash scripts/test-redis-persistence.sh",

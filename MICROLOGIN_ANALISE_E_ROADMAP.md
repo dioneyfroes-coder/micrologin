@@ -475,6 +475,13 @@ global entre workers.
 
 ## 6.2 Suite de sobrevivência DDoS
 
+**Status: implementação do runner concluída em 2026-10-01; execução Docker/k6 pendente.**
+`scripts/ddos-survival-test.mjs` sobe o perfil isolado `ddos`, gera material
+efêmero e limpa stack/volumes no `finally`. O destino é loopback por padrão e
+hosts remotos são recusados. O resumo coleta liveness p95, 429/5xx, Slowloris,
+payloads, `RestartCount` e pico de memória por container. A suite não foi
+executada neste host.
+
 Script novo estilo `test:infra` (`scripts/ddos-survival-test.sh` + compose
 isolado) que dispara e mede:
 
@@ -486,8 +493,8 @@ isolado) que dispara e mede:
 | A6 slowloris | script Node de sockets parciais (sem dependência externa) | conexões morrem por timeout (proxy), app continua respondendo; sem esgotar FD |
 | A5 pós-ataque | após parar o ataque | serviço volta ao p50 baseline sozinho (auto-recuperação) |
 
-- [ ] k6: adicionar cenários de sobrescrita (override) além do corrente; thresholds de p95/erro por rota
-- [ ] assertivas duras no script (+ sample no CI remoto quando houver infra): `liveness==200`, `RestartCount==0`, `rate_limited>0`, `recovery p95 < baseline`
+- [x] k6: cenários de login/refresh/register e XFF variado, com p95 por rota e métricas de 429/5xx/liveness
+- [x] assertivas no runner: `liveness==200`, `RestartCount` inalterado, `rate_limited>0`, payload 400/413, conexões Slowloris encerradas e p95 de recuperação limitado
 - [ ] documentar limites operacionais atingidos (ex.: "sem proxy, 400VUs derrubam 1 worker; com proxy, aguenta 2s de rajada" etc.)
 
 **Definição de pronto:** script roda de ponta a ponta contra a imagem de

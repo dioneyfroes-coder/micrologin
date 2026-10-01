@@ -758,6 +758,11 @@ no host com Docker. `/liveness` e `/readiness` não recebem `limit_req` nem
 `limit_conn`; o disjuntor do app também já os exclui, evitando que sobrecarga
 converta a própria sonda em motivo para reinício.
 
+O runner `scripts/ddos-survival-test.mjs` usa o perfil efêmero do Compose de
+resiliência, destrói volumes no fim e só aceita loopback. Ele gera credenciais e
+certificado temporários, mede os contêineres envolvidos e nunca aponta para o
+Compose de produção por padrão.
+
 ---
 
 ## Referências

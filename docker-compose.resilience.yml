@@ -38,8 +38,8 @@ services:
       context: .
       dockerfile: Dockerfile
       target: production
-    image: micrologin-resilience:local
-    container_name: micrologin-resilience-app
+    image: ${RESILIENCE_IMAGE:-micrologin-resilience:local}
+    container_name: ${RESILIENCE_APP_CONTAINER_NAME:-micrologin-resilience-app}
     environment:
       NODE_ENV: production
       PORT: 3000
@@ -71,13 +71,14 @@ services:
       # Sem certificado no stack de teste; o app só avisa no log.
       SSL_ENABLED: "false"
       CLUSTER_ENABLED: "false"
+      TRUST_PROXY: ${RESILIENCE_TRUST_PROXY:-false}
       # Limite de login folgado: o teste faz logins em sequência e o limite de
       # produção (5 por 15min) transformaria uma assertiva sobre 503 em uma
       # falha de teste. O objetivo é que qualquer 429 observado aqui seja
       # realmente o bug (falha de infraestrutura tratada como abuso).
-      RATE_LIMIT_PROD_LOGIN_POINTS: "500"
+      RATE_LIMIT_PROD_LOGIN_POINTS: ${RESILIENCE_LOGIN_POINTS:-500}
       RATE_LIMIT_PROD_LOGIN_DURATION: "60"
-      RATE_LIMIT_PROD_IP_POINTS: "500"
+      RATE_LIMIT_PROD_IP_POINTS: ${RESILIENCE_IP_POINTS:-500}
       LOG_LEVEL: info
     volumes:
       # Par ES256 gerado em disco pelo script, não em variável de ambiente: o
@@ -94,7 +95,7 @@ services:
         target: /run/secrets/deps
         read_only: true
     ports:
-      - "${RESILIENCE_PORT:-3200}:3000"
+      - "127.0.0.1:${RESILIENCE_PORT:-3200}:3000"
     networks:
       - resilience-network
     restart: unless-stopped
@@ -112,7 +113,7 @@ services:
 
   mongodb:
     image: mongo:7-jammy
-    container_name: micrologin-resilience-mongo
+    container_name: ${RESILIENCE_MONGO_CONTAINER_NAME:-micrologin-resilience-mongo}
     environment:
       MONGO_INITDB_ROOT_USERNAME: root
       MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/deps/mongo-root-password
@@ -145,7 +146,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: micrologin-resilience-redis
+    container_name: ${RESILIENCE_REDIS_CONTAINER_NAME:-micrologin-resilience-redis}
     # Sem persistência: o teste reinicia o Redis de propósito e não quer que a
     # retomada dependa de dados sobreviventes. `--aclfile` com `user default
     # off` faz a conexão anônima ser recusada.
@@ -168,6 +169,35 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  auth-proxy:
+    profiles: [ddos]
+    image: nginx:1.28-alpine
+    container_name: ${RESILIENCE_PROXY_CONTAINER_NAME:-micrologin-resilience-proxy}
+    ports:
+      - "127.0.0.1:${DDOS_PROXY_HTTP_PORT:-3201}:80"
+      - "127.0.0.1:${DDOS_PROXY_TLS_PORT:-3203}:443"
+    volumes:
+      - type: bind
+        source: ./nginx/nginx-prod.conf
+        target: /etc/nginx/nginx.conf
+        read_only: true
+      - type: bind
+        source: ${RESILIENCE_TLS_DIR:-./.resilience-tls}
+        target: /etc/nginx/tls
+        read_only: true
+    networks:
+      - resilience-network
+    depends_on:
+      auth-service:
+        condition: service_healthy
+    restart: unless-stopped
+    cpus: 0.25
+    mem_limit: 128m
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 4096
 
 networks:
   resilience-network:

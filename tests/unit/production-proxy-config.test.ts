@@ -10,11 +10,20 @@ const compose = load(readFileSync(resolve(ROOT, 'docker-compose.prod.yml'), 'utf
     image?: string;
     ports?: string[];
     expose?: string[];
+    container_name?: string;
     networks?: string[];
     environment?: Record<string, string>;
     volumes?: Array<{ target?: string; source?: string }>;
     sysctls?: Record<string, string>;
     ulimits?: { nofile?: { soft?: number; hard?: number } };
+  }>;
+};
+const resilienceCompose = load(readFileSync(resolve(ROOT, 'docker-compose.resilience.yml'), 'utf8')) as {
+  services: Record<string, {
+    profiles?: string[];
+    ports?: string[];
+    container_name?: string;
+    networks?: string[];
   }>;
 };
 const proxyConfig = readFileSync(resolve(ROOT, 'nginx/nginx-prod.conf'), 'utf8');
@@ -25,6 +34,7 @@ describe('production reverse proxy configuration', () => {
     const proxy = compose.services['auth-proxy'];
 
     expect(api.ports).toBeUndefined();
+    expect(api.container_name).toBeUndefined();
     expect(api.expose).toContain('3000');
     expect(api.environment?.TRUST_PROXY).toBe('1');
     expect(proxy.image).toBe('nginx:1.28-alpine');
@@ -57,5 +67,22 @@ describe('production reverse proxy configuration', () => {
     expect(proxyConfig).toContain('location ~ ^/(liveness|readiness)$ {');
     expect(proxyConfig).toContain('limit_req zone=per_ip burst=40 nodelay;');
     expect(proxyConfig).toContain('limit_conn per_ip_conn 40;');
+    const healthProbeLocation = proxyConfig.match(/location ~ \^\/\(liveness\|readiness\)\$ \{([\s\S]*?)\n {4}\}/)?.[1] ?? '';
+    expect(healthProbeLocation).not.toContain('limit_req');
+    expect(healthProbeLocation).not.toContain('limit_conn');
+  });
+
+  it('oferece perfil ddos isolado em loopback com imagem de produção', () => {
+    const proxy = resilienceCompose.services['auth-proxy'];
+    const api = resilienceCompose.services['auth-service'];
+
+    expect(proxy.profiles).toContain('ddos');
+    expect(proxy.ports).toEqual(expect.arrayContaining([
+      '127.0.0.1:${DDOS_PROXY_HTTP_PORT:-3201}:80',
+      '127.0.0.1:${DDOS_PROXY_TLS_PORT:-3203}:443'
+    ]));
+    expect(proxy.networks).toEqual(['resilience-network']);
+    expect(api.ports?.[0]).toContain('127.0.0.1:');
+    expect(api.container_name).toContain('${RESILIENCE_APP_CONTAINER_NAME:-');
   });
 });

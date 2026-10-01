@@ -259,6 +259,7 @@ npm run test:backup         # backup/restauração do Mongo de ponta a ponta (ap
 npm run test:redis          # persistência da revogação (revoga, reinicia o Redis e exige que continue revogado)
 npm run test:config-backup  # backup/restauração da config EM EXECUÇÃO (devolve o valor do container, não o do disco)
 npm run test:secrets        # varredura de segredo: gitleaks + material/.env versionado
+npm run test:ddos           # stack efêmero: k6 + oversized/malformed + Slowloris + recuperação
 npm run test:coverage       # cobertura (text + html + lcov)
 npm run test:capacity       # baseline de capacidade por endpoint (k6 + RSS/heap)
 npm run lint                # ESLint em src/ e tests/
@@ -280,6 +281,12 @@ disjuntor de concorrência (default 1024) para medir o efeito dele. O bruto fica
 (ignorado pelo git) e a tabela interpretada em
 [`docs/metricas.md`](docs/metricas.md) §3. O último baseline: **22 logins/s por
 2.0 CPU** (argon2id), e `/refresh` perdendo vazão em 400 VUs.
+
+`test:ddos` inicia o perfil `ddos` do stack isolado, cria chaves/senhas/certificado
+temporários e os remove junto com os volumes ao terminar. Requer Docker Compose
+v2, Bash, OpenSSL e k6. O destino é somente loopback; o cenário recusa hosts
+externos. `DDOS_VUS`/`DDOS_DURATION` ajustam a carga e `DDOS_BASE_URL` muda a
+porta local do proxy.
 
 `test:infra` (`scripts/infra-resilience-test.sh`) sobe um stack isolado com a
 imagem de produção, para o Redis no meio do teste e reinicia o container,
