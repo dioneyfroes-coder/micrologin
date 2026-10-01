@@ -107,6 +107,33 @@ compartilhado entre réplicas.
 réplica A é rejeitado (401) pela réplica B depois que a revogação é feita em A;
 e um logout HTTP através do proxy invalida a sessão para todas.
 
+**Resolvido.** `npm run test:replica-session`
+(`scripts/replica-session-test.mjs`, artefato em
+`tests/unit/replica-session-driver.test.ts`). Três réplicas atrás do proxy TLS,
+chave ES256 provisionada e Redis/Mongo únicos, com as réplicas endereçadas pelo
+IP interno via `docker inspect` — o proxy é usado só para revogar, as
+verificações vão direto ao container, para que o 401 observado venha da réplica
+certa e não de round-robin.
+
+Verificado em execução real: 3 réplicas distintas alcançadas pelo proxy;
+token aceito nas 3 **antes** de revogar (chave compartilhada, senão o 401
+seguinte seria por motivo errado); logout pelo proxy com 401 nas 3; refresh
+roubado recusado; troca de senha com 401 do token antigo nas 3; sessão nova
+aceita nas 3 (a revogação não é um no-op).
+
+Os quatro modos de "passar pelo motivo errado" são guardados por teste, e cada
+guard foi checado por mutação:
+
+| Mutação | Guard que reprova |
+| --- | --- |
+| Remove a verificação pré-revogação | `verifica o token válido em todas as réplicas antes de revogar` |
+| Remove a sessão nova pós-troca | `prova que a revogação não é um no-op` |
+| Consulta as réplicas pela URL do proxy | `endereça as réplicas pelo IP interno` |
+| Baixa o piso de réplicas para 1 | `exige no mínimo duas réplicas por padrão` |
+
+O piso de 2 réplicas é o que impede a tautologia: com uma única réplica no
+upstream, "aceito / revogado / aceito de novo" passa sem compartilhar nada.
+
 ## P4 — Fase 5.2: T1–T6 nunca rodaram contra Redis real
 
 `tests/security/credential-theft.survival.test.ts:7` monta o Redis como um
