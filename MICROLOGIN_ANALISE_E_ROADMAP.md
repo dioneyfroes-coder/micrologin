@@ -344,7 +344,8 @@ Ver `D24` em `docs/SEGURANCA.md`.
 - [x] workers = CPUs disponíveis: `os.cpus().length` → `os.availableParallelism()`, que respeita a cota do cgroup. Não é ajuste fino: o valor antigo devolvia 4 workers num container de 2.0 CPU, e a 3.1 mediu ~370 MB de RSS **por processo**, ou seja ~1.4 GB — OOM killer garantido. Regressão em `tests/unit/cluster-config.test.ts` (5 casos, incluindo o fallback para runtimes sem `availableParallelism`), que falha contra a versão antiga
 - [x] **medido o efeito de 2 workers** (`docs/metricas.md` §4): `/refresh` ganha de verdade (+11.7% a 400 VUs: 485.2 → 541.8 rps, p99 2.48 s → 2.15 s) e `/login` não ganha nada (21.96 contra 22.13 rps, p99 piorando). As duas previsões da 3.1 se confirmaram
 - [ ] `/refresh` ainda degrada de 691.8 para 541.8 rps entre 200 e 400 VUs com 2 workers: passou a segunda rodada, mas o fila continua. Próximo alvo são as **idas ao Redis por refresh** (verificar JWT + `SET NX` + emitir par), serializadas por worker, e não a CPU
-- [ ] heap e GC sob carga (v8 max-old-space), timeouts, `keep-alive` no servidor HTTP; atenção ao p50 de 17.7 s do `/register` a 400 VUs contra `SERVER_TIMEOUT` de 30 s
+- [ ] heap e GC sob carga (v8 max-old-space); atenção ao p50 de 17.7 s do `/register` a 400 VUs
+- [x] timeouts e `keep-alive` no servidor HTTP/HTTPS: headers 15s, request 30s, idle 30s, keep-alive 5s e checagem de conexão a cada 1s; regressão com socket parcial em `tests/unit/http-server-limits.test.ts`
 - [x] limite de requisições em andamento: `inFlightLimit` recusa com 503 + `Retry-After` acima do teto por processo, e **nunca** recusa `/health`, `/readiness` e `/observability` (se recusasse o sinal de vida, a sobrecarga viraria reinício). 11 testes, incluindo os que quebram o bypass e a trava de vaga dupla
 - [x] **calibrado por medição, e a calibração contraria a intuição** (`docs/metricas.md` §5): teto 256 economiza 4,6% de memória no `/login` e paga 50% da vazão do `/refresh`; teto 32 paga metade do `/login` e 96% do `/refresh`. O limite de concorrência **não** é alavanca de memória — memória é dominada pelo argon2id (~19 MiB por hash concorrente), não pela fila. Default fixado em **1024**, onde ele não recusa nenhuma requisição sob a maior carga medida: ele protege rajada, não tráfego normal
 - [x] o que de fato protege memória está nomeado com o número de cada um: `availableParallelism()` nos workers (evita ~1.4 GB), teto de 1 GiB do container, workers = 2 (720 MB = 70% do teto), e este limite como última linha
@@ -462,7 +463,8 @@ global entre workers.
 ## 6.1 Camadas de contenção (proxy → app → OS)
 
 - [ ] nginx: `limit_req` por IP na borda, `limit_conn`, `client_max_body_size`, `client_body_timeout`/`client_header_timeout`, `keepalive` tuning
-- [ ] app: limite de requisições em andamento (disjuntor), continuação do rate limit por IP/usuário/login (já existentes)
+- [x] app: `inFlightLimit` com teto por processo, rate limit por IP/usuário/login e parser JSON limitado a 100kb
+- [x] Node HTTP/HTTPS: timeout de headers/request, keep-alive, intervalo de checagem e teto de headers/requisições por socket; teste de socket parcial sem Docker
 - [ ] OS/container: `net.core.somaxconn`, `sysctl` documentados, limites de FD, `init` já presente (dumb-init)
 - [ ] `X-Forwarded-For` : com `TRUST_PROXY` correto, IP real do cliente alimenta o rate limit (hoje default `false` — em prod atrás do proxy será faixa do nginx)
 

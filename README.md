@@ -239,6 +239,7 @@ Principais campos:
 - `ALLOWED_ORIGINS`
 - `METRICS_TOKEN` (em produção, configure um token: protege o manifesto de `/observability`)
 - `TRUST_PROXY` (padrão `false`: não confiar em `X-Forwarded-For`; atrás de proxy, use o número de saltos ou a faixa CIDR do proxy)
+- `HTTP_HEADERS_TIMEOUT`, `HTTP_REQUEST_TIMEOUT`, `HTTP_KEEP_ALIVE_TIMEOUT`, `HTTP_CONNECTIONS_CHECKING_INTERVAL`, `HTTP_MAX_REQUESTS_PER_SOCKET`, `HTTP_MAX_HEADERS_COUNT` (limites de headers, recebimento e reutilização de conexões Node; defaults no `.env.prod.example`)
 - `SECURITY_DASHBOARD_TOKEN` (obrigatório em produção; envia-se no header `X-Security-Token`)
 - `RATE_LIMIT_*_POINTS` (pontos por janela)
 

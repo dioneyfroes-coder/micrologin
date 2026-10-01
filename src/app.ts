@@ -4,6 +4,7 @@ import cors from 'cors';
 import https from 'https';
 import fs from 'fs';
 import compression from 'compression';
+import { createServer as createHttpServer } from 'http';
 import type { Server } from 'http';
 import { pathToFileURL } from 'url';
 
@@ -30,6 +31,7 @@ import { normalizeInput } from './application/middleware/inputNormalization.js';
 import { securityMonitor } from './application/middleware/securityMonitoring.js';
 import { advancedRateLimit } from './application/middleware/advancedRateLimit.js';
 import { logger } from './shared/utils/logger.js';
+import { configureHttpServerLimits, httpServerOptions } from './shared/utils/httpServerLimits.js';
 
 /**
  * Classe principal da aplicação
@@ -138,11 +140,10 @@ class AuthService {
           cert: fs.readFileSync(serverConfig.ssl.certPath)
         };
 
-        const server = https.createServer(options, this.app);
+        const server = https.createServer({ ...options, ...httpServerOptions(serverConfig.timeout) }, this.app);
+        configureHttpServerLimits(server, serverConfig.timeout);
         this.server = server;
         setupErrorHandlers(server, serverConfig.timeout.gracefulShutdown);
-
-        server.timeout = serverConfig.timeout.server;
 
         server.listen(port, () => {
           logger.info(`🚀 Servidor HTTPS rodando em https://${serverConfig.host}:${port}`);
@@ -150,7 +151,10 @@ class AuthService {
         });
       } else {
         // Servidor HTTP para desenvolvimento
-        this.server = this.app.listen(port, () => {
+        const server = createHttpServer(httpServerOptions(serverConfig.timeout), this.app);
+        configureHttpServerLimits(server, serverConfig.timeout);
+        this.server = server;
+        server.listen(port, () => {
           logger.info(`🚀 Servidor HTTP rodando em http://${serverConfig.host}:${port}`);
           logger.info(`📚 API Docs: http://${serverConfig.host}:${port}/api-docs | 🏥 Health: http://${serverConfig.host}:${port}/health`);
           if (serverConfig.nodeEnv !== 'production') {

@@ -718,6 +718,23 @@ O padrão é revogar (`true`). A cobertura inclui unidade para revogação,
 opt-out, indisponibilidade e evento, além do E2E concorrente que exige que o
 access token do vencedor também seja recusado.
 
+### D26 — Limites HTTP do Node complementam a contenção da borda
+
+Enquanto o proxy reverso da Fase 4.1 não existe, o próprio Node precisa limitar
+quanto tempo um socket pode consumir esperando headers ou corpo. Os dois
+listeners (HTTP e HTTPS) aplicam a mesma política: `HTTP_HEADERS_TIMEOUT=15000`,
+`HTTP_REQUEST_TIMEOUT=30000`, `SERVER_TIMEOUT=30000`,
+`HTTP_KEEP_ALIVE_TIMEOUT=5000`, `HTTP_CONNECTIONS_CHECKING_INTERVAL=1000`,
+`HTTP_MAX_REQUESTS_PER_SOCKET=1000` e `HTTP_MAX_HEADERS_COUNT=100`. O timeout de
+headers nunca excede o timeout do request; valores de ambiente inválidos ou
+não positivos voltam ao default.
+
+O body JSON já tem limite de 100kb e o disjuntor de requests em andamento roda
+antes do parser. A regressão `tests/unit/http-server-limits.test.ts` verifica a
+configuração do servidor e envia headers parciais por TCP, esperando 408 sem
+Docker. Isto reduz sockets lentos no app, mas não substitui os limites de
+conexão/body e a terminação TLS no nginx; os testes com proxy continuam pendentes.
+
 ---
 
 ## Referências

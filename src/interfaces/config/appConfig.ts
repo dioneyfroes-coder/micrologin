@@ -65,6 +65,17 @@ const parseTrustProxy = (raw: string | undefined): boolean | number | string | s
   return raw!.split(',').map(entry => entry.trim()).filter(entry => entry.length > 0);
 };
 
+const parsePositiveEnvNumber = (value: string | undefined, fallback: number): number => {
+  const parsed = parseEnvNumber(value, fallback);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const httpRequestTimeout = parsePositiveEnvNumber(process.env.HTTP_REQUEST_TIMEOUT, 30000);
+const httpHeadersTimeout = Math.min(
+  parsePositiveEnvNumber(process.env.HTTP_HEADERS_TIMEOUT, 15000),
+  httpRequestTimeout
+);
+
 /**
  * Configurações de servidor e aplicação
  */
@@ -140,8 +151,14 @@ export const serverConfig = {
 
   // Timeouts
   timeout: {
-    server: parseEnvNumber(process.env.SERVER_TIMEOUT, 30000),
-    gracefulShutdown: parseEnvNumber(process.env.GRACEFUL_SHUTDOWN_TIMEOUT, 5000)
+    server: parsePositiveEnvNumber(process.env.SERVER_TIMEOUT, 30000),
+    headers: httpHeadersTimeout,
+    request: httpRequestTimeout,
+    keepAlive: parsePositiveEnvNumber(process.env.HTTP_KEEP_ALIVE_TIMEOUT, 5000),
+    connectionsCheckingInterval: parsePositiveEnvNumber(process.env.HTTP_CONNECTIONS_CHECKING_INTERVAL, 1000),
+    maxRequestsPerSocket: parsePositiveEnvNumber(process.env.HTTP_MAX_REQUESTS_PER_SOCKET, 1000),
+    maxHeadersCount: parsePositiveEnvNumber(process.env.HTTP_MAX_HEADERS_COUNT, 100),
+    gracefulShutdown: parsePositiveEnvNumber(process.env.GRACEFUL_SHUTDOWN_TIMEOUT, 5000)
   },
 
   // Confiança em cabeçalhos de proxy
