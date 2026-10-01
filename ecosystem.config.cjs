@@ -18,6 +18,30 @@ function resolveInstances(raw) {
   return Number(raw);
 }
 
+/**
+ * Teto de heap por processo, em MB (Fase 3.2).
+ *
+ * 512 MB é o número que a medição de 400 VUs sustenta (docs/metricas.md): pico
+ * de heap de 66 MB com o conjunto vivo em ~60 MB, e RSS de 377 MB no `/login`,
+ * dos quais ~317 MB são memória nativa do argon2. 512 + 317 fica em ~829 MB,
+ * dentro do teto de 1 GiB do container -- com teto maior, um estouro de heap
+ * passaria a bater no OOM killer do cgroup em vez de virar
+ * `ERR_heap_out_of_memory`.
+ *
+ * A mesma leitura do `|| DEFAULT` que o comentário acima explica: quem não disse
+ * nada leva o default medido; quem disse traz o número pedido. `NaN` cai no
+ * default pelo mesmo motivo de `0` não cair.
+ */
+function resolveHeapMb(raw = process.env.PM2_MAX_OLD_SPACE_MB) {
+  if (raw === undefined || raw === null || String(raw).trim() === '') {
+    return 512;
+  }
+
+  const parsed = Number(raw);
+
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 512;
+}
+
 // A INSTÂNCIA do PM2 é o único multiplicador de processos quando ele gerencia o
 // app. Por isso `CLUSTER_ENABLED` é 'false' nos dois blocos de env abaixo: o
 // cluster module, ligado, faria cada instância do PM2 forkar N workers — com os
@@ -40,12 +64,23 @@ module.exports = {
     env: {
       NODE_ENV: process.env.NODE_ENV || 'development',
       PORT: process.env.PORT || 3000,
-      CLUSTER_ENABLED: 'false' // PM2 já gerencia cluster; app não divide senão conflito
+      CLUSTER_ENABLED: 'false', // PM2 já gerencia cluster; app não divide senão conflito
+      // Mesmo teto de heap do caminho compose (Fase 3.2). Os dois modos
+      // suportados têm de ter a mesma memória por processo: com números
+      // diferentes, o PM2 mediria e o compose não, e a medição valeria para um
+      // e não para o outro.
+      // `node_args`, e não `env`, porque `--max-old-space-size` é opção do
+      // runtime; passada por `env` ela viraria variável de ambiente e o
+      // processo sairia com o teto implícito do V8.
+      // Sobrevivível por `PM2_MAX_OLD_SPACE_MB` para quem mexer no teto sem
+      // editar o arquivo.
+      NODE_OPTIONS: `--max-old-space-size=${resolveHeapMb()}`
     },
     env_production: {
       NODE_ENV: 'production',
       PORT: process.env.PORT || 3000,
-      CLUSTER_ENABLED: 'false'
+      CLUSTER_ENABLED: 'false',
+      NODE_OPTIONS: `--max-old-space-size=${resolveHeapMb()}`
     },
     // Configurações para balanceamento de carga real
     listen_timeout: 3000,

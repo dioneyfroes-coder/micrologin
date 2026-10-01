@@ -53,6 +53,7 @@ REGISTER_ITERATIONS="5"
 SAMPLE_INTERVAL="2"
 OUT_DIR="artifacts/capacity"
 KEEP_STACK=0
+GC_TRACE=1
 MAX_IN_FLIGHT="1024"
 
 while [ $# -gt 0 ]; do
@@ -72,6 +73,11 @@ while [ $# -gt 0 ]; do
             MAX_IN_FLIGHT="$2"; shift 2 ;;
         --out)          OUT_DIR="$2"; shift 2 ;;
         --keep-stack)   KEEP_STACK=1; shift ;;
+        # Sem o rastro de GC o processo roda com o comando de producao. A
+        # medicao de latencia nao precisa dele; a de heap/GC (Fase 3.2) precisa,
+        # e e o unico jeito de contar quantas coletadas houve e quanto tempo
+        # elas tiraram do event loop -- `/observability` so da heap Used/Total.
+        --no-gc-trace)  GC_TRACE=0; shift ;;
         -h|--help)      sed -n '2,28p' "$0"; exit 0 ;;
         *) echo -e "${RED}Opcao desconhecida: $1${NC}" >&2; exit 1 ;;
     esac
@@ -104,14 +110,32 @@ METRICS_TOKEN="$(grep -E '^METRICS_TOKEN=' "$ENV_FILE" | head -1 | cut -d= -f2- 
 
 APP_PORT="$(grep -E '^APP_PORT=' "$ENV_FILE" | head -1 | cut -d= -f2- || true)"
 APP_PORT="${APP_PORT:-3000}"
-BASE_URL="http://localhost:${APP_PORT}"
+# A medicao fala com o container do Node pela porta que o override de medicao
+# publica direto no host (ver `docker-compose.capacity.yml`), e nao pelo
+# `auth-proxy`: o nginx de producao exige certificado TLS e entra em
+# crash-loop sem ele, levando a medicao junto. CAPACITY_PORT permite escolher
+# outra porta para nao colidir com o proxy de quem esta medindo.
+CAPACITY_PORT="${CAPACITY_PORT:-$APP_PORT}"
+BASE_URL="http://localhost:${CAPACITY_PORT}"
+export CAPACITY_PORT
 
 RUN_ID="$(date +%s | tail -c 7)"
 USER_COUNT="$(echo "$VUS_LIST" | tr ',' '\n' | sort -n | tail -1)"
 mkdir -p "$OUT_DIR"
 
+# Com `--trace-gc` o Node escreve uma linha por coleta no stdout, que e o log do
+# container. Sem isso a Fase 3.2 fica sem dado de GC: `/observability` so
+# expoe heap Used/Total, que mostra o dente de serra mas nao diz quantas
+# coletadas houve nem quanto tempo elas tiraram do event loop -- e pause de GC
+# e o que aparece no p99.
+if [ "$GC_TRACE" = "1" ]; then
+    CAPACITY_COMMAND="${CAPACITY_COMMAND:-node --trace-gc dist/app.js}"
+fi
+export CAPACITY_COMMAND="${CAPACITY_COMMAND:-}"
+
 log_step "run_id=${RUN_ID}  workers=${WORKERS_LIST}  vus=${VUS_LIST}  endpoints=${ENDPOINTS_LIST}  max_in_flight=${MAX_IN_FLIGHT}"
 log_step "duracao=${DURATION} (rampa ${RAMP_UP} + ${RAMP_DOWN})  alvo=${BASE_URL}"
+log_step "comando no container: ${CAPACITY_COMMAND:-<command da imagem>}"
 
 # ------------------------------------------------------------------
 # Helpers de compose e coleta
@@ -131,6 +155,30 @@ compose() {
 
 compose_plain() {
     docker compose --env-file "$ENV_FILE" -f "$COMPOSE_PROD" "$@"
+}
+
+# Quantas linhas o log do container ja tinha. Tirado antes da janela de carga,
+# porque `docker logs` entrega o log INTEIRO do container: sem o corte, as
+# coletadas do startup e das corridas anteriores entrariam na conta da corrida e
+# o total de pausa sairia inflado sem nenhum aviso.
+gc_log_offset() {
+    docker logs "$1" 2>&1 | wc -l | tr -d ' '
+}
+
+# Recorta o log da janela e deixa so as linhas de coleta. O arquivo fica em
+# cru: quem interpreta (e agrupa por pid, separa Scavenge de Mark-Compact)
+# e o `scripts/capacity-summary.py`.
+capture_gc_log() {
+    local cid="$1" since="$2" out="$3"
+    : > "$out"
+    docker logs "$cid" 2>&1 | tail -n "+$((since + 1))" \
+        | grep -aE 'ms: (Scavenge|Mark-sweep|Mark-Compact)' > "$out" || true
+    if [ -s "$out" ]; then
+        echo "$(wc -l < "$out" | tr -d ' ') coleta(s) em $(basename "$out")"
+    else
+        rm -f "$out"
+        echo "nenhuma linha de GC nesta janela (rode com --no-gc-trace para assumir que e o esperado)"
+    fi
 }
 
 sample_memory() {
@@ -179,9 +227,27 @@ wait_ready() {
 }
 
 node_processes() {
-    local cid="$1"
-    docker exec "$cid" sh -c \
-        'ps -o args 2>/dev/null | grep -c "[n]ode dist/app.js"' 2>/dev/null || echo "?"
+    local cid="$1" n
+    # `grep -c` imprime 0 E devolve status 1 quando nao casa; com `|| echo "?"`
+    # o log dizia "0?" -- dois numeros para a mesma pergunta. O `?` e para o
+    # caso de o proprio `docker exec` falhar, que e o que a medicao precisa
+    # distinguir de "zero processo".
+    #
+    # O `.*` antes de `dist/app.js` e obrigatorio: com o rastro de GC o
+    # processo e `node --trace-gc dist/app.js`, e o padrao `node dist/app.js`
+    # (ou `node .*app.js`, que casaria `node src/app.ts` do ambiente de dev)
+    # contava zero e a medicao seguia publicando "1 processo" sem ter contado.
+    #
+    # O `^node` e o que exclui o dumb-init: o ENTRYPOINT da imagem e
+    # `dumb-init -- node ...`, que aparece na mesma `ps` e casaria o padrao,
+    # fazendo a medicao anunciar o dobro de processos.
+    n="$(docker exec "$cid" sh -c \
+        'ps -o args 2>/dev/null | grep -cE "^node .*dist/app\.js"' 2>/dev/null)" || n=""
+    if ! printf '%s' "$n" | grep -qE '^[0-9]+$'; then
+        echo "?"
+    else
+        echo "$n"
+    fi
 }
 
 purge_rate_limits() {
@@ -304,6 +370,7 @@ for workers in ${WORKERS_LIST//,/ }; do
             echo
             log_step "  workers=${workers} endpoint=/${endpoint} vus=${vus}"
 
+            gc_offset="$(gc_log_offset "$CID")"
             sample_memory "${OUT_DIR}/mem_${tag}.csv" &
             mem_pid=$!
             sample_docker_stats "${OUT_DIR}/stats_${tag}.csv" "$CID" &
@@ -333,6 +400,7 @@ for workers in ${WORKERS_LIST//,/ }; do
 
             kill "$mem_pid" "$stats_pid" 2>/dev/null || true
             wait "$mem_pid" "$stats_pid" 2>/dev/null || true
+            capture_gc_log "$CID" "$gc_offset" "${OUT_DIR}/gc_${tag}.log" | sed 's/^/   /'
 
             if [ -f "${OUT_DIR}/k6_${tag}.json" ]; then
                 tail -n 2 "$log_file" | head -1 | sed 's/^/   /'

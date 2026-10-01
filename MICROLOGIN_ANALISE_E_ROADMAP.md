@@ -319,6 +319,50 @@ Item aberto, sem artefato. Atenção ao p50 de 17,7 s do `/register` a 400 VUs
 `--max-old-space-size` fixado por esse dado — ou a decisão registrada de não
 fixar, com o número que justifica.
 
+**Feito:** medido a 400 VUs nos quatro endpoints, no orçamento de produção
+(1 worker, 2.0 CPU, 1 GiB), com o processo em `node --trace-gc dist/app.js`. O
+rastro de GC vem pelo `command:` porque o Node recusa `--trace-gc` em
+`NODE_OPTIONS` — a mesma armadilha do `--prof` que já estava anotada no compose
+de medição, agora com o caso concreto.
+
+O número que a medição corrige é uma confusão: **`heapUsed` de 60 MB é quase
+tudo lixo.** O que sobra depois de um mark-compact é ~30 MB, nos quatro
+endpoints. Dimensionar teto por `heapUsed` de pico seria dimensionar pelo lixo.
+E o processo não cresce: a heap pós-GC é a mesma nos quatro casos, então não há
+vazamento — o teto não está segurando um vazamento, está orcamentando um pico.
+
+O teto ficou em 512 MB, explícito em `docker-compose.prod.yml` e
+`ecosystem.config.cjs`. Antes ele era **implícito**: o Node 22 escolhe 524 MB
+olhando o cgroup de 1 GiB, e essa escolha é heurística do V8, não contrato. As
+três contas estão em `docs/metricas.md` §7; a que decide é `512 + 317 MB de
+memória nativa do argon2 = 829 MB`, dentro do 1 GiB com folga — porque o RSS de
+pico de 377 MB é majoritariamente `external`, que `--max-old-space-size` não
+limita.
+
+O modo de falha também é metade do motivo: com teto, o estouro é
+`ERR_heap_out_of_memory` com nome de arquivo; sem teto, é SIGKILL do OOM killer
+do cgroup, sem linha de log que diga o que aconteceu. Verificado com
+`--max-old-space-size=20` (abaixo do conjunto vivo: morre com o erro explícito)
+e 32 MB (logo acima: aguenta a carga).
+
+Três defeitos corrigidos no caminho:
+
+1. o override de medição tinha `NODE_OPTIONS` com default **vazio**, o que
+   apagava o teto de produção — a matriz passou a medir um serviço que ninguém
+   opera, exatamente o que o resto daquele arquivo diz querer evitar;
+2. `node_processes()` contava `dumb-init -- node dist/app.js` como se fosse um
+   processo, e com o rastro de GC o padrão antigo (`node dist/app.js`) deixava
+   de casar e a medicao publicava zero;
+3. o parser do rastro não casava com `Mark-Compact (reduce)` e deixava 2 de 33
+   linhas fora da conta **em silêncio** — o pior defeito possível num número que
+   vira decisão de teto. Agora linha não contada aparece como tal.
+
+`tests/unit/heap-budget-policy.test.ts` (5 casos) amarra o número nos três
+arquivos que o processo lê, exige folga sobre o pico e sobre 4× o conjunto
+vivo, exige `teto + nativo` dentro do 1 GiB, e exige que o valor publicado em
+`docs/metricas.md` seja o mesmo que o configurado.
+`tests/unit/capacity-gc-parser.test.ts` (7 casos) cobre o parser.
+
 ## P9 — Fase 3.2: `test:capacity` não reexecutado após o tuning
 
 Os artefatos em `artifacts/capacity` são de 2026-09-30 13:40; o tuning de

@@ -15,8 +15,99 @@ import csv
 import glob
 import json
 import os
+import re
 import sys
 from collections import defaultdict
+
+# Uma linha do `--trace-gc`, tal qual o Node escreve no stdout:
+#
+#   [7:0x7f..]  1236 ms: Scavenge 38.4 (44.1) -> 37.8 (45.9) MB, pooled: 0 MB,
+#                      1.71 / 0.00 ms  (average mu = 0.991, ...) allocation failure;
+#   [7:0x7f..]  1282 ms: Mark-Compact 42.5 (51.1) -> 30.4 (47.9) MB, pooled: 3 MB,
+#                      2.48 / 0.00 ms  (+ 0.7 ms in 0 steps ...) ... task;
+#
+# O `.*?` antes da pausa e obrigatorio: a linha do Mark-Compact traz um
+# `(+ 0.7 ms in 0 steps since start of marking ...)` que tambem casa com
+# "<numero> / <numero> ms" se a regex nao ancorar no "MB," que vem logo antes.
+GC_LINE = re.compile(
+    r"^\[(?P<pid>\d+):0x[0-9a-f]+\]\s+\d+ ms: "
+    r"(?P<kind>Scavenge|Mark-sweep|Mark-Compact)(?:\s+\([a-z ]+\))?\s+"
+    r"(?P<before>[\d.]+) \([\d.]+\) -> (?P<after>[\d.]+) \([\d.]+\) MB"
+    r".*?, (?P<pause>[\d.]+) / (?P<aux>[\d.]+) ms"
+)
+
+
+def parse_gc(path):
+    """Contas de coleta do rastro de GC, por pid e somadas.
+
+    Separate `Scavenge` (o coletor de geração nova, milissegundos) de
+    `Mark-sweep`/`Mark-Compact` (o completo, o unico que pode pausar o event
+    loop por tempo visivel) porque os dois nao contam a mesma coisa: a
+    frequencia de scavenge mede taxa de alocacao, e a de mark-sweep mede
+    crescimento da geração velha -- que é o que o `--max-old-space-size`
+    limita.
+
+    `heap_before_max` e o pico de heap no instante ANTES da coleta, e
+    `heap_after_max` o pico logo depois. Os dois juntos sao o que diz se o
+    processo esta crescendo (eles sobem) ou se so esta ciclando (eles sao
+    estaveis).
+    """
+    empty = {
+        "workers_seen": 0, "gc": 0, "scavenge": 0, "mark": 0,
+        "pause_ms": 0.0, "pause_max_ms": 0.0,
+        "heap_before_max": None, "heap_after_max": None, "unparsed": 0,
+    }
+    if not path or not os.path.exists(path):
+        return None
+
+    pids = set()
+    totals = {"gc": 0, "scavenge": 0, "mark": 0}
+    pause_total = 0.0
+    pause_max = 0.0
+    heap_before_max = None
+    heap_after_max = None
+    unparsed = 0
+
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            m = GC_LINE.match(line)
+            if not m:
+                unparsed += 1
+                continue
+            pause = float(m.group("pause"))
+            before = float(m.group("before"))
+            after = float(m.group("after"))
+            pids.add(m.group("pid"))
+            totals["gc"] += 1
+            if m.group("kind") == "Scavenge":
+                totals["scavenge"] += 1
+            else:
+                totals["mark"] += 1
+            pause_total += pause
+            pause_max = max(pause_max, pause)
+            heap_before_max = max(heap_before_max or 0.0, before)
+            heap_after_max = max(heap_after_max or 0.0, after)
+
+    if not pids:
+        # Um rastro sem nenhuma linha reconhecivel e pior do que rastro
+        # ausente: nao pode ser lido como "esta corrida nao coletou", que e uma
+        # afirmacao forte e falsa. Fica com contagem zero e as linhas nao lidas
+        # a mostra, para a tabela marcar a corrida como nao medida.
+        return dict(empty, unparsed=unparsed)
+
+    return {
+        "workers_seen": len(pids),
+        "gc": totals["gc"],
+        "scavenge": totals["scavenge"],
+        "mark": totals["mark"],
+        "pause_ms": round(pause_total, 1),
+        "pause_max_ms": round(pause_max, 2),
+        "heap_before_max": round(heap_before_max, 1),
+        "heap_after_max": round(heap_after_max, 1),
+        "unparsed": unparsed,
+    }
 
 
 def peak_memory(path):
@@ -80,6 +171,7 @@ def load_rows(out_dir):
             prefix = f"{base[:-len(stamp)].rstrip('_')}_"
             mem_files = sorted(glob.glob(os.path.join(out_dir, f"mem_{prefix}*.csv")))
             stats_files = sorted(glob.glob(os.path.join(out_dir, f"stats_{prefix}*.csv")))
+            gc_files = sorted(glob.glob(os.path.join(out_dir, f"gc_{prefix}*.log")))
             rows.append({
                 "workers": workers,
                 "in_flight": in_flight,
@@ -89,6 +181,7 @@ def load_rows(out_dir):
                 "e": e,
                 "mem": peak_memory(mem_files[0] if mem_files else None),
                 "stats": docker_peak(stats_files[0] if stats_files else None),
+                "gc": parse_gc(gc_files[0] if gc_files else None),
             })
     return rows
 
@@ -130,6 +223,52 @@ def main():
     for r in rows:
         if r["mem"]:
             print(f"| {r['workers']} | /{r['endpoint']} | {r['vus']} | {r['mem']['workers_seen']} |")
+
+    print_gc_table(rows)
+
+
+def print_gc_table(rows):
+    """Tabela de GC, separada da de latencia porque sao coisas diferentes.
+
+    A tabela principal tem 19 colunas e ja nao cabe: as contas de coleta vao em
+    uma tabela propria, que e onde a Fase 3.2 le o dado para decidir o teto de
+    heap.
+    """
+    print()
+    print("## Coletas de GC na janela de carga\n")
+    gc_rows = [r for r in rows if r.get("gc")]
+    if not gc_rows:
+        print("_Nenhum rastro de GC encontrado. As corridas foram feitas sem "
+              "`--trace-gc` (ou com `--no-gc-trace`); heap Used/Total na "
+              "primeira tabela continua valendo, mas nao ha contagem de "
+              "coleta nem tempo de pausa._\n")
+        return
+
+    print("`heap pre` e o maior valor de heap que a coleta encontrou (o topo do")
+    print("dente de serra) e `heap pos` o que sobrou logo depois. Se os dois sobem")
+    print("ao longo da corrida, o processo esta crescendo; se `heap pos` fica")
+    print("abaixo e `heap pre` repete o mesmo teto, ele so esta ciclando.\n")
+
+    print("| workers | endpoint | VUs | coletadas | scavenge | mark | "
+          "pausa total ms | pausa max ms | pausa % janela | heap pre MB | heap pos MB |")
+    print("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+    for r in gc_rows:
+        g = r["gc"]
+        window_ms = (r.get("duration_s") or 0) * 1000
+        share = f"{g['pause_ms'] / window_ms * 100:.2f}" if window_ms else "-"
+        before = g["heap_before_max"] if g["heap_before_max"] is not None else "-"
+        after = g["heap_after_max"] if g["heap_after_max"] is not None else "-"
+        print(
+            f"| {r['workers']} | /{r['endpoint']} | {r['vus']} | {g['gc']} | "
+            f"{g['scavenge']} | {g['mark']} | {g['pause_ms']} | {g['pause_max_ms']} | "
+            f"{share} | {before} | {after} |"
+        )
+
+    unparsed = sum(r["gc"]["unparsed"] for r in gc_rows)
+    if unparsed:
+        print()
+        print(f"Atencao: {unparsed} linha(s) do rastro ficaram sem casamento "
+              f"no parser e nao entram nas contas acima.")
 
 
 if __name__ == "__main__":

@@ -587,3 +587,127 @@ e é por isso que A3 (credential stuffing) está classificado como limite
 aceito e não como problema resolvido: rate limit por conta reduz o volume do
 ataque, mas um atacante distribuído com uma conta por vez nunca esgota esse
 orçamento.
+
+---
+
+## 7. Heap e GC sob a maior carga medida (Fase 3.2)
+
+O que a §3 deixou em aberto era o número: ela viu o heap em "dente de serra
+entre 38 e 60 MB" e quatro endpoints com RSS de pico, mas sem saber quantas
+coletas havia, quanto tempo elas tiravam do event loop, nem o que sobra depois
+de uma coleta. É essa a medição da Fase 3.2.
+
+### Como foi medido
+
+`scripts/capacity-baseline.sh --workers 1 --vus 400`, com os quatro endpoints,
+no mesmo orçamento de produção: **1 worker, 2.0 CPU, 1 GiB**, `CLUSTER_ENABLED=false`.
+
+A diferença em relação à §3 é o rastro de GC. O processo sobe com
+`node --trace-gc dist/app.js` (o trace vem pelo `command:`, e não pelo
+`NODE_OPTIONS`, porque o Node recusa `--trace-gc` em `NODE_OPTIONS` — mesma
+armadilha do `--prof`), e o driver recorta o log do container na janela de cada
+corrida. `/observability` continua dando heap Used/Total, mas isso é a altura da
+lâmina, não a contagem: quem mede GC é o log.
+
+Duas ressalvas honestas sobre o método:
+
+- **O nginx ficou fora do caminho.** O `auth-proxy` de produção exige
+  certificado TLS e entra em crash-loop sem ele, então o override de medição
+  publica a porta do app direto no host. O orçamento do container do Node (2.0
+  CPU, 1 GiB) é o mesmo; o que muda é a camada de latência, e por isso o rps
+  desta rodada (29.12 no `/login`) é maior que o da §3 (22.37). **Heap e GC
+  independem do proxy** — é o que esta seção mede.
+- **`artifacts/` não é versionado.** O dado cru fica em
+  `artifacts/capacity/summary.md` na máquina de quem mediu; aqui estão os
+  números publicados.
+
+### O que saiu
+
+| endpoint | reqs | rps | p50 | p99 | falha | RSS pico | heap pico | coletadas | scavenge | mark | pausa total | pausa máx | pausa % janela | heap pré-GC | heap pós-GC |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| /health | 55118 | 648.3 | 561 ms | 816 ms | 0% | 150.4 MB | 58.7 MB | 2186 | 2073 | 113 | 5318.6 ms | 33.8 ms | 6.26% | 63.0 MB | 61.0 MB |
+| /login | 2517 | 29.1 | 13505 ms | 14250 ms | 0% | 376.7 MB | 59.8 MB | 248 | 238 | 10 | 2557.4 ms | 76.1 ms | 2.97% | 62.6 MB | 60.2 MB |
+| /refresh | 44772 | 526.6 | 630 ms | 1025 ms | 0% | 234.4 MB | 66.3 MB | 356 | 342 | 14 | 863.1 ms | 10.7 ms | 1.02% | 66.0 MB | 63.6 MB |
+| /register | 1981 | 29.0 | 13384 ms | 18833 ms | 0% | 371.0 MB | 62.0 MB | 195 | 189 | 6 | 1082.4 ms | 52.8 ms | 1.59% | 62.2 MB | 59.3 MB |
+
+### Leitura
+
+**1. O processo não cresce: não há vazamento.** Em todos os quatro endpoints, a
+heap que sobra depois de uma coleta (63,6 MB no pior caso) é praticamente a
+mesma que a que existia antes dela. Se houvesse retenção, `heap pós-GC` subiria
+ao longo da janela — o que caracteriza vazamento é a curva que **sobe**, não a
+que oscila. O teto de 1 GiB nunca foi tocado, e agora sabemos por quê: 66 MB de
+pico contra 1024 MB disponíveis.
+
+**2. O `heapUsed` de 60 MB é quase tudo lixo.** A diferença entre o pico e o
+pós-collect é de 2 a 3 MB, e o mark-compact completo deixa o conjunto em ~30 MB
+(linha `Mark-Compact (reduce) 31.7 (47.6) -> 30.8 (33.6) MB`). Ou seja: **o
+conjunto vivo é ~30 MB e o pico de 66 MB é lixo aguardando a próxima coleta.**
+É essa distinção que dá sentido ao teto — dimensionar pelo `heapUsed` de pico seria
+dimensionar pelo lixo.
+
+**3. GC não é o gargalo de nenhum endpoint.** A pior fração de tempo é 6,26% da
+janela no `/health`, e a melhor é 1,02% no `/refresh`. Para comparação, a §3
+mediu p50 de 4,5 s a 17,7 s no `/login` por causa do **argon2**, não da coleta:
+o `/login` faz 248 coletas em 85 s e ainda assim tem p50 de 13,5 s. A pausa
+isolada mais cara da rodada são 76 ms (`/login`), o que aparece no p99 de
+14,2 s como 0,5% — invisível dentro do hash.
+
+**4. `/health` é o que mais aloca, e é o endpoint que ninguém otimiza.** 2186
+coletas contra 195 do `/register`, com 51% do RSS de pico que o `/login` tem. É
+consistente com a §3: cada `/health` faz um `ping` no Mongo e quatro idas ao
+Redis. Numa floods, é o endpoint que mais heap vira por requisição.
+
+### A decisão: `--max-old-space-size=512`
+
+O teto passa a ser explícito em `docker-compose.prod.yml` e em
+`ecosystem.config.cjs`. Não porque 512 MB seja um número mágico, mas porque sem
+ele o teto é **implícito**: o Node 22 escolhe 524 MB olhando o cgroup de 1 GiB, e
+essa escolha é heurística do V8, não contrato — muda entre versões e sobe junto
+com o limite do container.
+
+O número fecha por três contas:
+
+1. **Folga sobre o medido:** 512 MB é 7,7× o pico de 66 MB e ~17× o conjunto
+   vivo de 30 MB. Não pode apertar para "aproveitar" a memória sobrando: o
+   objetivo do teto é ser o que segura o processo na próxima carga, não o que
+   aperta a memória na de hoje.
+2. **Fecha o orçamento do container:** o RSS de pico do `/login` é 377 MB, dos
+   quais ~317 MB são memória **nativa** do argon2 — que `--max-old-space-size`
+   não limita. 512 + 317 = 829 MB, dentro do 1 GiB com 10% de folga para o que
+   a soma de topo não mede. Com teto maior que ~620 MB, um estouro de heap
+   passaria a bater no OOM killer do cgroup.
+3. **Troca um modo de falha invisível por um legível.** Com teto, o estouro vira
+   `FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of
+   memory`, com nome de arquivo e a posição da alocação. Sem teto, vira SIGKILL
+   do cgroup: sem linha no log que diga o que aconteceu, sem chance de
+   desligamento gracioso. Isso **não** conserta vazamento — só faz o vazamento
+   aparecer mais cedo e mais barato.
+
+Verificado na prática, e não por dedução: com `--max-old-space-size=20` (abaixo
+do conjunto vivo de 30 MB) o processo morre com o erro explícito e o container
+volta; com 32 MB (logo acima do conjunto vivo) aguenta a carga de
+`/register`. Com 512 MB, nenhuma mudança de comportamento:
+
+| `/login` a 400 VUs | rps | p50 | p99 | heap pico | RSS pico | coletadas | pausa total |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| teto implícito (524 MB) | 29.12 | 13505 ms | 14250 ms | 59.8 MB | 376.7 MB | 248 | 2557.4 ms |
+| teto explícito (512 MB) | 28.83 | 13744 ms | 14810 ms | 60.5 MB | 355.6 MB | 245 | 2499.0 ms |
+
+Diferenças de 1% a 4% em rps e latência, dentro do ruído que a §3 já mediu
+nesse mesmo caminho. O que o número compra é a garantia de orçamento, não
+performance.
+
+### Quem segura o número
+
+- `tests/unit/heap-budget-policy.test.ts` — os três lugares que declaram o teto
+  (compose de produção, override de medição, `ecosystem.config.cjs`) têm de
+  declarar o **mesmo** número, o teto tem de ser maior que o pico medido e maior
+  que 4× o conjunto vivo, `teto + nativo` tem de caber no 1 GiB, e
+  `docs/metricas.md` tem de publicar o mesmo valor. Se uma medição futura mudar
+  o pico, o número e o teste mudam juntos — ou o teste reprova.
+- `tests/unit/capacity-gc-parser.test.ts` — o parser do rastro de GC, com as
+  linhas literais do Node 22 incluindo as variantes `Scavenge (interleaved)` e
+  `Mark-Compact (reduce)` que a primeira versão da regex perdia, e o caso de
+  linha truncada que precisa aparecer como "não contada" em vez de virar
+  "zero coletadas".

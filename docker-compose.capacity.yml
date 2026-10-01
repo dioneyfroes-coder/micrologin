@@ -44,7 +44,16 @@ services:
       # ficar pronto, o que deixa o servico em crash-loop. Para perfil de CPU
       # use `--cpu-prof`, que o Node aceita por aqui; o profiler classico
       # (`--prof` + `node --prof-process`) exigiria mudar o `command:`.
-      NODE_OPTIONS: "${CAPACITY_NODE_OPTIONS:-}"
+      NODE_OPTIONS: "${CAPACITY_NODE_OPTIONS:---max-old-space-size=512}"
+
+      # O default acima NAO e vazio de proposito: `environment` do override
+      # vence `env_file` E o `environment` do compose de producao, entao um
+      # default vazio aqui apagaria o `--max-old-space-size` e a medicao rodaria
+      # com o teto implicito do V8 -- medindo um servico que ninguem opera, que
+      # e exatamente o que o resto deste arquivo diz querer evitar.
+      #
+      # O numero se repete em `docker-compose.prod.yml`, e
+      # `tests/unit/heap-budget-policy.test.ts` reprova quando os dois divergem.
 
       # --- Orcamento de trafego só durante a medicao ---
       RATE_LIMIT_PROD_IP_POINTS: "${CAPACITY_RL_POINTS:-1000000}"
@@ -56,3 +65,42 @@ services:
       RATE_LIMIT_PROD_LOGIN_POINTS: "${CAPACITY_RL_POINTS:-1000000}"
       RATE_LIMIT_PROD_LOGIN_DURATION: "60"
       RATE_LIMIT_PROD_LOGIN_BLOCK_DURATION: "10"
+
+    # --- Rastro de GC para a medicao de heap/GC (Fase 3.2) ---
+    #
+    # O trace de GC vem pelo `command:` e nao pelo NODE_OPTIONS acima, pelo
+    # mesmo motivo que o `--prof` foi recusado la: o Node so aceita uma lista
+    # fechada de opcoes em NODE_OPTIONS, e `--trace-gc` esta fora dela
+    # ("--trace-gc is not allowed in NODE_OPTIONS"). Com a opcao no lugar
+    # errado o Node sai antes da readiness, o container entra em crash-loop e
+    # a medicao morre no primeiro `up` -- sem linha de GC para olhar.
+    #
+    # Por que `command:` e nao `entrypoint:`: a imagem usa dumb-init como
+    # ENTRYPOINT para que o Node seja PID 1 e receba SIGTERM; trocar o
+    # entrypoint aqui jogaria fora o reaper de processos zumbi da imagem de
+    # producao e a medicao passaria a medir umservico que ninguem opera.
+    #
+    # Sem valor, a medicao roda com o comando de producao
+    # (`node dist/app.js`), que e o que interessa quando so quer latencia.
+    command: "${CAPACITY_COMMAND:-node --trace-gc dist/app.js}"
+
+    # --- Porta do app publicada direto no host (so na medicao) ---
+    #
+    # Em producao quem publica a porta e o `auth-proxy` (nginx), e ele nao sobe
+    # sem certificado TLS em `secrets/tls`: o `nginx-prod.conf` faz o `listen
+    # 80` devolver 308 para https e o `listen 443` exigir
+    # `ssl_certificate /etc/nginx/tls/fullchain.pem`. Num ambiente de
+    # desenvolvimento, sem certificado, o proxy entra em crash-loop e o k6 nao
+    # alcanca o servico -- a medicao morre sem uma unica amostra.
+    #
+    # Aqui o app e publicado direto, e o orcamento que importa (2.0 CPU, 1 GiB em
+    # `docker-compose.prod.yml`) continua valendo: e o container do Node que
+    # esta sendo medido. O que a medicao perde em relacao a tabela da Fase 3.1 e
+    # a camada de latencia do nginx, nao o numero de heap e de GC -- que e o
+    # objeto desta medicao.
+    #
+    # `CAPACITY_PORT` e separado do `APP_PORT` de proposito: se o proxy de
+    # producao estiver no ar na mesma porta, o `up` da medicao falha por conflito
+    # de binding em vez de derrubar o servico de quem esta medindo.
+    ports:
+      - "${CAPACITY_PORT:-3100}:3000"

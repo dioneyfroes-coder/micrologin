@@ -45,6 +45,22 @@ services:
       INSTANCE_ID: ${INSTANCE_ID:-}
       # O container expõe a porta interna 3000; APP_PORT é o binding do host
       PORT: 3000
+      # --- Teto de heap por processo (Fase 3.2, medido em docs/metricas.md) ---
+      #
+      # O valor NAO e um palpite: e o que a medicao de 400 VUs supports, com
+      # folga explicita sobre o conjunto vivo e dentro do teto de 1 GiB do
+      # container. Sem esta linha o Node escolhe sozinho (524 MB no Node 22
+      # sob este cgroup), e essa escolha e heuristica do V8, nao um contrato:
+      # ela muda de versao para versao e sobe junto com o limite do container.
+      # Fixada, a memoria do processo passa a ter dono declarado -- e o modo de
+      # falha tambem: com teto, o estouro vira `ERR_heap_out_of_memory` do Node
+      # (log que diz o que aconteceu); sem teto, vira o OOM killer do cgroup
+      # matando o processo por SIGKILL, sem log nenhum em cima.
+      #
+      # O mesmo numero esta em `ecosystem.config.cjs` (caminho PM2), e
+      # `tests/unit/heap-budget-policy.test.ts` falha se os dois divergirem ou
+      # se o teto cair abaixo do conjunto vivo medido.
+      NODE_OPTIONS: "--max-old-space-size=512"
       # --- Assinatura ES256 ---
       # A chave privada entra como ARQUIVO montado (Docker secret / volume do
       # orquestrador), nunca como valor de ambiente: variável de ambiente vaza
