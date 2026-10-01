@@ -13,7 +13,7 @@
 #   - chaves ES256 em bind => /run/secrets         (igual a docker-compose.prod.yml:
 #     `secrets` montado inteiro no destino /run/secrets, e as envs *PATH apontam
 #     para /run/secrets/jwt-es256-*.pem)
-#   - credenciais de dependência => /run/secrets/deps
+#   - credenciais de dependência => /run/secrets-deps
 #
 # O CI trava essa semelhança em tests/unit/config-backup-policy.test.ts: se o
 # drill deixar de espelhar o layout do prod, ele passa a provar uma
@@ -22,6 +22,14 @@
 # Uso (o script cuida de build, env e teardown):
 #   docker compose -p micrologin-config -f docker-compose.config-test.yml \
 #     --env-file .cfg-test.env up -d
+#
+# NÃO há `container_name` aqui, de propósito. O isolamento entre os dois drills
+# (`test-config-backup.sh` e `test-deploy.sh`) vem do `-p <projeto>` do Compose,
+# que já prefixa os containers. Fixar o nome quebrava `docker compose ps`:
+# com `container_name` divergindo do nome que o Compose derivaria, o serviço
+# aparecia como `created` para o Compose e o `ps --status running --services` o
+# omitia — o que fazia o deploy.sh concluir "primeiro deploy" e pular o backup
+# de configuração com o app no ar.
 
 services:
   auth-service:
@@ -29,22 +37,32 @@ services:
       context: .
       dockerfile: Dockerfile
       target: production
-    image: micrologin-config:local
-    container_name: micrologin-config-app
+    # A tag é parametrizada para que o drill de deploy (`scripts/test-deploy.sh`)
+    # suba tags nomeadas por ele: com `image` fixo, o `docker tag` do deploy
+    # não mudaria nada no que sobe, e o rollback de imagem não seria observável.
+    image: ${CFG_TEST_IMAGE:-micrologin-config:local}
     environment:
       NODE_ENV: production
       PORT: 3000
-      VERSION: ${CFG_TEST_VERSION:-config-test}
-      URI_MONGODB: mongodb://mongodb:27017/auth_cfg
+      VERSION: ${VERSION:-config-test}
+      # A chave de interpolação é a MESMA que a env do container (e que a de
+      # produção usa), e não uma `CFG_TEST_*` inventada. Isso não é preciosismo:
+      # o backup de configuração restaura a partir do environment do container,
+      # então uma variável que só existe na interpolação do Compose
+      # (CFG_TEST_MONGO_URI) nunca seria restaurada — o arquivo em disco no
+      # momento do backup já é o da versão nova — e o rollback deixaria a
+      # variável quebrada no lugar. Com o nome igual, o valor que o backup
+      # restaura é exatamente o que a próxima interpolação lê.
+      URI_MONGODB: ${URI_MONGODB:-mongodb://mongodb:27017/auth_cfg}
       MONGODB_USER: auth-service
-      MONGODB_PASSWORD_PATH: /run/secrets/deps/mongo-app-password
+      MONGODB_PASSWORD_PATH: /run/secrets-deps/mongo-app-password
       MONGODB_AUTH_SOURCE: admin
       REDIS_URL: redis://redis:6379/0
       REDIS_USERNAME: auth-service
-      REDIS_PASSWORD_PATH: /run/secrets/deps/redis-password
+      REDIS_PASSWORD_PATH: /run/secrets-deps/redis-password
       DEPENDENCY_NETWORK_ISOLATED: "true"
       JWT_ALGORITHM: ES256
-      JWT_ES256_KID: ${CFG_TEST_KID:-cfg-test-v1}
+      JWT_ES256_KID: ${JWT_ES256_KID:-cfg-test-v1}
       JWT_ES256_PRIVATE_KEY_PATH: /run/secrets/jwt-es256-private.pem
       JWT_ES256_PUBLIC_KEY_PATH: /run/secrets/jwt-es256-public.pem
       SECURITY_DASHBOARD_TOKEN: cfg-test-dashboard-token-99999999
@@ -60,8 +78,8 @@ services:
         target: /run/secrets
         read_only: true
       - type: bind
-        source: ${CFG_TEST_KEYS_DIR:-./.cfg-secrets}/deps
-        target: /run/secrets/deps
+        source: ${CFG_TEST_DEPS_DIR:-${CFG_TEST_KEYS_DIR:-./.cfg-secrets}/deps}
+        target: /run/secrets-deps
         read_only: true
     ports:
       - "${CFG_TEST_PORT:-3302}:3000"
@@ -82,18 +100,17 @@ services:
 
   mongodb:
     image: mongo:7-jammy
-    container_name: micrologin-config-mongo
     environment:
       MONGO_INITDB_ROOT_USERNAME: root
-      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/deps/mongo-root-password
+      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets-deps/mongo-root-password
       MONGO_APP_USER: auth-service
       MONGO_APP_DB: auth_cfg
-      MONGO_APP_PASSWORD_PATH: /run/secrets/deps/mongo-app-password
+      MONGO_APP_PASSWORD_PATH: /run/secrets-deps/mongo-app-password
     volumes:
       - cfg-test-mongo:/data/db
       - type: bind
-        source: ${CFG_TEST_KEYS_DIR:-./.cfg-secrets}/deps
-        target: /run/secrets/deps
+        source: ${CFG_TEST_DEPS_DIR:-${CFG_TEST_KEYS_DIR:-./.cfg-secrets}/deps}
+        target: /run/secrets-deps
         read_only: true
       - type: bind
         source: ./docker/mongo/10-app-user.sh
@@ -110,15 +127,24 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: micrologin-config-redis
     command: redis-server --aclfile /etc/redis/users.acl --appendonly no
     volumes:
+      # `CFG_TEST_DEPS_DIR` separado do app porque o drill de deploy troca o
+      # material em disco entre versões: as senhas do Mongo/Redis que o APP usa
+      # e as que os containers de banco carregaram têm de ser o mesmo conjunto,
+      # senão o Redis sobe com a senha da v1 e o app da v2 autentica com a da
+      # v2 — o app fica unhealthy e o health check reprova por um motivo que
+      # não tem nada a ver com o código novo.
       - type: bind
-        source: ${CFG_TEST_KEYS_DIR:-./.cfg-secrets}/deps/redis-app.acl
+        source: ${CFG_TEST_DEPS_DIR:-${CFG_TEST_KEYS_DIR:-./.cfg-secrets}/deps}
+        target: /run/secrets-deps
+        read_only: true
+      - type: bind
+        source: ${CFG_TEST_DEPS_DIR:-${CFG_TEST_KEYS_DIR:-./.cfg-secrets}/deps}/redis-app.acl
         target: /etc/redis/users.acl
         read_only: true
       - type: bind
-        source: ${CFG_TEST_KEYS_DIR:-./.cfg-secrets}/deps/redis-password
+        source: ${CFG_TEST_DEPS_DIR:-${CFG_TEST_KEYS_DIR:-./.cfg-secrets}/deps}/redis-password
         target: /run/secrets/redis-password
         read_only: true
     networks:

@@ -630,7 +630,7 @@ Consequências que são decisão, não detalhe:
   obrigatória — sem ela, o deploy não captura a config em execução e o
   rollback voltaria só a imagem, o buraco desta fase.
 - **O drill usa um stack com os MESMOS alvos de mount de produção**
-  (`/run/secrets` e `/run/secrets/deps`, binds read-only, envs `*_PATH`). Um
+  (`/run/secrets` e `/run/secrets-deps`, binds read-only, envs `*_PATH`). Um
   gate de CI (`tests/unit/config-backup-policy.test.ts`) trava essa
   semelhança e o acoplamento dos deploys: se o drill passar a provar um layout
   que ninguém roda, o portão fica vermelho antes do próximo deploy.

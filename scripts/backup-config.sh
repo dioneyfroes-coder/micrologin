@@ -56,7 +56,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 
 PROJECT="micrologin"
-SERVICE="auth-service"
+SERVICE="${CFG_SERVICE_NAME:-auth-service}"
 ENV_FILE=""
 BACKUPS_DIR="${ROOT_DIR}/cfg-backups"
 TAG="last"
@@ -523,6 +523,7 @@ cat > "$TMPDIR_CFG/build.json" <<JSON
   "container": "$ctr",
   "image_ref": "$IMAGE_REF",
   "image_id": "$IMAGE_ID",
+  "manifest_meta": {"image_ref": "$IMAGE_REF", "tag": "$TAG"},
   "created": "$CREATED",
   "compose_labels": $LABELS_JSON,
   "running_env": $RUNNING_ENV_JSON

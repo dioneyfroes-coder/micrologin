@@ -159,7 +159,7 @@ resolve_mongo_container() {
 # O argparse da ferramenta de restore leva a mesma leitura: sempre dentro do
 # container, do arquivo que o deploy montou. O caminho é o que os composes
 # usam (docker-compose.prod.yml, docker-compose.resilience.yml).
-MONGO_PASSWORD_PATH_IN_CONTAINER="/run/secrets/deps/mongo-root-password"
+MONGO_PASSWORD_PATH_IN_CONTAINER="/run/secrets-deps/mongo-root-password"
 
 # ============================================================
 # EVENTOS ESTRUTURADOS

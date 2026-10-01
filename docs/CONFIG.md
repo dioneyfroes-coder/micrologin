@@ -96,7 +96,7 @@ scripts/test-config-backup.sh
 ```
 
 Sobe um stack de teste com a **mesma topologia de mount de produção**
-(`/run/secrets` e `/run/secrets/deps`), captura a config em execução, edita o
+(`/run/secrets` e `/run/secrets-deps`), captura a config em execução, edita o
 env file sem redeployar (o controle negativo), apaga env+segredos, restaura
 pelo metadata da imagem (caminho que os deploys usam) e prova em runtime que
 o app voltou a exibir a configuração capturada — não a do disco editado. O CI

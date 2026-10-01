@@ -68,7 +68,7 @@ CFG_TEST_PORT="${CFG_TEST_PORT:-3302}"
 BASE_URL="http://localhost:${CFG_TEST_PORT}"
 CFG_TEST_KEYS_DIR="${CFG_TEST_KEYS_DIR:-${ROOT_DIR}/.cfg-secrets}"
 CFG_TEST_DEPS_DIR="${CFG_TEST_DEPS_DIR:-${CFG_TEST_KEYS_DIR}/deps}"
-CFG_TEST_KID="${CFG_TEST_KID:-cfg-v1-${RUN_ID}}"
+JWT_ES256_KID="${JWT_ES256_KID:-cfg-v1-${RUN_ID}}"
 ENV_FILE="${ROOT_DIR}/.cfg-test.env"
 PASSPHRASE_FILE="${ROOT_DIR}/.cfg-passphrase"
 BACKUPS_DIR="${ROOT_DIR}/.cfg-backups"
@@ -76,7 +76,7 @@ BACKUPS_DIR="${ROOT_DIR}/.cfg-backups"
 VERSION_V1="cfg-v1-${RUN_ID}"
 VERSION_V2="cfg-v2-editado-${RUN_ID}"
 
-export CFG_TEST_PORT CFG_TEST_KEYS_DIR CFG_TEST_DEPS_DIR CFG_TEST_KID
+export CFG_TEST_PORT CFG_TEST_KEYS_DIR CFG_TEST_DEPS_DIR JWT_ES256_KID
 
 RED='\033[0.31m'; GREEN='\033[0.32m'; YELLOW='\033[1;33m'; BLUE='\033[0.34m'; NC='\033[0m'
 log_info()  { echo -e "${BLUE}ℹ️  $1${NC}"; }
@@ -174,14 +174,14 @@ log_info "Subindo o stack de teste (build da imagem de produção inclusa)"
 rm -rf "$CFG_TEST_KEYS_DIR" "$CFG_TEST_DEPS_DIR" "$ENV_FILE" "$PASSPHRASE_FILE" "$BACKUPS_DIR"
 mkdir -p "$BACKUPS_DIR"
 
-bash "${SCRIPT_DIR}/generate-jwt-keys.sh" "$CFG_TEST_KEYS_DIR" "$CFG_TEST_KID" --for-container >/dev/null
+bash "${SCRIPT_DIR}/generate-jwt-keys.sh" "$CFG_TEST_KEYS_DIR" "$JWT_ES256_KID" --for-container >/dev/null
 bash "${SCRIPT_DIR}/generate-dependency-secrets.sh" "$CFG_TEST_DEPS_DIR" --for-container --skip-verify >/dev/null
 
 cat > "$ENV_FILE" <<EOF
 CFG_TEST_PORT=${CFG_TEST_PORT}
 CFG_TEST_KEYS_DIR=${CFG_TEST_KEYS_DIR}
-CFG_TEST_KID=${CFG_TEST_KID}
-CFG_TEST_VERSION=${VERSION_V1}
+JWT_ES256_KID=${JWT_ES256_KID}
+VERSION=${VERSION_V1}
 EOF
 printf 'drill-passphrase-2-3' > "$PASSPHRASE_FILE"; chmod 600 "$PASSPHRASE_FILE"
 
@@ -200,7 +200,7 @@ log_pass "stack no ar e pronto para tráfego"
 V0="$(observability_version)"
 [ "$V0" = "$VERSION_V1" ] || fail "app deveria exibir VERSION=${VERSION_V1}, mas exibe '${V0}'"
 KID0="$(running_kid)"
-[ "$KID0" = "$CFG_TEST_KID" ] || fail "container deveria rodar com KID=${CFG_TEST_KID}, mas tem '${KID0}'"
+[ "$KID0" = "$JWT_ES256_KID" ] || fail "container deveria rodar com KID=${JWT_ES256_KID}, mas tem '${KID0}'"
 log_pass "app exibindo a configuração distinta (VERSION=${V0}, KID=${KID0})"
 
 # sha das chaves e da senha ANTES do backup — a referência para provar que o
@@ -235,14 +235,14 @@ log_warn "Editando o env file para ${VERSION_V2} SEM redeployar..."
 cat > "$ENV_FILE" <<EOF
 CFG_TEST_PORT=${CFG_TEST_PORT}
 CFG_TEST_KEYS_DIR=${CFG_TEST_KEYS_DIR}
-CFG_TEST_KID=cfg-v2-editado
-CFG_TEST_VERSION=${VERSION_V2}
+JWT_ES256_KID=cfg-v2-editado
+VERSION=${VERSION_V2}
 EOF
 
-DISK_VERSION="$(grep '^CFG_TEST_VERSION=' "$ENV_FILE" | cut -d= -f2)"
+DISK_VERSION="$(grep '^VERSION=' "$ENV_FILE" | cut -d= -f2)"
 [ "$DISK_VERSION" = "$VERSION_V2" ] || fail "precisamos que o disco esteja em ${VERSION_V2} (está em ${DISK_VERSION})"
 KID_RUNNING_AFTER_EDIT="$(running_kid)"
-[ "$KID_RUNNING_AFTER_EDIT" = "$CFG_TEST_KID" ] || fail "o container deveria continuar com o KID antigo; mudou para '${KID_RUNNING_AFTER_EDIT}'"
+[ "$KID_RUNNING_AFTER_EDIT" = "$JWT_ES256_KID" ] || fail "o container deveria continuar com o KID antigo; mudou para '${KID_RUNNING_AFTER_EDIT}'"
 log_pass "disco=${VERSION_V2} vs container KID=${KID_RUNNING_AFTER_EDIT} (fonte da verdade = container)"
 
 # ============================================================
@@ -275,7 +275,7 @@ bash "${SCRIPT_DIR}/restore-config.sh" \
 [ -f "$CFG_TEST_KEYS_DIR/jwt-es256-private.pem" ] || fail "chave privada não foi restaurada"
 [ -f "$CFG_TEST_DEPS_DIR/redis-password" ] || fail "senha do Redis não foi restaurada"
 
-RESTORED_VERSION="$(grep '^CFG_TEST_VERSION=' "$ENV_FILE" | cut -d= -f2)"
+RESTORED_VERSION="$(grep '^VERSION=' "$ENV_FILE" | cut -d= -f2)"
 [ "$RESTORED_VERSION" = "$VERSION_V1" ] \
     || fail "restore trouxe ${RESTORED_VERSION} — deveria vir o valor EM EXECUÇÃO (${VERSION_V1}), não o do disco editado (${VERSION_V2}). O backup capturou a fonte errada."
 log_pass "env file e chaves restaurados com os valores que ESTAVAM RODANDO"
@@ -293,8 +293,8 @@ V_FINAL="$(observability_version)"
 [ "$V_FINAL" = "$VERSION_V1" ] \
     || fail "após o restore/redeploy o app exibe VERSION=${V_FINAL}, esperado ${VERSION_V1} (a config capturada em execução)"
 KID_FINAL="$(running_kid)"
-[ "$KID_FINAL" = "$CFG_TEST_KID" ] \
-    || fail "após o restore/redeploy o KID é '${KID_FINAL}', esperado '${CFG_TEST_KID}'"
+[ "$KID_FINAL" = "$JWT_ES256_KID" ] \
+    || fail "após o restore/redeploy o KID é '${KID_FINAL}', esperado '${JWT_ES256_KID}'"
 FINAL_KEY_SHA="$(secret_sha jwt-es256-private.pem)"
 [ "$FINAL_KEY_SHA" = "$KEY_PRIVATE_SHA" ] \
     || fail "chave privada após o redeploy difere da capturada (${FINAL_KEY_SHA} vs ${KEY_PRIVATE_SHA})"

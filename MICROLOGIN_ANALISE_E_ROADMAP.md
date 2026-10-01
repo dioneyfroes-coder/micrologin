@@ -247,6 +247,37 @@ comentário.
 (ES256 + Mongo/Redis autenticados), confirma o smoke e força um rollback,
 provando que volta para a versão anterior com a configuração correta.
 
+**Feito:** `scripts/test-deploy.sh` (`npm run test:deploy`). Três versões com
+imagens genuinamente distintas (marcador em `/app/.drill-version`, conteúdo
+diferente — não três tags do mesmo digest): v1 estável, v2 estável com o disco
+reescrito para material novo enquanto o container ainda roda a v1 (a divergência
+que o backup precisa desfazer), e v3 com `URI_MONGODB` apontando para uma porta
+inexistente. As três rodam `deploy.sh` de verdade: backup de imagem e de config,
+build, `compose up`, health check e smoke. A v3 reprova no health check e o
+rollback tem de devolver KID, URI, marcador e digest da v2, com o serviço
+respondendo de novo. Verificado que o drill **reprova** quando o `load_env`
+pós-restauração é removido (mutação aplicada ao `deploy.sh`).
+
+Bugs reais de produção que o drill expôs e que foram corrigidos:
+
+- `compose up -d` no rollback não recriava o container, então a tag `image:`
+  restaurada não surtia efeito e o serviço voltava "para o ar" na versão que o
+  rollback tinha acabado de desfazer. Agora é `--force-recreate`, como o próprio
+  `restore-config.sh` documenta.
+- O rollback não recarregava o env restaurado: `CFG_TEST_IMAGE` continuava no
+  ambiente do processo com a tag da versão quebrada.
+- `backup_current_version` tagueava `${REGISTRY}/${IMAGE_NAME}:latest`, que não é
+  a imagem em execução quando o Compose usa `image:` fixo. Passa a taguear a
+  imagem do container.
+- **Mount aninhado quebrado em produção:** `/run/secrets/deps` é subcaminho do
+  bind somente-leitura `/run/secrets`, e o runc não consegue criar o mountpoint
+  dentro dele — `make mountpoint /run/secrets/deps: read-only file system`, e o
+  container não sobe. Agora `/run/secrets-deps`, mount irmão, em `prod`,
+  `backup`, `redis` e no compose de teste.
+- `backup-config.sh`/`deploy.sh` com `SERVICE` fixo não achavam o container do
+  Compose de teste; agora `CFG_SERVICE_NAME`/`DEPLOY_SERVICE_NAME`, com default
+  `auth-service` intacto.
+
 ## P7 — Fase 3.2: exclusão mútua entre PM2 e cluster module não é testada
 
 `tests/unit/cluster-config.test.ts` tem 5 casos, todos de contagem de workers

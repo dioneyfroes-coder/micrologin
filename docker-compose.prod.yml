@@ -58,8 +58,8 @@ services:
       # Mesma razão da chave ES256, agora com mais a perder: a senha do Mongo
       # dá acesso aos hashes de senha, e a do Redis à blacklist de tokens.
       #   scripts/generate-dependency-secrets.sh <DEPENDENCY_SECRETS_DIR> --for-container
-      MONGODB_PASSWORD_PATH: /run/secrets/deps/mongo-app-password
-      REDIS_PASSWORD_PATH: /run/secrets/deps/redis-password
+      MONGODB_PASSWORD_PATH: /run/secrets-deps/mongo-app-password
+      REDIS_PASSWORD_PATH: /run/secrets-deps/redis-password
       # A decisão de transporte da D18 escrita em código: o app liga para as
       # dependências pela rede dedicada `deps-network`, que é `internal` (sem
       # gateway e sem rota para fora do host) e não publica porta nenhuma. TLS
@@ -88,9 +88,13 @@ services:
       # senha do root do Mongo e o arquivo de ACL NÃO são legíveis por este
       # container (dono 999, modo 600) — o uid 1001 não os abre. É a diferença
       # entre o serviço ter acesso aos dados e ter acesso à administração deles.
+      # `/run/secrets-deps`, e não `/run/secrets/deps`: o mount de /run/secrets é
+      # somente-leitura, e um mountpoint filho não pode ser criado dentro dele —
+      # o runc falha com "make mountpoint /run/secrets/deps: read-only file
+      # system" e o container nunca sobe. Mount irmão, sem aninhamento.
       - type: bind
         source: ${DEPENDENCY_SECRETS_DIR:-./secrets/deps}
-        target: /run/secrets/deps
+        target: /run/secrets-deps
         read_only: true
     expose:
       - "3000"
@@ -172,17 +176,21 @@ services:
     # dentro do container, sem passar por `docker inspect`.
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-root}
-      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/deps/mongo-root-password
+      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets-deps/mongo-root-password
       # O init script cria o usuário da aplicação com `readWrite` apenas sobre o
       # banco do serviço, em authSource=admin (docker/mongo/10-app-user.sh).
       MONGO_APP_USER: ${MONGO_APP_USER:-auth-service}
       MONGO_APP_DB: ${MONGO_APP_DB:-auth_prod}
-      MONGO_APP_PASSWORD_PATH: /run/secrets/deps/mongo-app-password
+      MONGO_APP_PASSWORD_PATH: /run/secrets-deps/mongo-app-password
     volumes:
       - mongo-data:/data/db
+      # `/run/secrets-deps`, e não `/run/secrets/deps`: o mount de /run/secrets é
+      # somente-leitura, e um mountpoint filho não pode ser criado dentro dele —
+      # o runc falha com "make mountpoint /run/secrets/deps: read-only file
+      # system" e o container nunca sobe. Mount irmão, sem aninhamento.
       - type: bind
         source: ${DEPENDENCY_SECRETS_DIR:-./secrets/deps}
-        target: /run/secrets/deps
+        target: /run/secrets-deps
         read_only: true
       - type: bind
         source: ./docker/mongo/10-app-user.sh

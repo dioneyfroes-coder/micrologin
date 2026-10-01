@@ -102,11 +102,11 @@ derruba ninguém.
 
 ```bash
 # 1. Gera a senha nova, mantém a antiga válida e registra a anterior.
-scripts/rotate-dependency-secrets.sh /run/secrets/deps --for-container
+scripts/rotate-dependency-secrets.sh /run/secrets-deps --for-container
 # 2. Recarrega o Redis (o app continua no ar com a senha antiga em memória).
 docker compose restart redis
 # 3. Depois que o app já usa a nova, encerra a janela.
-scripts/rotate-dependency-secrets.sh /run/secrets/deps --close-window --for-container
+scripts/rotate-dependency-secrets.sh /run/secrets-deps --close-window --for-container
 docker compose restart redis
 ```
 
@@ -142,7 +142,7 @@ anterior no mesmo instante. A ordem é obrigatória e não tem atalho:
 
 ```bash
 # 1. Gera a senha nova no arquivo. Ainda não é a senha do servidor.
-scripts/rotate-dependency-secrets.sh /run/secrets/deps --mongo-only --for-container
+scripts/rotate-dependency-secrets.sh /run/secrets-deps --mongo-only --for-container
 
 # 2. Troca a senha NO SERVIDOR, usando a nova. A partir daqui a antiga morreu:
 #    o app ainda no ar com a credencial antiga só funciona se a janela de
@@ -150,9 +150,9 @@ scripts/rotate-dependency-secrets.sh /run/secrets/deps --mongo-only --for-contai
 #    O comando roda dentro do container e lê as duas senhas de lá dentro: no
 #    host o material pertence ao container, e em argv a senha apareceria no ps.
 docker exec <container-mongo> sh -c 'mongosh --quiet --host 127.0.0.1 \
-    --username root --password "$(cat /run/secrets/deps/mongo-root-password)" \
+    --username root --password "$(cat /run/secrets-deps/mongo-root-password)" \
     --authenticationDatabase admin \
-    --eval "db.getSiblingDB(\"admin\").changeUserPassword(\"auth-service\", \"$(cat /run/secrets/deps/mongo-app-password)\")"'
+    --eval "db.getSiblingDB(\"admin\").changeUserPassword(\"auth-service\", \"$(cat /run/secrets-deps/mongo-app-password)\")"'
 
 # 3. Só agora o app sobe com a senha nova.
 docker compose up -d --force-recreate auth-service

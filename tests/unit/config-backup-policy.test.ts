@@ -18,7 +18,7 @@ import { load } from 'js-yaml';
  * invariantes sem as quais o drill provaria uma configuração que ninguém roda:
  *
  *   1. os alvos de mount de segredo do DRILL são exatamente os de PRODUÇÃO
- *      (`/run/secrets` e `/run/secrets/deps`, binds read-only), e as envs
+ *      (`/run/secrets` e `/run/secrets-deps`, binds read-only), e as envs
  *      *_PATH apontam para os mesmos caminhos — senão o drill captura um
  *      layout que o deploy não usa;
  *   2. o material de segredo entra por ARQUIVO (env *_PATH), nunca por valor de
@@ -63,7 +63,16 @@ const volumeTargets = (service: ComposeService): string[] =>
 /** Alvos `/run/secrets*` de um serviço, ordenados (comparação de conjuntos). */
 const secretTargets = (compose: ComposeFile, service: string): string[] =>
   volumeTargets(compose.services[service] as ComposeService)
-    .filter((target) => target === '/run/secrets' || target.startsWith('/run/secrets/'))
+    // `/run/secrets-deps` conta tanto quanto `/run/secrets/...`: é o prefixo com
+    // TRAVESSÃO, não com barra. Filtrar só por `/run/secrets/` escondia o mount
+    // de dependências da verificação — o teste passava com o mount de senhas
+    // sumido do compose.
+    .filter(
+      (target) =>
+        target === '/run/secrets' ||
+        target.startsWith('/run/secrets/') ||
+        target.startsWith('/run/secrets-')
+    )
     .sort();
 
 describe('produção: segredos entram por arquivo, nunca por valor de ambiente (Fase 2.3)', () => {
@@ -74,13 +83,16 @@ describe('produção: segredos entram por arquivo, nunca por valor de ambiente (
     expect(prod.services['auth-service']).toBeDefined();
   });
 
-  it('monta /run/secrets e /run/secrets/deps como binds read-only', () => {
+  it('monta /run/secrets e /run/secrets-deps como binds read-only (irmãos, não aninhados)', () => {
     // O backup descobre o material pelos mounts sob /run/secrets. Se o layout
     // mudar (ex.: KMS, secret do swarm), este teste grita porque o backup e o
     // texto desta fase deixariam de corresponder ao que é montado.
-    expect(secretTargets(prod, 'auth-service')).toEqual([
+    // Ordem alfabética, para não depender da ordem em que o YAML declara os
+    // volumes — um reordenamento cosmético no compose não é o que este teste
+    // existe para pegar.
+    expect(secretTargets(prod, 'auth-service').sort()).toEqual([
       '/run/secrets',
-      '/run/secrets/deps'
+      '/run/secrets-deps'
     ]);
     for (const volume of (app.volumes ?? []) as NonNullable<ComposeService['volumes']>) {
       const target = typeof volume === 'string' ? '' : volume.target;
@@ -97,8 +109,8 @@ describe('produção: segredos entram por arquivo, nunca por valor de ambiente (
     // sufixo _PATH existem; os nomes sem sufixo (o valor cru) NÃO podem existir.
     const env = app.environment ?? {};
     expect(env['JWT_ES256_PRIVATE_KEY_PATH']).toBe('/run/secrets/jwt-es256-private.pem');
-    expect(env['MONGODB_PASSWORD_PATH']).toBe('/run/secrets/deps/mongo-app-password');
-    expect(env['REDIS_PASSWORD_PATH']).toBe('/run/secrets/deps/redis-password');
+    expect(env['MONGODB_PASSWORD_PATH']).toBe('/run/secrets-deps/mongo-app-password');
+    expect(env['REDIS_PASSWORD_PATH']).toBe('/run/secrets-deps/redis-password');
     expect(env['JWT_ES256_PRIVATE_KEY']).toBeUndefined();
     expect(env['MONGODB_PASSWORD']).toBeUndefined();
     expect(env['REDIS_PASSWORD']).toBeUndefined();
@@ -141,8 +153,12 @@ describe('backup-config.sh: lê do container e registra dono/modo', () => {
   const script = readFileSync(resolve(ROOT, 'scripts/backup-config.sh'), 'utf8');
 
   it('o default de projeto/serviço casa com o compose de produção', () => {
+    // `SERVICE` passou a ser `CFG_SERVICE_NAME:-auth-service` (o drill de deploy
+    // usa um Compose de teste com outro nome de serviço). O default tem de
+    // continuar sendo `auth-service`, senão o backup em produção procura um
+    // container que não existe e o drill de rollback passa a medir nada.
     expect(script).toMatch(/^PROJECT="micrologin"/m);
-    expect(script).toMatch(/^SERVICE="auth-service"/m);
+    expect(script).toMatch(/^SERVICE="\$\{CFG_SERVICE_NAME:-auth-service\}"$/m);
   });
 
   it('coleta o material de segredo pelo CONTAINER (docker cp), não pelo host', () => {
@@ -211,7 +227,9 @@ describe('os deploys acoplam a config à imagem e restauram ANTES de subir', () 
     // está no ar, não da recém-construída).
     const backupFn = deploy.indexOf('backup_current_version()');
     const rollbackFn = deploy.indexOf('rollback()');
-    const call = deploy.indexOf('backup-config.sh');
+    // A INVOCAÇÃO, não qualquer menção: um comentário que explica o
+    // `backup-config.sh` também casa com indexOf e mediria a posição errada.
+    const call = deploy.indexOf('"${SCRIPT_DIR}/backup-config.sh"');
     expect(backupFn).toBeGreaterThanOrEqual(0);
     expect(call).toBeGreaterThan(backupFn);
     expect(call).toBeLessThan(rollbackFn);
@@ -219,8 +237,40 @@ describe('os deploys acoplam a config à imagem e restauram ANTES de subir', () 
     // imagem antiga com o env da versão nova — o buraco que a fase fecha.
     // (Escopo na função rollback, porque deploy_production() tem um `up -d`
     // idêntico que aparece antes no arquivo.)
+    //
+    // A checagem é pela função `compose`, não pelo comando literal: o alvo do
+    // Compose passou a ser montado uma vez em `resolve_compose_args` e
+    // compartilhado por deploy e rollback. Casar com a string
+    // `docker compose --env-file ".env.prod" ...` reprovaria aqui a cada
+    // refatoração que fizesse rollback e deploy compartilharem o mesmo alvo,
+    // que é justamente o que não deve divergir. O que importa é a ordem, e o
+    // alvo vem de baixo para cima de um único lugar.
     const rollbackBody = deploy.slice(deploy.indexOf('rollback()'), deploy.indexOf('main()'));
-    expect(orderOk(rollbackBody, 'restore-config.sh', 'docker compose --env-file ".env.prod" -f docker-compose.prod.yml up -d')).toBe(true);
+    expect(orderOk(rollbackBody, 'restore-config.sh', 'compose up -d')).toBe(true);
+
+    // E o alvo é o mesmo nos dois lados: nenhum passo escreve `docker compose`
+    // direto, senão um deles volta a usar o compose de produção enquanto o outro
+    // usa o do drill — o modo mais silencioso de o rollback subir a coisa errada.
+    // A única ocorrência crua permitida é dentro de `compose()`, e ela tem de
+    // passar por `COMPOSE_ARGS`.
+    const helperStart = deploy.indexOf('compose() {');
+    const helperEnd = deploy.indexOf('\n}', helperStart) + 2;
+    const composeHelper = deploy.slice(helperStart, helperEnd);
+    expect(composeHelper).toContain('docker compose "${COMPOSE_ARGS[@]}"');
+    expect(composeHelper).toMatch(/^compose\(\) \{\n\s+docker compose "\$\{COMPOSE_ARGS\[@\]\}" "\$@"\n\}$/m);
+
+    // `docker compose version` é a checagem de pré-requisito, não um passo.
+    const rawOutsideHelper = deploy
+      .replace(composeHelper, '')
+      .match(/^\s*docker compose (?!version)/gm) ?? [];
+    expect(rawOutsideHelper).toEqual([]);
+    expect(deploy).toContain('COMPOSE_ARGS=()');
+
+    // Os defaults são os de sempre: staging usa o compose do projeto e
+    // produção usa .env.prod com o compose de produção. Injetar o alvo do drill
+    // não pode ter deslocado esses defaults.
+    expect(deploy).toMatch(/COMPOSE_ARGS\+=\(--env-file "\.env\.prod" -f "docker-compose\.prod\.yml"\)/);
+    expect(deploy).toMatch(/if \[ "\$ENVIRONMENT" = "production" \]; then\s+COMPOSE_ARGS\+=/);
   });
 
   it('remote-deploy.sh taggeia a config pelo digest da imagem e exige a passphrase', () => {

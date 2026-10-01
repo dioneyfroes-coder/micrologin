@@ -38,7 +38,7 @@
 
 APP_DB="${MONGO_APP_DB:-auth}"
 APP_USER="${MONGO_APP_USER:-auth-service}"
-APP_PASSWORD_PATH="${MONGO_APP_PASSWORD_PATH:-/run/secrets/deps/mongo-app-password}"
+APP_PASSWORD_PATH="${MONGO_APP_PASSWORD_PATH:-/run/secrets-deps/mongo-app-password}"
 
 if [ -z "${MONGO_INITDB_ROOT_USERNAME:-}" ] || [ -z "${MONGO_INITDB_ROOT_PASSWORD:-}" ]; then
     echo "ERRO: o root do Mongo nao foi criado (faltam MONGO_INITDB_ROOT_USERNAME/PASSWORD)." >&2

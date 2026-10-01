@@ -24,6 +24,13 @@ secrets/
 .cfg-passphrase
 cfg-backups/
 deploy-config-backup.log
+deploy-drill.env
+
+# Material efêmero do drill de deploy (scripts/test-deploy.sh): chaves ES256
+# e credenciais de dependência em texto claro, por necessidade do roteiro. O
+# drill apaga o diretório no fim, mas um Ctrl+C no meio deixaria segredo em disco.
+.deploy-drill/
+.deploy-drill.lock
 backups/
 *.pem
 

@@ -344,7 +344,7 @@ guarda, o que cada chave custa perder, e por que não há backup dele estão em
 
 `test:config-backup` (`scripts/test-config-backup.sh`) é o drill da Fase 2.3:
 sobe um stack isolado com a **mesma topologia de mount de produção** (`/run/secrets`
-e `/run/secrets/deps`), captura a configuração EM EXECUÇÃO, **edita o env file sem
+e `/run/secrets-deps`), captura a configuração EM EXECUÇÃO, **edita o env file sem
 redeployar** (o controle negativo — disco e container divergidos), apaga env e
 segredos, restaura pelo metadata da imagem (o caminho que os deploys usam no
 rollback) e prova em runtime que o app voltou a exibir a configuração capturada,

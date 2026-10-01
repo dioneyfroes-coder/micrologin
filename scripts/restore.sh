@@ -127,7 +127,7 @@ resolve_mongo_container() {
     echo "$ctr"
 }
 
-MONGO_PASSWORD_PATH_IN_CONTAINER="/run/secrets/deps/mongo-root-password"
+MONGO_PASSWORD_PATH_IN_CONTAINER="/run/secrets-deps/mongo-root-password"
 
 GPG() { gpg --batch --yes --no-tty "$@"; }
 

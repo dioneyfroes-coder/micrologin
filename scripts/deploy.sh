@@ -23,7 +23,9 @@ NC='\033[0m'
 
 ENVIRONMENT=${1:-staging}
 VERSION=${2:-latest}
-SERVICE_NAME="auth-service"
+# Nome do serviço no Compose. `auth-service` em produção; o drill de deploy
+# usa um Compose de teste onde o serviço se chama `app`, daí o override.
+SERVICE_NAME="${DEPLOY_SERVICE_NAME:-auth-service}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
@@ -50,20 +52,82 @@ load_env() {
     done < <(grep -E '^[A-Z_][A-Z0-9_]*=' "$file" 2>/dev/null || true)
 }
 
+# ====================================
+# ALVOS DO DEPLOY
+#
+# `COMPOSE_ARGS` é montado uma vez, em `check_prerequisites`, e é a única coisa
+# que os passos de deploy/rollback usam para falar com o Compose. A alternativa
+# — cada passo escrevendo seu próprio `docker compose ...` — foi o que deixou
+# `deploy.sh` sem nenhum drill: os passos divergiam entre si, e não havia como
+# exercitar a orquestração contra um stack de teste sem reescrever o script.
+#
+# Os defaults reproduzem exatamente o comportamento anterior:
+#   staging      -> compose do projeto (docker-compose.yml)
+#   production   -> --env-file .env.prod -f docker-compose.prod.yml
+#
+# `DEPLOY_COMPOSE_FILE` / `DEPLOY_COMPOSE_ENV_FILE` existem para o drill
+# (`scripts/test-deploy.sh`) apontar a um stack isolado. Não há outro uso
+# previsto, e a variável continua visível no log porque `log_info` imprime a
+# linha inteira do comando nos passos que a usam.
+# ====================================
+resolve_compose_args() {
+    COMPOSE_ARGS=()
+
+    if [ -n "${DEPLOY_COMPOSE_PROJECT:-}" ]; then
+        COMPOSE_ARGS+=(-p "$DEPLOY_COMPOSE_PROJECT")
+    fi
+
+    if [ -n "${DEPLOY_COMPOSE_FILE:-}" ]; then
+        if [ -n "${DEPLOY_COMPOSE_ENV_FILE:-}" ]; then
+            COMPOSE_ARGS+=(--env-file "$DEPLOY_COMPOSE_ENV_FILE")
+        fi
+        COMPOSE_ARGS+=(-f "$DEPLOY_COMPOSE_FILE")
+        return 0
+    fi
+
+    if [ "$ENVIRONMENT" = "production" ]; then
+        COMPOSE_ARGS+=(--env-file ".env.prod" -f "docker-compose.prod.yml")
+    fi
+}
+
+compose() {
+    docker compose "${COMPOSE_ARGS[@]}" "$@"
+}
+
 check_prerequisites() {
     log_info "Checking prerequisites..."
     command -v docker >/dev/null 2>&1 || { log_error "Docker not found."; exit 1; }
     docker compose version >/dev/null 2>&1 || { log_error "Docker Compose v2 not found."; exit 1; }
 
+    # Quando o alvo do Compose é injetado, o env file é o mesmo arquivo, e
+    # decidido ANTES do load_env: `load_env`, `backup-config.sh` e
+    # `restore-config.sh` operam todos sobre `ENV_FILE`. Definir depois faria o
+    # app ler um arquivo e o rollback restaurar outro — que é o modo exato pelo
+    # qual o rollback sobe imagem antiga com config nova, o estrago que esta fase
+    # existe para fechar. Coerência por construção vale mais que um default
+    # bonito.
+    if [ -n "${DEPLOY_COMPOSE_ENV_FILE:-}" ]; then
+        case "$ENVIRONMENT" in
+            production)
+                [ -f "$DEPLOY_COMPOSE_ENV_FILE" ] || { log_error "$DEPLOY_COMPOSE_ENV_FILE não encontrado."; exit 1; }
+                ;;
+        esac
+        ENV_FILE="$DEPLOY_COMPOSE_ENV_FILE"
+    fi
+
     case "$ENVIRONMENT" in
         staging)
-            ENV_FILE=".env"
-            [ -f "$ENV_FILE" ] || log_warning ".env não existe; copie de .env.example"
+            [ -n "${DEPLOY_COMPOSE_ENV_FILE:-}" ] || {
+                ENV_FILE=".env"
+                [ -f "$ENV_FILE" ] || log_warning ".env não existe; copie de .env.example"
+            }
             load_env "$ENV_FILE"
             ;;
         production)
-            ENV_FILE=".env.prod"
-            [ -f "$ENV_FILE" ] || { log_error "$ENV_FILE não encontrado."; exit 1; }
+            [ -n "${DEPLOY_COMPOSE_ENV_FILE:-}" ] || {
+                ENV_FILE=".env.prod"
+                [ -f "$ENV_FILE" ] || { log_error "$ENV_FILE não encontrado."; exit 1; }
+            }
             load_env "$ENV_FILE"
             ;;
         *) log_error "Unknown environment: $ENVIRONMENT"; exit 1 ;;
@@ -81,10 +145,22 @@ check_prerequisites() {
     APP_PORT=${APP_PORT:-3000}
     PROD_BASE_URL=${PROD_BASE_URL:-https://api.yourapp.com}
 
+    # Depois de `load_env`, para que o env file possa redefinir o alvo.
+    resolve_compose_args
+    log_info "Compose alvo: docker compose ${COMPOSE_ARGS[*]:-(padrão do projeto)}"
+
     log_success "Prerequisites check passed"
 }
 
 run_tests() {
+    # `DEPLOY_SKIP_TESTS=1` existe para o drill, que já roda a suíte por fora e
+    # não pode pagar a suíte inteira a cada iteração de rollback. O aviso é
+    # proposital e vai para o log sem cor: um bypass silencioso de testes num
+    # script de deploy é exatamente o tipo de atalho que ninguém revisaria.
+    if [ "${DEPLOY_SKIP_TESTS:-0}" = "1" ]; then
+        log_warning "DEPLOY_SKIP_TESTS=1: pulando test:unit:fast e test:integration:app"
+        return 0
+    fi
     log_info "Running tests before deployment..."
     npm run test:unit:fast || return 1
     npm run test:integration:app || return 1
@@ -129,7 +205,11 @@ build_and_push() {
 
 wait_for_health_check() {
     local url="$1"
-    local max_attempts=30 attempt=1
+    # Defaults = 30 tentativas com 10s de espera, isto é, 5 minutos. O drill
+    # encurta os dois para que uma versão quebrada reprove rápido em vez de
+    # custar cinco minutos por iteração.
+    local max_attempts="${DEPLOY_HEALTH_ATTEMPTS:-30}" attempt=1
+    local interval="${DEPLOY_HEALTH_INTERVAL:-10}"
     log_info "Waiting for health check: ${url}"
     while [ "$attempt" -le "$max_attempts" ]; do
         if curl -f -s "$url" > /dev/null 2>&1; then
@@ -137,7 +217,7 @@ wait_for_health_check() {
             return 0
         fi
         log_info "Attempt ${attempt}/${max_attempts} failed, waiting..."
-        sleep 10
+        sleep "$interval"
         ((attempt++)) || true
     done
     log_error "Health check failed after ${max_attempts} attempts"
@@ -146,18 +226,28 @@ wait_for_health_check() {
 
 deploy_staging() {
     log_info "Deploying to staging environment..."
-    docker compose down || true
-    docker compose up -d || return 1
+    compose down || true
+    compose up -d || return 1
     wait_for_health_check "http://localhost:${APP_PORT}/health" || return 1
     log_success "Staging deployment completed"
 }
 
 backup_current_version() {
     log_info "Creating backup of current version..."
-    local timestamp backup_tag
+    local timestamp backup_tag running_image
     timestamp=$(date +%Y%m%d_%H%M%S)
     backup_tag="${IMAGE_NAME}-backup-${timestamp}"
-    docker tag "${REGISTRY}/${IMAGE_NAME}:latest" "${REGISTRY}/${IMAGE_NAME}:${backup_tag}" || true
+    # A imagem a preservar é a que o CONTAINER está executando, não a `latest`.
+    # São a mesma em produção, mas o drill de deploy (e qualquer Compose com
+    # `image:` fixo) faz o app rodar numa tag que `latest` não aponta — e taguear
+    # `latest` ali produz um backup de uma imagem que nunca esteve no ar: o
+    # rollback "restaura" e o serviço continua com a versão quebrada.
+    running_image="$(compose ps -q "$SERVICE_NAME" 2>/dev/null | head -1 | xargs -r docker inspect --format '{{.Image}}' 2>/dev/null || true)"
+    if [ -n "$running_image" ]; then
+        docker tag "$running_image" "${REGISTRY}/${IMAGE_NAME}:${backup_tag}" || true
+    else
+        docker tag "${REGISTRY}/${IMAGE_NAME}:latest" "${REGISTRY}/${IMAGE_NAME}:${backup_tag}" || true
+    fi
     if can_push; then
         docker push "${REGISTRY}/${IMAGE_NAME}:${backup_tag}" || true
     fi
@@ -170,8 +260,14 @@ backup_current_version() {
     if [ "$ENVIRONMENT" = "production" ] \
         && [ -n "${CONFIG_BACKUP_PASSPHRASE_FILE:-}" ] && [ -r "${CONFIG_BACKUP_PASSPHRASE_FILE}" ]; then
         log_info "Capturando a configuração em execução (backup-config.sh)..."
-        if ! bash "${SCRIPT_DIR}/backup-config.sh" \
-            --project "${COMPOSE_PROJECT:-micrologin}" \
+        # Primeira instalação (ou stack derrubado): não há container em execução
+        # para ser a fonte da verdade, e `backup-config.sh` reprovar por isso é
+        # esperado — não um incidente. Sem esta guarda, todo deploy inicial
+        # imprimia um "Backup de configuração falhou" que não significa nada.
+        if ! compose ps --status running --services 2>/dev/null | grep -qx "$SERVICE_NAME"; then
+            log_warning "Nenhum container '${SERVICE_NAME}' em execução; não há configuração em vigor para capturar (primeiro deploy?)."
+        elif ! bash "${SCRIPT_DIR}/backup-config.sh" \
+            --project "${DEPLOY_COMPOSE_PROJECT:-${COMPOSE_PROJECT:-micrologin}}" \
             --service "$SERVICE_NAME" \
             --env-file "$ENV_FILE" \
             --backups-dir "$CFG_BACKUPS_DIR" \
@@ -188,7 +284,7 @@ backup_current_version() {
 
 deploy_production() {
     log_info "Deploying to production environment..."
-    docker compose --env-file ".env.prod" -f docker-compose.prod.yml up -d || return 1
+    compose up -d || return 1
     wait_for_health_check "${PROD_BASE_URL}/health" || return 1
     run_smoke_tests || return 1
     log_success "Production deployment completed"
@@ -252,11 +348,20 @@ rollback() {
         fi
     fi
 
-    if [ "$ENVIRONMENT" = "production" ]; then
-        docker compose --env-file ".env.prod" -f docker-compose.prod.yml up -d
-    else
-        docker compose up -d
-    fi
+    # O `load_env` do início do rollback exportou `CFG_TEST_IMAGE` da versão
+    # QUEBRADA para o ambiente do processo. O `compose up` abaixo lê dali, não do
+    # arquivo — então o container recriado sobe a imagem que o rollback acabou de
+    # desfazer. Recarregar o env restaurado antes de subir é o que fecha o
+    # caminho; sem isso o rollback reporta sucesso com o serviço na versão nova.
+    load_env "$ENV_FILE"
+
+    # `--force-recreate` é obrigatório, não cosmético. Depois de restaurar a
+    # configuração, a tag `image:` pode ter mudado (é a diferença entre a versão
+    # quebrada e a anterior) enquanto o container em execução continua com a
+    # imagem antiga em memória. Um `compose up -d` sem forçar não recria nada e
+    # reporta sucesso — o serviço volta "para o ar" com a versão que o rollback
+    # acabou de desfazer. O próprio restore-config.sh manda usar --force-recreate.
+    compose up -d --force-recreate
 
     log_success "Rollback concluído (voltou para ${latest_backup})"
 }

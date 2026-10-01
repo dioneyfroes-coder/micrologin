@@ -183,6 +183,7 @@ import json, os, re, sys
 xdir, env_original = sys.argv[1], sys.argv[2] or ""
 manifest = json.load(open(os.path.join(xdir, "cfg-manifest.json")))
 build = json.load(open(os.path.join(xdir, "build.json")))
+meta = build.get("manifest_meta", {})
 running_env = build.get("running_env", {})
 compose_text = ""
 for e in manifest["entries"]:
@@ -212,10 +213,31 @@ else:
 
 # chaves que o compose interpolava (${X} / ${X:-...}) e vinha de outra origem
 # (shell), mas que estavam em execução: garantem o mesmo valor ao subir
+#
+# `declared` é lido com re.M sobre as linhas de `result`: sem isso, um join sem
+# separador colaria as linhas e o regex ancorado em `^` só encontraria a
+# PRIMEIRA chave — o que fazia cada chave interpolada ser anexada de novo,
+# produzindo um env file com a mesma chave duas vezes. Um env file com chave
+# duplicada é um arquivo malformado cujo valor depende da ordem de leitura, e o
+# rollback é justamente o caminho em que ninguém pode affordar isso.
 def env_keys_of(text):
     return set(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::[-]?[^}]*)?\}", text) or [])
 
-declared = set(re.findall(r"^([A-Za-z_][A-Za-z0-9_]*)(?==)", "".join(result)))
+# A referência da IMAGEM que rodava vem do `image_ref` do manifest, não do env
+# file do host. O env do disco já foi sobrescrito pela versão nova antes do
+# backup (o backup acontece no meio do deploy), então regenerar a partir dele
+# devolveria a tag da imagem QUEBROCA — o rollback subiria a versão que ele
+# acabou de desfazer, e ainda reportaria sucesso.
+image_ref = meta.get("image_ref", "")
+if image_ref and image_ref not in ("", "none"):
+    for idx, line in enumerate(result):
+        if line.startswith("CFG_TEST_IMAGE="):
+            result[idx] = "CFG_TEST_IMAGE=" + image_ref
+            break
+    else:
+        result.append("CFG_TEST_IMAGE=" + image_ref)
+
+declared = set(re.findall(r"^([A-Za-z_][A-Za-z0-9_]*)(?==)", "\n".join(result), re.M))
 interpolated = env_keys_of(compose_text)
 for k in sorted(interpolated):
     if k in running_env and k not in declared:
@@ -312,19 +334,36 @@ for e in manifest["entries"]:
     if not dest.startswith(os.path.normpath(target_dir)):
         sys.exit("caminho fora do alvo: " + a)
     os.makedirs(os.path.dirname(dest), exist_ok=True)
+    # Substituição atômica, e não copy2 direto no destino: o arquivo no disco
+    # é do dono e modo que o CONTAINER usa (uid 1001/999, modo 444), então quem
+    # restaura não consegue abri-lo para escrita — nem o pode chmodar, por não
+    # ser o dono. copy2 rebentaria com PermissionError. `rename` só exige
+    # escrita no DIRETÓRIO, que é do operador, e ainda deixa o destino
+    # inteiro: se a cópia falhar no meio, a versão anterior continua no lugar.
+    # O dono/modo abaixo voltam logo em seguida.
+    tmp = dest + ".restore-tmp"
     if os.path.isdir(src):
+        shutil.rmtree(tmp, ignore_errors=True)
+        shutil.copytree(src, tmp)
         if os.path.isdir(dest):
             shutil.rmtree(dest)
-        shutil.copytree(src, dest)
+        os.replace(tmp, dest)
     else:
-        shutil.copy2(src, dest)
+        if os.path.isdir(dest):
+            shutil.rmtree(dest)
+        shutil.copy2(src, tmp)
+        os.replace(tmp, dest)
     # o dono/modo REAIS do material voltam com ele (o copiar acima os perde
     # quando o operador não é root). O manifest guarda uid/gid/mode capturados
     # do source (fase 2.3); reaplicar é obrigatório para o container reler.
     if a.startswith("secrets/") and e.get("uid") is not None:
         print("OWNER|%s|%s|%s|%s" % (rel, e["uid"], e["gid"], e.get("mode", "0")))
 dest_env = os.path.join(target_dir, env_out)
-shutil.copy2(env_new, dest_env)
+# mesmo motivo dos segredos: o env file em produção pode ser de outro dono
+# (root, ou o usuário do deploy em outro host) e abrir para escrita falharia.
+env_tmp = dest_env + ".restore-tmp"
+shutil.copy2(env_new, env_tmp)
+os.replace(env_tmp, dest_env)
 print("env regerado: " + dest_env)
 PY
 

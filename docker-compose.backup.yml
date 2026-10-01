@@ -31,11 +31,11 @@ services:
       VERSION: backup-test
       URI_MONGODB: mongodb://mongodb:27017/auth_backup
       MONGODB_USER: auth-service
-      MONGODB_PASSWORD_PATH: /run/secrets/deps/mongo-app-password
+      MONGODB_PASSWORD_PATH: /run/secrets-deps/mongo-app-password
       MONGODB_AUTH_SOURCE: admin
       REDIS_URL: redis://redis:6379/0
       REDIS_USERNAME: auth-service
-      REDIS_PASSWORD_PATH: /run/secrets/deps/redis-password
+      REDIS_PASSWORD_PATH: /run/secrets-deps/redis-password
       DEPENDENCY_NETWORK_ISOLATED: "true"
       JWT_ALGORITHM: ES256
       JWT_ES256_KID: ${BACKUP_JWT_KID:-backup-v1}
@@ -55,7 +55,7 @@ services:
         read_only: true
       - type: bind
         source: ${BACKUP_DEPS_DIR:-./.backup-deps}
-        target: /run/secrets/deps
+        target: /run/secrets-deps
         read_only: true
     ports:
       - "${BACKUP_PORT:-3201}:3000"
@@ -79,15 +79,15 @@ services:
     container_name: micrologin-backup-mongo
     environment:
       MONGO_INITDB_ROOT_USERNAME: root
-      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/deps/mongo-root-password
+      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets-deps/mongo-root-password
       MONGO_APP_USER: auth-service
       MONGO_APP_DB: auth_backup
-      MONGO_APP_PASSWORD_PATH: /run/secrets/deps/mongo-app-password
+      MONGO_APP_PASSWORD_PATH: /run/secrets-deps/mongo-app-password
     volumes:
       - backup-mongo:/data/db
       - type: bind
         source: ${BACKUP_DEPS_DIR:-./.backup-deps}
-        target: /run/secrets/deps
+        target: /run/secrets-deps
         read_only: true
       - type: bind
         source: ./docker/mongo/10-app-user.sh

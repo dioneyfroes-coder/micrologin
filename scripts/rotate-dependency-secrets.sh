@@ -100,8 +100,8 @@ REDIS_ACL_FILE="$OUT_DIR/redis-app.acl"
 # Onde o mesmo material aparece DENTRO do container do Mongo. E o alvo do mount
 # nos dois composes; o comando de rotacao precisa dele, e hardcode-lo aqui e
 # assumir o mesmo padrao que os composes (ajustavel por env, como os uids).
-MONGO_APP_PASSWORD_IN_CONTAINER="${DEPS_MONGO_APP_PASSWORD_IN_CONTAINER:-/run/secrets/deps/mongo-app-password}"
-MONGO_ROOT_PASSWORD_IN_CONTAINER="${DEPS_MONGO_ROOT_PASSWORD_IN_CONTAINER:-/run/secrets/deps/mongo-root-password}"
+MONGO_APP_PASSWORD_IN_CONTAINER="${DEPS_MONGO_APP_PASSWORD_IN_CONTAINER:-/run/secrets-deps/mongo-app-password}"
+MONGO_ROOT_PASSWORD_IN_CONTAINER="${DEPS_MONGO_ROOT_PASSWORD_IN_CONTAINER:-/run/secrets-deps/mongo-root-password}"
 
 REQUIRED_FILES=""
 if [ "$ROTATE_REDIS" -eq 1 ]; then

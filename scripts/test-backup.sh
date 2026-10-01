@@ -173,7 +173,7 @@ login_fails() {
 }
 
 read_mongo_root_password() {
-    docker exec "$MONGO_CONTAINER" cat /run/secrets/deps/mongo-root-password | tr -d '\n'
+    docker exec "$MONGO_CONTAINER" cat /run/secrets-deps/mongo-root-password | tr -d '\n'
 }
 
 sha_file() { sha256sum "$1" | cut -d' ' -f1; }
@@ -239,7 +239,7 @@ log_pass "backup cifrado no disco (gpg AES-256)"
 
 # O backup deve conter o usuário registrado: prova-se por fora, no banco
 # original antes de apagar, contando a coleção de usuários.
-USER_COUNT_BEFORE="$(docker exec "$MONGO_CONTAINER" sh -c 'mongosh --quiet --host 127.0.0.1 --username root --password "$(cat /run/secrets/deps/mongo-root-password)" --authenticationDatabase admin --eval '\''db.getSiblingDB("auth_backup").getCollectionNames().length'\''' 2>/dev/null || echo "?")"
+USER_COUNT_BEFORE="$(docker exec "$MONGO_CONTAINER" sh -c 'mongosh --quiet --host 127.0.0.1 --username root --password "$(cat /run/secrets-deps/mongo-root-password)" --authenticationDatabase admin --eval '\''db.getSiblingDB("auth_backup").getCollectionNames().length'\''' 2>/dev/null || echo "?")"
 [ "$USER_COUNT_BEFORE" != "?" ] || fail "não consegui inspecionar o banco auth_backup"
 
 # ============================================================
@@ -255,7 +255,7 @@ fi
 # 5. Apagar o banco (a parte que "por engano" uma restauração ruim não faria)
 # ============================================================
 log_warn "Apagando o banco ${DB_NAME} para provar que o restore devolve os dados..."
-docker exec "$MONGO_CONTAINER" sh -c 'mongosh --quiet --host 127.0.0.1 --username root --password "$(cat /run/secrets/deps/mongo-root-password)" --authenticationDatabase admin --eval '\''db.getSiblingDB("auth_backup").dropDatabase()'\''' >/dev/null
+docker exec "$MONGO_CONTAINER" sh -c 'mongosh --quiet --host 127.0.0.1 --username root --password "$(cat /run/secrets-deps/mongo-root-password)" --authenticationDatabase admin --eval '\''db.getSiblingDB("auth_backup").dropDatabase()'\''' >/dev/null
 sleep 1
 
 # Depois de apagar, o login TEM que falhar (401/500/qualquer não-200): sem
