@@ -401,23 +401,78 @@ Documentação: README, seção "Deployment → Como o ambiente é escolhido".
 
 A configuração atual define simultaneamente `low`, `moderate`, `high` e `critical` como `true`. O `audit-ci` documenta que a configuração deve escolher **um único threshold** de severidade. 
 
+### Problema — confirmado no código
+
+As quatro chaves não são quatro interruptores independentes: `mapVulnerabilityLevelInput`
+(audit-ci 7.1.0) devolve no **primeiro** `true`, na ordem
+`low > moderate > high > critical`. Com as quatro em `true` valia `low` — reprovar por
+qualquer advisory de qualquer severidade — e as outras três eram configuração morta.
+
+O schema oficial declara `additionalProperties: false`, e a versão anterior tinha duas
+chaves fora dele: `skipDev` (que nunca foi a chave; é `skip-dev`) e `summary`.
+
 ### Implementação
 
-[ ] Adicionar `$schema` ao `.audit-ci.json`.
+[x] Adicionar `$schema` ao `.audit-ci.json`.
 
-[ ] Escolher um threshold único para a política de 1.0.0.
+[x] Escolher um threshold único para a política de 1.0.0 — `moderate`.
 
-[ ] Política recomendada para este projeto: bloquear `moderate` ou superior, salvo advisory explicitamente analisado e allowlisted.
+[x] Política aplicada: bloquear `moderate` ou superior, salvo advisory explicitamente
+analisado e allowlisted. `low` fica de fora porque severidade baixa neste ecossistema
+quase sempre descreve pacote por caminho não usado ou DoS sem impacto na superfície
+exposta; bloquear por `low` com allowlist vazia vira ruído, e gate ignorado não é gate.
+`high` seria mais permissivo, mas o serviço tem argon2id, pepper e sessão revogável.
 
-[ ] Manter `allowlist` vazia até existir uma justificativa real.
+[x] Manter `allowlist` vazia até existir uma justificativa real.
 
-[ ] Se surgir uma exceção futura, registrar advisory, motivo, escopo e validade.
+[x] Se surgir uma exceção futura, registrar advisory, motivo, escopo e validade — o
+schema do audit-ci aceita `expiry` no registro da allowlist para isso. Registrado em
+`README.md` → *Política de dependências*.
+
+[x] Corrigir `skipDev` → `skip-dev` e remover `summary`, que não existe no schema.
+
+[x] Alinhar `npm audit --audit-level` ao mesmo threshold, para o job não carregar duas
+políticas de severidade diferentes ao mesmo tempo.
 
 ### Testes
 
-[ ] `npx audit-ci --config .audit-ci.json` passa sem warnings de configuração.
+`tests/unit/audit-ci-gate.test.ts` — 11 testes.
 
-[ ] Introduzir, em branch temporária, uma vulnerabilidade de severidade acima do threshold e confirmar que o job reprova.
+[x] `npx audit-ci --config .audit-ci.json` passa sem warnings de configuração. O config é
+validado contra a lista de propriedades do schema oficial conferida em 2026-10-02.
+
+[x] Vulnerabilidade acima do threshold reprova o gate. Fixture temporária com
+`basic-ftp@5.3.1` (dependência direta, `GHSA-c475-qrg2-pj4r`, severidade high):
+`moderate` → exit 1; `critical` → exit 0; config real do projeto → exit 1. O caso
+`critical` é o contrapeso: um gate que reprova sempre também passaria só no primeiro.
+
+Mutações, todas detectadas:
+
+| Mutação | Reprovas |
+| --- | --- |
+| `skip-dev` → `skipDev` | 3 |
+| Dois thresholds (`moderate` + `high`) | 1 |
+| Baixar a política para `high` | 2 |
+| `allowlist` com entrada | 2 |
+| README anunciando outro threshold | 1 |
+| Config alterada, README desatualizado | 2 |
+
+### Pendência conhecida — o gate agora reprova
+
+Com a política correta, `code-quality` fica **vermelho** até as advisories de
+severidade `high` em devDependencies serem resolvidas:
+
+```text
+GHSA-c475-qrg2-pj4r  basic-ftp <=6.2.0
+pm2 > proxy-agent > pac-proxy-agent > get-uri > basic-ftp
+```
+
+5 `high`, 0 `moderate`, 0 `critical`. É devDependencies (`pm2`), e `npm audit fix`
+só oferece `pm2@6.0.14` — downgrade com breaking change, recusado. **Não foi
+allowlisted**, porque a política deste item manda allowlist vazia até existir
+justificativa real. Caminhos: aguardar `proxy-agent` corrigir a dependência, ou
+`overrides` para `basic-ftp@^6.2.1` — que é major bump em `get-uri` e exige
+verificação antes, não depois. Fica registrado como pendência, não escondido.
 
 ### Fonte
 

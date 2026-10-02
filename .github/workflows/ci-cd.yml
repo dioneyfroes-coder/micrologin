@@ -61,7 +61,7 @@ jobs:
         run: npm run typecheck
 
       - name: 🔒 Security audit
-        run: npm audit --audit-level=high
+        run: npm audit --audit-level=moderate
 
       - name: 📊 Dependency check
         run: npx audit-ci --config .audit-ci.json

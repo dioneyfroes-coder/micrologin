@@ -371,6 +371,34 @@ falham se as invariantes forem desligadas.
 O workflow [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml) executa:
 
 1. **code-quality**: ESLint, `npm audit` e `audit-ci` — **falham o pipeline** quando encontram erros reais (sem `continue-on-error`)
+
+#### Política de dependências
+
+O gate é o `audit-ci`, com threshold **moderate**: reprova em moderate ou
+superior. O `.audit-ci.json` declara **um** threshold só.
+
+Isso é uma escolha com consequência, e vale saber por quê. No `audit-ci`, `low`,
+`moderate`, `high` e `critical` não são quatro interruptores independentes: o
+seletor devolve no primeiro `true`, na ordem `low > moderate > high > critical`.
+Com as quatro em `true` — que era o estado anterior deste arquivo — valia
+`low`, ou seja, reprovar por qualquer advisory de qualquer severidade, e as
+outras três chaves eram configuração morta.
+
+`low` ficou de fora porque, neste ecossistema, severidade baixa quase sempre
+descreve pacote alcançável por caminho não usado ou DoS sem impacto em
+superfície que o serviço não expõe. Bloquear por `low` com a allowlist vazia
+transforma o gate em ruído, e gate que se acostuma a ser ignorado não é gate.
+`high` seria mais permissivo, mas o serviço tem argon2id, pepper e sessão
+revogável — não é a base para aceitar advisory transitivo de severidade média
+sem decisão explícita.
+
+A `allowlist` começa **vazia** e não é para ser preenchida por convenience.
+Uma exceção futura precisa de advisory, motivo, escopo e validade — e o
+`audit-ci` aceita `expiry` no registro da allowlist justamente para isso.
+
+`npm audit --audit-level=moderate` roda no mesmo job. Ele é mais fraco que o
+`audit-ci` (não tem allowlist), então é o `audit-ci` que decide; ele fica como
+relatório direto do registry.
 2. **tests**: unitários rápidos, integração e upload de cobertura para Codecov
 3. **build**: build e push da imagem multi-plataforma (amd64/arm64) para GHCR
 4. **security**: scan de vulnerabilidades com Trivy, na mesma referência de imagem que será implantada (o digest)
