@@ -710,45 +710,129 @@ Docker image 1.0.0
 GitHub Release v1.0.0
 ```
 
+### Bugs confirmados no arquivo anterior
+
+1. **`workflow_dispatch` ignorava a versão.** O input `version` existia e nada
+   lia; `tag_name` era `github.ref_name`. No dispatch, `github.ref_name` é o
+   **branch** — o resultado era uma release chamada "Release main".
+2. **Changelog sempre vazio.** `git describe --tags --abbrev=0 HEAD` na própria
+   tag da release devolve a própria tag, então `tag..HEAD` é vazio.
+3. **Passo de Docker fictício.** `echo "✅ Docker images tagged"` sem registry.
+4. **`generate_release_notes: true` ao lado de `body_path`.** No
+   `action-gh-release`, o body é *prepended* às notas automáticas do GitHub — e
+   essas notas não são determinísticas.
+5. Nenhum gate de qualidade/segurança, nenhum scan da imagem.
+
 ### Implementação
 
-[ ] Preferir trigger por `push.tags: ['v*.*.*']` como caminho oficial.
+[x] Trigger por `push.tags: ['v*.*.*']` como caminho oficial.
 
-[ ] Remover `workflow_dispatch` de versão automática, ou fazer o dispatch operar sobre uma tag previamente criada e validada.
+[x] `workflow_dispatch` mantido, mas operando sobre tag **prévia e validada**:
+o input virou `tag`, e o script rejeita tag inexistente com mensagem explícita.
+Nenhum caminho cria tag.
 
-[ ] Validar semantic versioning da tag.
+[x] Validação de semantic versioning estrita (`vMAJOR.MINOR.PATCH`, com
+`-prerelease` e `+build` aceitos).
 
-[ ] Verificar que a versão da tag bate com `package.json`.
+[x] Versão da tag comparada com `package.json`. As duas são fonte da verdade
+para a mesma versão; divergência reprova.
 
-[ ] Atualizar `softprops/action-gh-release` para `v3`.
+[x] Tag precisa ser ancestral de `origin/main`. Release a partir de branch não
+mergeada é o tipo de coisa que só se descobre depois.
 
-[ ] Gerar `CHANGELOG.md` de forma determinística.
+[x] `concurrency` por tag, com `cancel-in-progress: false`. Sem isso, retry do
+dispatch racing com o push da tag seguinte produz duas releases para a mesma
+versão.
 
-[ ] Criar a imagem Docker com tags reais, pelo menos:
+[x] `softprops/action-gh-release@v3` (a versão já era do item 1.8).
 
-```text
-:1.0.0
-:v1.0.0
-:<git-sha>
-```
+[x] `CHANGELOG.md` determinístico: `git describe --tags --abbrev=0 "${TAG}^"`
+(tag anterior resolvida no commit pai), commits sem merge, e
+`generate_release_notes` removido. Script falha se o arquivo sair vazio.
 
-[ ] Definir explicitamente se `latest` será movido; para portfólio, é aceitável movê-lo na release estável.
+[x] Imagem Docker com tags reais, via `buildx build --push` de verdade:
+`:1.0.0`, `:v1.0.0`, `:<git-sha>`. As três exigidas pelo critério de aceite,
+mais uma que a aceita.
 
-[ ] Fazer o passo Docker realmente executar `buildx build --push` ou equivalente.
+[x] `latest` decidido explicitamente: movido **só** em versão estável. RC
+publicada não toca em `latest`.
 
-[ ] Publicar o digest final da imagem no resumo do GitHub Actions.
+[x] Digest publicado em `$GITHUB_STEP_SUMMARY`, junto de registry, tags e
+platforms.
 
-[ ] Remover qualquer `echo "✅ tagged"` que não corresponda a uma operação real.
+[x] Removido o `echo "✅ tagged"`. Não sobrou nenhum eco de sucesso sem operação
+por trás — há teste que garante.
 
-### Critério de aceite
+[x] Gates reproduzidos, que o workflow anterior não tinha: lint, typecheck,
+build, `npm audit --audit-level=moderate`, `audit-ci`, secret scanning, unit,
+credential theft, ddos preflight e integração.
 
-Uma pessoa que baixar o código e criar `v1.0.0` precisa obter automaticamente:
+[x] Trivy como gate sobre o **digest publicado**, antes da GitHub Release. O
+`release` depende de `security`, então não há caminho que publique release
+pulando o scan.
 
-- release GitHub `v1.0.0`;
-- changelog correto;
-- imagem Docker com tag `1.0.0`;
-- digest da imagem registrado;
-- workflow verde.
+[x] Job `release` com `contents: write` apenas; `image` com `packages: write`;
+`security` com `security-events: write`.
+
+### Critério de aceite — o que é provável aqui e o que não é
+
+O critério do checklist é: quem baixar o código, criar `v1.0.0` e dar push,
+obtém release, changelog, imagem `1.0.0` e digest registrado, com workflow
+verde. **Não executei isso**: exige tag real no repositório, registry e
+segredos. O que está provado por teste:
+
+- a árvore da tag é a que os gates e o build usam;
+- o comando `buildx build --push` sai com as três tags e `latest` só quando
+  estável, e o digest é lido de volta do registry (executado com `docker`
+  stubado, verificando o comando, não o registry);
+- o changelog tem range real, e a tag anterior é resolvida no commit pai;
+- tag inválida, tag divergente de `package.json`, tag fora da main e tag
+  inexistente reprovam com mensagem explícita.
+
+### Testes
+
+`tests/unit/release-pipeline.test.ts` — 32 testes. **Executam o `run:` real**
+contra um repositório git de verdade com tags de verdade, em vez de procurar
+string no YAML: um teste que só confirmasse que "buildx build --push" existe
+passaria com a lógica de versionamento errada ao lado.
+
+[x] Tag válida aceita; dispatch usa o input e não o branch; dispatch sem tag,
+com tag inexistente, tag não-semver, tag divergente de `package.json` e tag
+fora da main reprovam.
+[x] `v1.1.0-rc.1` reconhecida como prerelease.
+[x] Tag anterior resolvida no pai (`v1.0.0` → `v0.9.0`), e demonstrado que a
+forma ingênua devolveria a própria tag.
+[x] Comando de build verificado: `--push`, três tags, multi-arch, digest no
+resumo.
+[x] `latest` presente em estável e ausente em prerelease.
+[x] RC publicada como `prerelease`, não como estável.
+[x] Todos os gates presentes; release depende do scan; digest no resumo;
+changelog sem notas automáticas; concurrency presente.
+
+Mutações, todas detectadas:
+
+| Mutação | Reprovas |
+| --- | --- |
+| `tag_name` volta a `github.ref_name` (bug original) | 1 |
+| Dispatch volta a ignorar o input `tag` | 6 |
+| Guard de `package.json` removido | 1 |
+| Regex de semver frouxa | 7 |
+| Guard de "está na main" removido | 1 |
+| `git describe "${TAG}^"` volta a `HEAD` (changelog vazio) | 1 |
+| `buildx` perde `--push` | 1 |
+| Perde a tag `:v1.0.0` | 1 |
+| `latest` movido também em prerelease | 1 |
+| Trivy no release perde `exit-code` | 1 |
+| `release` deixa de depender de `security` | 1 |
+| `prerelease: false` fixado | 1 |
+| `echo "✅ tagged"` de volta | 1 |
+
+### Colisão com a tag `v1.0.0` existente
+
+`v1.0.0` já existe apontando para `e29032f`, muito atrás da `main`. Com a tag
+como fonte de verdade, não há como publicar 1.0.0 sem resolver isso antes:
+**ou** a tag é movida para o commit do freeze, **ou** a release passa a ser
+`v1.0.1`. Decisão do usuário; registrada aqui e em "Achados".
 
 ---
 

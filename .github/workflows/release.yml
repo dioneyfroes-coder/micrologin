@@ -1,23 +1,143 @@
 name: 🎉 Release Pipeline
 
+# A tag é a fonte de verdade. O caminho oficial é `git tag` + push da tag; o
+# dispatch existe para reexecutar uma release de uma tag **já criada**, nunca
+# para inventar versão. No dispatch, `github.ref_name` é o branch, não a versão —
+# usar `github.ref_name` como `tag_name` era o bug que criava uma release
+# "Release main".
 on:
   push:
     tags:
       - 'v*.*.*'
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Release version (e.g., v1.2.3)'
+      tag:
+        description: 'Tag já criada e publicada (ex.: v1.0.0). O dispatch não cria tag.'
         required: true
+        type: string
+
+# Duas releases não podem correr ao mesmo tempo: ambas escrevem tag de imagem e
+# GitHub Release. Sem isto, um retry do dispatch racing com o push da tag
+# seguinte produz duas releases para a mesma versão.
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 env:
   NODE_VERSION: '22.x'
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  create-release:
-    name: 🎉 Create Release
+  # ========================
+  # VALIDAÇÃO DA TAG
+  # ========================
+  validate:
+    name: 🏷️ Validate tag
     runs-on: ubuntu-latest
-    
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      previous-tag: ${{ steps.previous.outputs.previous }}
+      is-prerelease: ${{ steps.resolve.outputs.is_prerelease }}
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🏷️ Resolve and validate tag
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_TAG: ${{ inputs.tag }}
+          PUSH_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$DISPATCH_TAG"
+          else
+            TAG="$PUSH_TAG"
+          fi
+
+          if [ -z "$TAG" ]; then
+            echo "::error::Nenhuma tag informada. Use o input 'tag' com uma tag já publicada."
+            exit 1
+          fi
+
+          # Semver estrito: v1.2.3, v1.2.3-rc.1, v1.2.3+build.5
+          if ! printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
+            echo "::error::Tag '$TAG' não é semantic version válida (esperado vMAJOR.MINOR.PATCH)."
+            exit 1
+          fi
+
+          # A tag precisa existir de fato. No dispatch, isso é o que garante que
+          # ninguém está requesting release de versão que nunca foi criada.
+          if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "::error::Tag '$TAG' não existe no repositório. Crie e envie a tag antes."
+            exit 1
+          fi
+
+          # package.json é a segunda fonte de verdade; as duas têm que concordar.
+          PKG=$(node -p "require('./package.json').version")
+          if [ "${TAG#v}" != "$PKG" ]; then
+            echo "::error::Tag '$TAG' (versão ${TAG#v}) não bate com package.json ($PKG)."
+            echo "::error::A tag e o package.json são duas fontes de verdade para a mesma versão."
+            exit 1
+          fi
+
+          # Release a partir de branch que não foi mergeada é exatamente o tipo de
+          # release que não se quer descobrir depois.
+          git fetch --quiet origin main
+          if ! git merge-base --is-ancestor "$TAG" origin/main; then
+            echo "::error::A tag '$TAG' aponta para commit que não está na main. Release só a partir de main."
+            exit 1
+          fi
+
+          IS_PRERELEASE=false
+          if printf '%s' "$TAG" | grep -q -- '-'; then
+            IS_PRERELEASE=true
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "✅ Tag '$TAG' válida (versão ${TAG#v}, prerelease=$IS_PRERELEASE)"
+
+      - name: 🔎 Resolve previous tag
+        id: previous
+        run: |
+          set -euo pipefail
+          # `git describe --tags --abbrev=0 HEAD` devolveria a própria tag da
+          # release, porque HEAD é a tag — o range viraria vazio e o changelog
+          # sairia em branco. O `^` aponta para o commit pai, que é onde a tag
+          # anterior vive.
+          PREV=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || echo "")
+          echo "previous=$PREV" >> "$GITHUB_OUTPUT"
+          echo "previous_tag=${PREV:-<primeira versão deste repositório>}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 🧾 Use the tagged tree
+        run: |
+          set -euo pipefail
+          # No dispatch o checkout traz o branch, não a tag. Todos os gates e o
+          # build precisam rodar sobre a árvore da tag.
+          git checkout --quiet "$TAG"
+          echo "HEAD após checkout: $(git describe --tags --exact-match 2>/dev/null || git rev-parse --short HEAD)"
+
+  # ========================
+  # GATES DE QUALIDADE E SEGURANÇA
+  # ========================
+  quality:
+    name: 🔍 Quality & Dependency Gates
+    runs-on: ubuntu-latest
+    needs: validate
+    permissions:
+      contents: read
+
     steps:
       - name: 📥 Checkout code
         uses: actions/checkout@v4
@@ -33,39 +153,235 @@ jobs:
       - name: 📦 Install dependencies
         run: npm ci
 
-      - name: 🧪 Run full test suite
+      - name: 📝 Set up test environment
+        run: |
+          echo "NODE_ENV=test" >> $GITHUB_ENV
+          echo "JWT_SECRET=release-pipeline" >> $GITHUB_ENV
+          echo "JWT_EXPIRES=1h" >> $GITHUB_ENV
+
+      - name: 🎨 ESLint
+        run: npm run lint
+
+      - name: 🧪 TypeScript typecheck
+        run: npm run typecheck
+
+      - name: 🏗️ Build
+        run: npm run build
+
+      - name: 🔒 npm audit
+        run: npm audit --audit-level=moderate
+
+      - name: 📊 audit-ci
+        run: npx audit-ci --config .audit-ci.json
+
+      - name: 🔑 Secret scanning
+        run: npm run test:secrets
+
+  tests:
+    name: 🧪 Test Suite
+    runs-on: ubuntu-latest
+    needs: validate
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: 📦 Install dependencies
+        run: npm ci
+
+      - name: 🔧 Setup test environment
+        run: |
+          echo "NODE_ENV=test" >> $GITHUB_ENV
+          echo "JWT_SECRET=release-pipeline" >> $GITHUB_ENV
+          echo "JWT_EXPIRES=1h" >> $GITHUB_ENV
+
+      - name: 🧪 Run test suite
         run: |
           npm run test:unit:fast
           npm run test:credential-theft:unit
           npm run test:ddos -- --preflight-only
           npm run test:integration:app
 
-      - name: 📝 Generate changelog
-        id: changelog
+  # ========================
+  # IMAGEM
+  # ========================
+  image:
+    name: 🐳 Build & Publish Image
+    runs-on: ubuntu-latest
+    needs: [validate, quality, tests]
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🐳 Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 🔑 Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🐳 Build and push image
+        id: build
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          IS_PRERELEASE: ${{ needs.validate.outputs.is-prerelease }}
+          SHA: ${{ github.sha }}
         run: |
-          echo "## 🚀 What's New" > CHANGELOG.md
-          echo "" >> CHANGELOG.md
-          git log --pretty=format:"- %s (%h)" $(git describe --tags --abbrev=0 2>/dev/null || echo "")..HEAD >> CHANGELOG.md
-          echo "" >> CHANGELOG.md
-          echo "## 🔧 Technical Details" >> CHANGELOG.md
-          echo "- Node.js version: ${{ env.NODE_VERSION }}" >> CHANGELOG.md
-          echo "- Tests passing: ✅" >> CHANGELOG.md
-          echo "- Docker image: Available" >> CHANGELOG.md
+          set -euo pipefail
+
+          IMAGE="${REGISTRY}/${IMAGE_NAME}"
+          TAGS="${IMAGE}:${VERSION}"
+          TAGS="${TAGS},${IMAGE}:${TAG}"
+          TAGS="${TAGS},${IMAGE}:${SHA}"
+
+          # `latest` é movido só em versão estável. Um RC que toma `latest` faz
+          # consumidor pulling em `latest` receber pré-release.
+          if [ "$IS_PRERELEASE" = "false" ]; then
+            TAGS="${TAGS},${IMAGE}:latest"
+            echo "→ latest será movido (versão estável)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "→ latest NÃO será movido (prerelease)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          echo "Tags: $TAGS" >> "$GITHUB_STEP_SUMMARY"
+
+          # `buildx build --push` de verdade. O workflow anterior imprimia
+          # "✅ Docker images tagged" sem tocar em registry nenhum.
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --provenance=false \
+            --tag "$TAGS" \
+            --push \
+            .
+
+          # buildx grava o digest de cada tag em metadata; a primeira é o digest
+          # multi-plataforma efetivamente publicado.
+          DIGEST=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{ .Manifest.Digest }}')
+
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### 🐳 Imagem publicada"
+            echo ""
+            echo "- registry: \`${REGISTRY}\`"
+            echo "- image: \`${IMAGE}\`"
+            echo "- tags: \`${VERSION}\`, \`${TAG}\`, \`${SHA}\`"
+            echo "- platforms: \`linux/amd64\`, \`linux/arm64\`"
+            echo "- **digest**: \`${DIGEST}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ========================
+  # SCAN DA IMAGEM PUBLICADA
+  # ========================
+  security:
+    name: 🛡️ Scan published image
+    runs-on: ubuntu-latest
+    needs: [validate, image]
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: 🔍 Trivy gate on the published digest
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          # Scan por digest: é a mesma imagem que a release vai referenciar,
+          # não uma tag que pode ter sido movida entre o build e o scan.
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.image.outputs.digest }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          exit-code: '1'
+          severity: 'HIGH,CRITICAL'
+          ignore-unfixed: true
+          version: 'v0.75.0'
+
+      - name: 📤 Upload Trivy scan results
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # ========================
+  # GITHUB RELEASE
+  # ========================
+  release:
+    name: 🎉 Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: [validate, image, security]
+    permissions:
+      contents: write
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 📝 Generate changelog
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          PREVIOUS: ${{ needs.validate.outputs.previous-tag }}
+        run: |
+          set -euo pipefail
+
+          {
+            echo "## 🚀 What's New"
+            echo ""
+            if [ -n "$PREVIOUS" ]; then
+              git log --no-merges --pretty=format:'- %s (%h)' "$PREVIOUS..$TAG"
+            else
+              echo "- Primeira versão publicada a partir deste repositório."
+            fi
+            echo ""
+            echo "## 🔧 Technical Details"
+            echo ""
+            echo "- Tag: \`$TAG\`"
+            echo "- Node.js: \`${NODE_VERSION}\`"
+            echo "- Imagem: \`${REGISTRY}/${IMAGE_NAME}\`"
+            echo "- Digest: \`${{ needs.image.outputs.digest }}\`"
+          } > CHANGELOG.md
+
+          # Determinismo: mesmo tag => mesmo arquivo. Por isso nada de
+          # `generate_release_notes` — o GitHub anexa as notas automáticas ao
+          # corpo e elas mudam entre execuções.
+          test -s CHANGELOG.md || { echo "::error::CHANGELOG.md ficou vazio"; exit 1; }
+          cat CHANGELOG.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: 🎉 Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ github.ref_name }}
-          name: Release ${{ github.ref_name }}
+          tag_name: ${{ needs.validate.outputs.tag }}
+          name: Release ${{ needs.validate.outputs.tag }}
           body_path: CHANGELOG.md
           draft: false
-          prerelease: false
-          generate_release_notes: true
+          prerelease: ${{ needs.validate.outputs.is-prerelease }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 🐳 Tag Docker images for release
+      - name: 📋 Release summary
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          DIGEST: ${{ needs.image.outputs.digest }}
         run: |
-          echo "🐳 Tagging Docker images for release ${{ github.ref_name }}"
-          # Implementar tag das imagens Docker
-          echo "✅ Docker images tagged"
+          {
+            echo "### 🎉 Release $TAG"
+            echo ""
+            echo "- commit: \`${GITHUB_SHA}\`"
+            echo "- tag: \`$TAG\`"
+            echo "- digest: \`$DIGEST\`"
+            echo "- release: \`${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/$TAG\`"
+          } >> "$GITHUB_STEP_SUMMARY"
