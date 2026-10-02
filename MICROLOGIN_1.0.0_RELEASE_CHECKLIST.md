@@ -578,19 +578,90 @@ https://github.com/aquasecurity/trivy-action
 **Prioridade:** P0 / crítico para o release pipeline; P1 para o restante  
 **Arquivos:** `.github/workflows/ci-cd.yml`, `.github/workflows/release.yml`
 
-### Alterações obrigatórias
+### Implementação
 
-[ ] `github/codeql-action/upload-sarif@v2` -> linha suportada `v4`.
+[x] `github/codeql-action/upload-sarif@v2` -> **`@v4`**. `v3` e `v4` existem
+(`action.yml` retorna 200 nas três). O input `sarif_file` continua existindo em
+`v4`, confirmado no `action.yml` da tag. Os "deprecated" que aparecem no README
+do upstream são sobre o ciclo de depreciação do GHES, não sobre a action.
 
-[ ] `codecov/codecov-action@v3` -> linha suportada `v5`.
+[x] `codecov/codecov-action@v3` -> **`@v5`**. Atenção: a `v5` **removeu o upload
+sem token** para repositório público. A política de 1.0.0 já passava
+`token: ${{ secrets.CODECOV_TOKEN }}`, então o bump é seguro. O oposto teria
+quebrado o upload em silêncio, porque o step tem `fail_ci_if_error: false` — e
+não há como confirmar pela execução do CI se o secret existe, então isso fica
+registrado como risco, não como verde. Todos os inputs usados
+(`token`, `directory`, `flags`, `name`, `fail_ci_if_error`) existem em `v5`.
 
-[ ] `aquasecurity/trivy-action@master` -> release fixada, atualmente `v0.36.0` no upstream consultado.
+[x] `aquasecurity/trivy-action@master` -> **`@v0.36.0`**. Feito no item 1.7, junto
+com o pin do motor (`version: 'v0.75.0'`).
 
-[ ] `8398a7/action-slack@v3` -> migrar para `slackapi/slack-github-action` ou remover a notificação para manter o release independente de Slack.
+[x] `softprops/action-gh-release@v1` -> **`@v3`**. O `v1` rodava sobre um runtime
+Node que o GitHub Actions depreciou. O upstream diz que `v2.6.2` é a última `v2` e
+não é mais mantida; a `v3` usa `node24`. Verificado no `action.yml`.
 
-[ ] `softprops/action-gh-release@v1` -> `v3`.
+[x] `8398a7/action-slack@v3` -> **removida**, dos dois workflows, junto com o job
+`notify` do `ci-cd.yml` inteiro e as referências a `SLACK_WEBHOOK_URL`.
 
-[ ] Onde segurança da supply chain for prioridade, considerar pin por SHA em actions de terceiros.
+- Escolha entre migrar e remover: removida. A release não deve depender de um
+  webhook de Slack para concluir, e `slackapi/slack-github-action` não é troca de
+  versão — a API é outra, e exigiria reescrever o payload. Isso é trabalho
+  opcional, não P0 de pipeline de release.
+- Se a notificação for desejada depois, `slackapi/slack-github-action@v2` é a
+  sucessora mantida.
+
+[x] Pin por SHA: **considerado e adiado, com registro.** Para o caminho da
+release, `master` foi o único tag flutuante e já saiu. O resto está em major ou
+versão exata, e major é a tag mais forte que a maioria dos upstreams publica
+(conferido em 2026-10-02: `docker/build-push-action` e `codecov/codecov-action` e
+`softprops/action-gh-release` não publicam minor nenhuma). SHA pinning é o passo
+seguinte de endurecimento e fica para depois do freeze, junto com
+`zizmor`/scorecard.
+
+### Actions não atualizadas — majors mais novas existem
+
+Conferido em 2026-10-02, e **deixado de fora de propósito**:
+
+| Action | Em uso | Major mais nova |
+| --- | --- | --- |
+| `actions/checkout` | `v4` | `v6` |
+| `actions/setup-node` | `v4` | `v6` |
+| `docker/metadata-action` | `v5` | `v6` |
+| `docker/build-push-action` | `v5` | `v6` |
+| `docker/login-action` | `v3` | `v4` |
+| `docker/setup-buildx-action` | `v3` | `v4` |
+
+Nenhuma delas está arquivada nem depreciada — a busca por "deprecated" nos
+READMEs bate em documentação de outras coisas (input `always-auth` do
+`setup-node`, `file`/`plugin` do codecov, ciclo GHES do codeql), não na action.
+Subir major agora seria trocar seis actions por six majors sem execução de CI
+para provar que nada quebrou, e o item 5.2 diz para não mexer em dependências no
+meio do release. Fica como item pós-1.0.0, com o caminho já identificado.
+
+### Testes
+
+`tests/unit/github-actions-pinning.test.ts` — 15 testes.
+
+[x] Nenhuma action em tag flutuante em nenhum dos dois workflows.
+[x] As versões exigidas pela política de 1.0.0 são as declaradas.
+[x] `codecov@v5` mantém `secrets.CODECOV_TOKEN`.
+[x] Nenhuma action arquivada; nenhum workflow referencia Slack; o job `notify`
+não existe mais.
+[x] Todo `needs:` aponta para job existente, para a remoção não ter deixado
+referência órfã.
+
+Mutações, todas detectadas:
+
+| Mutação | Reprovas |
+| --- | --- |
+| Trivy de volta em `@master` | 3 |
+| Codecov de volta em `v3` | 2 |
+| CodeQL de volta em `v2` | 2 |
+| gh-release de volta em `v1` | 2 |
+| `action-slack` arquivada volta no release.yml | 4 |
+| Job `notify` volta, com Slack dentro | 4 |
+| Codecov `v5` sem token | 1 |
+| `deploy` passa a depender de job removido | 1 |
 
 ### Observação
 

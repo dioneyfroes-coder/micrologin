@@ -53,7 +53,7 @@ jobs:
           echo "- Docker image: Available" >> CHANGELOG.md
 
       - name: 🎉 Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
@@ -69,18 +69,3 @@ jobs:
           echo "🐳 Tagging Docker images for release ${{ github.ref_name }}"
           # Implementar tag das imagens Docker
           echo "✅ Docker images tagged"
-
-      - name: 📢 Notify release
-        uses: 8398a7/action-slack@v3
-        with:
-          status: success
-          channel: '#releases'
-          username: 'Release Bot'
-          title: '🎉 New Release Available'
-          text: |
-            🚀 Authentication Service ${{ github.ref_name }} has been released!
-            📦 Tag: ${{ github.ref_name }}
-            👤 Released by: ${{ github.actor }}
-            🔗 Release notes: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
