@@ -46,3 +46,8 @@ logs/
 # ambiente especifico (2.0 CPU, 1 GiB, um worker) e nao pertencem ao historico:
 # o que entra no repositorio e a tabela interpretada em docs/metricas.md.
 artifacts/
+
+# Byte-compilado de Python gerado quando o consolidado da medicao roda.
+# Nao e fonte: versionar .pyc guarda artefato de build no repositorio.
+__pycache__/
+*.pyc
