@@ -240,43 +240,85 @@ jobs:
   # repositório, e um job que "deploya" com `echo` mentindo sobre o que fez é
   # pior do que nenhum job. Os secrets necessários estão em README (seção
   # Deployment).
+  #
+  # ## Por que NÃO existe matrix aqui
+  #
+  # Havia uma matrix fixa com os dois ambientes e um input `environment` que
+  # ninguém lia. Escolher `staging` no dispatch rodava a matrix inteira: o job
+  # de staging E o de production, o segundo com os secrets de production e no
+  # `environment: production`. O input era decoração — a interface prometia uma
+  # escolha que a execução ignorava, e o nome do job era a única pista de que
+  # os dois ambientes tinham sido tocados.
+  #
+  # A matrix só faria sentido se o input fosse "ambiente **ou** ambos". Como o
+  # input oferece `staging` e `production` e nada mais, ele é o ambiente: uma
+  # execução toca exatamente um. Se algum dia precisar dos dois, isso vira um
+  # input separado e explícito, não uma matrix reintroduzida ao lado do input
+  # que já existe.
   deploy:
-    name: 🚀 Deploy (${{ matrix.environment }})
+    name: 🚀 Deploy (${{ inputs.environment }})
     runs-on: ubuntu-latest
     needs: [build, security]
     if: github.event_name == 'workflow_dispatch'
-    environment: ${{ matrix.environment }}
-    strategy:
-      # Uma vez por ambiente: dois deploys simultâneos no mesmo host se atropelam.
-      max-parallel: 1
-      matrix:
-        include:
-          - environment: staging
-            secret_prefix: STAGING
-          - environment: production
-            secret_prefix: PRODUCTION
+    # `environment` do GitHub: os secrets de ambiente e as regras de proteção
+    # (required reviewers, espera, allowed branches) ficam vinculados a este
+    # valor, e é o que impede o job de production de rodar sem aprovação.
+    environment: ${{ inputs.environment }}
+    env:
+      # Prefixo dos secrets de repositório deste ambiente. Derivado do input, e
+      # não de uma lista: não existe caminho no qual o prefixo resolvedo seja
+      # outro além do ambiente escolhido. `env` de job não aceita o contexto
+      # `env` na própria definição, mas aceita `inputs` — por isso a conversão
+      # acontece aqui e as referências de secret usam `env.DEPLOY_SECRET_PREFIX`.
+      DEPLOY_SECRET_PREFIX: ${{ inputs.environment == 'production' && 'PRODUCTION' || 'STAGING' }}
     concurrency:
-      group: deploy-${{ matrix.environment }}
+      # Serializa por ambiente. Deploy em staging e em production são hosts
+      # diferentes e não devem se cancelar; dois deploys no mesmo host se
+      # atropelariam.
+      group: deploy-${{ inputs.environment }}
       cancel-in-progress: false
 
     steps:
       - name: 📥 Checkout code
         uses: actions/checkout@v4
 
+      - name: 🚦 Travar o deploy no ambiente escolhido
+        env:
+          INPUT_ENVIRONMENT: ${{ inputs.environment }}
+          RESOLVED_PREFIX: ${{ env.DEPLOY_SECRET_PREFIX }}
+        run: |
+          # Primeira barreira, e a mais barata: se o prefixo resolvido não for
+          # exatamente o do ambiente escolhido, o job para aqui — antes de
+          # qualquer rede, chave ou registry. Um dispatch com valor inesperado
+          # (input editado à mão, workflow chamado por outra automação) não
+          # chega a resolver host nem usuário de nenhum ambiente.
+          EXPECTED="${INPUT_ENVIRONMENT^^}"
+          if [ "$RESOLVED_PREFIX" != "$EXPECTED" ]; then
+            echo "::error::Ambiente escolhido é '$INPUT_ENVIRONMENT' (esperado prefixo de secrets '$EXPECTED'), mas o job resolveu '$RESOLVED_PREFIX'."
+            echo "Nenhum acesso a servidor foi feito. O deploy aborta por construção."
+            exit 1
+          fi
+          if [ "$INPUT_ENVIRONMENT" != "staging" ] && [ "$INPUT_ENVIRONMENT" != "production" ]; then
+            echo "::error::Ambiente '$INPUT_ENVIRONMENT' não é válido."
+            exit 1
+          fi
+          echo "::notice::Deploy travado em '$INPUT_ENVIRONMENT' (secrets $RESOLVED_PREFIX_*)."
+          echo "::notice::Nenhum outro ambiente é acessível nesta execução."
+
       - name: 🪪 Fail fast se o ambiente não estiver configurado
         env:
-          DEPLOY_HOST: ${{ secrets[format('{0}_DEPLOY_HOST', matrix.secret_prefix)] }}
+          DEPLOY_HOST: ${{ secrets[format('{0}_DEPLOY_HOST', env.DEPLOY_SECRET_PREFIX)] }}
         run: |
           if [ -z "$DEPLOY_HOST" ]; then
-            echo "::error::Servidor de deploy não configurado para ${{ matrix.environment }}."
-            echo "Defina o secret ${{ matrix.secret_prefix }}_DEPLOY_HOST (e os demais da seção Deployment do README)."
+            echo "::error::Servidor de deploy não configurado para ${{ inputs.environment }}."
+            echo "Defina o secret ${{ env.DEPLOY_SECRET_PREFIX }}_DEPLOY_HOST (e os demais da seção Deployment do README)."
             exit 1
           fi
 
       - name: 🔑 Configurar chave SSH
         env:
-          SSH_PRIVATE_KEY: ${{ secrets[format('{0}_DEPLOY_SSH_KEY', matrix.secret_prefix)] }}
-          SSH_KNOWN_HOSTS: ${{ secrets[format('{0}_DEPLOY_KNOWN_HOSTS', matrix.secret_prefix)] }}
+          SSH_PRIVATE_KEY: ${{ secrets[format('{0}_DEPLOY_SSH_KEY', env.DEPLOY_SECRET_PREFIX)] }}
+          SSH_KNOWN_HOSTS: ${{ secrets[format('{0}_DEPLOY_KNOWN_HOSTS', env.DEPLOY_SECRET_PREFIX)] }}
         run: |
           install -m 700 -d ~/.ssh
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
@@ -286,14 +328,14 @@ jobs:
             # que não esteja registrado.
             printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           else
-            echo "::warning::${{ matrix.secret_prefix }}_DEPLOY_KNOWN_HOSTS não definido: a chave do host será aceita na primeira conexão (TOFU)."
+            echo "::warning::${{ env.DEPLOY_SECRET_PREFIX }}_DEPLOY_KNOWN_HOSTS não definido: a chave do host será aceita na primeira conexão (TOFU)."
             printf '%s\n' '*' > ~/.ssh/known_hosts
           fi
 
       - name: 🔑 Autenticar no registry (quando a imagem é privada)
         env:
-          REGISTRY_USERNAME: ${{ secrets[format('{0}_REGISTRY_USERNAME', matrix.secret_prefix)] }}
-          REGISTRY_TOKEN: ${{ secrets[format('{0}_REGISTRY_TOKEN', matrix.secret_prefix)] }}
+          REGISTRY_USERNAME: ${{ secrets[format('{0}_REGISTRY_USERNAME', env.DEPLOY_SECRET_PREFIX)] }}
+          REGISTRY_TOKEN: ${{ secrets[format('{0}_REGISTRY_TOKEN', env.DEPLOY_SECRET_PREFIX)] }}
         run: |
           if [ -n "$REGISTRY_USERNAME" ] && [ -n "$REGISTRY_TOKEN" ]; then
             printf '%s' "$REGISTRY_TOKEN" | docker login "${{ env.REGISTRY }}" \
@@ -305,10 +347,10 @@ jobs:
 
       - name: 📤 Enviar scripts de deploy para o servidor
         env:
-          DEPLOY_HOST: ${{ secrets[format('{0}_DEPLOY_HOST', matrix.secret_prefix)] }}
-          DEPLOY_USER: ${{ secrets[format('{0}_DEPLOY_USER', matrix.secret_prefix)] }}
-          DEPLOY_SSH_PORT: ${{ secrets[format('{0}_DEPLOY_SSH_PORT', matrix.secret_prefix)] }}
-          DEPLOY_SCRIPT_DIR: ${{ secrets[format('{0}_DEPLOY_SCRIPT_DIR', matrix.secret_prefix)] }}
+          DEPLOY_HOST: ${{ secrets[format('{0}_DEPLOY_HOST', env.DEPLOY_SECRET_PREFIX)] }}
+          DEPLOY_USER: ${{ secrets[format('{0}_DEPLOY_USER', env.DEPLOY_SECRET_PREFIX)] }}
+          DEPLOY_SSH_PORT: ${{ secrets[format('{0}_DEPLOY_SSH_PORT', env.DEPLOY_SECRET_PREFIX)] }}
+          DEPLOY_SCRIPT_DIR: ${{ secrets[format('{0}_DEPLOY_SCRIPT_DIR', env.DEPLOY_SECRET_PREFIX)] }}
         run: |
           PORT="${DEPLOY_SSH_PORT:-22}"
           REMOTE="${DEPLOY_USER}@${DEPLOY_HOST}"
@@ -320,18 +362,18 @@ jobs:
 
       - name: 🚀 Implantar a versão no servidor
         env:
-          DEPLOY_HOST: ${{ secrets[format('{0}_DEPLOY_HOST', matrix.secret_prefix)] }}
-          DEPLOY_USER: ${{ secrets[format('{0}_DEPLOY_USER', matrix.secret_prefix)] }}
-          DEPLOY_SSH_PORT: ${{ secrets[format('{0}_DEPLOY_SSH_PORT', matrix.secret_prefix)] }}
-          DEPLOY_ENV_FILE: ${{ secrets[format('{0}_DEPLOY_ENV_FILE', matrix.secret_prefix)] }}
-          DEPLOY_COMPOSE_FILE: ${{ secrets[format('{0}_DEPLOY_COMPOSE_FILE', matrix.secret_prefix)] }}
-          DEPLOY_BASE_URL: ${{ secrets[format('{0}_DEPLOY_BASE_URL', matrix.secret_prefix)] }}
+          DEPLOY_HOST: ${{ secrets[format('{0}_DEPLOY_HOST', env.DEPLOY_SECRET_PREFIX)] }}
+          DEPLOY_USER: ${{ secrets[format('{0}_DEPLOY_USER', env.DEPLOY_SECRET_PREFIX)] }}
+          DEPLOY_SSH_PORT: ${{ secrets[format('{0}_DEPLOY_SSH_PORT', env.DEPLOY_SECRET_PREFIX)] }}
+          DEPLOY_ENV_FILE: ${{ secrets[format('{0}_DEPLOY_ENV_FILE', env.DEPLOY_SECRET_PREFIX)] }}
+          DEPLOY_COMPOSE_FILE: ${{ secrets[format('{0}_DEPLOY_COMPOSE_FILE', env.DEPLOY_SECRET_PREFIX)] }}
+          DEPLOY_BASE_URL: ${{ secrets[format('{0}_DEPLOY_BASE_URL', env.DEPLOY_SECRET_PREFIX)] }}
         run: |
           PORT="${DEPLOY_SSH_PORT:-22}"
           REMOTE="${DEPLOY_USER}@${DEPLOY_HOST}"
           for name in DEPLOY_ENV_FILE DEPLOY_COMPOSE_FILE DEPLOY_BASE_URL; do
             if [ -z "${!name}" ]; then
-              echo "::error::Secret ${{ matrix.secret_prefix }}_${name} não configurado."
+              echo "::error::Secret ${{ env.DEPLOY_SECRET_PREFIX }}_${name} não configurado."
               exit 1
             fi
           done
@@ -355,15 +397,15 @@ jobs:
 
       - name: 📋 Publicar a versão implantada
         env:
-          DEPLOY_HOST: ${{ secrets[format('{0}_DEPLOY_HOST', matrix.secret_prefix)] }}
-          DEPLOY_USER: ${{ secrets[format('{0}_DEPLOY_USER', matrix.secret_prefix)] }}
-          DEPLOY_SSH_PORT: ${{ secrets[format('{0}_DEPLOY_SSH_PORT', matrix.secret_prefix)] }}
+          DEPLOY_HOST: ${{ secrets[format('{0}_DEPLOY_HOST', env.DEPLOY_SECRET_PREFIX)] }}
+          DEPLOY_USER: ${{ secrets[format('{0}_DEPLOY_USER', env.DEPLOY_SECRET_PREFIX)] }}
+          DEPLOY_SSH_PORT: ${{ secrets[format('{0}_DEPLOY_SSH_PORT', env.DEPLOY_SECRET_PREFIX)] }}
         run: |
           PORT="${DEPLOY_SSH_PORT:-22}"
           VERSION_JSON=$(ssh -i ~/.ssh/deploy_key -p "$PORT" \
             "${DEPLOY_USER}@${DEPLOY_HOST}" \
             'cat /var/lib/micrologin/deployed-version 2>/dev/null || echo "{}"')
-          echo "### Deploy ${{ matrix.environment }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Deploy ${{ inputs.environment }}" >> "$GITHUB_STEP_SUMMARY"
           echo '```json' >> "$GITHUB_STEP_SUMMARY"
           echo "$VERSION_JSON" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"

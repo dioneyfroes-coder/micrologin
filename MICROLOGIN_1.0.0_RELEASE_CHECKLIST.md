@@ -330,13 +330,13 @@ mas o job de deploy usa uma matrix fixa com os dois ambientes. Portanto, selecio
 
 ### Implementação
 
-[ ] Usar `inputs.environment` diretamente no job de deploy.
+[x] Usar `inputs.environment` diretamente no job de deploy.
 
-[ ] Remover a matrix de dois ambientes para o dispatch manual, ou condicioná-la explicitamente ao input.
+[x] Remover a matrix de dois ambientes para o dispatch manual, ou condicioná-la explicitamente ao input.
 
-[ ] Manter `environment: staging` e `environment: production` como GitHub Environments separados.
+[x] Manter `environment: staging` e `environment: production` como GitHub Environments separados.
 
-[ ] Impedir por construção que uma execução escolhendo `staging` faça qualquer operação em `production`.
+[x] Impedir por construção que uma execução escolhendo `staging` faça qualquer operação em `production`.
 
 ### Prova obrigatória
 
@@ -346,7 +346,49 @@ mas o job de deploy usa uma matrix fixa com os dois ambientes. Portanto, selecio
 
 [ ] Confirmar que `environment=production` exige somente os secrets de production.
 
-[ ] Documentar o processo no README.
+[x] Documentar o processo no README.
+
+### Evidência (2026-10-02)
+
+Matrix removida do job `deploy`. `name`, `environment` e `concurrency.group` leem
+`inputs.environment`. O prefixo dos secrets é derivado do input
+(`production` → `PRODUCTION`, senão `STAGING`) e todas as 24 referências de secret
+passam por `env.DEPLOY_SECRET_PREFIX` — não sobrou nenhum nome de secret escrito à
+mão no job.
+
+Barreira nova como **primeiro** passo, antes de SSH, registry ou rede: compara o
+prefixo resolvido com o ambiente escolhido e aborta em caso de divergência ou de
+valor inesperado.
+
+**Prova:** `tests/unit/ci-deploy-environment.test.ts`, 13 testes estruturais — eles
+leem o job do YAML e executam o `run:` real da barreira em bash.
+
+**A "Prova obrigatória" de execução manual não foi feita, e não pode ser feita neste
+repositório.** Não existe servidor de staging ou produção configurado — o próprio
+workflow admite isso em comentário, e o item 4.x depende de execução com
+infraestrutura real. O que a prova estática cobre: a execução do deploy é confined
+ao ambiente escolhido por construção. O que ela não substitui: o contato real com
+os servidores, que depende de `STAGING_DEPLOY_HOST` / `PRODUCTION_DEPLOY_HOST`
+existirem. `npm run test:deploy` (Fase 4, com rollback real) é a prova de que o
+`remote-deploy.sh` funciona, e segue pendente.
+
+Mutações do workflow, todas revertidas:
+
+| Mutação | Resultado |
+| --- | --- |
+| Reintroduzir a matrix fixa de dois ambientes | 3 testes reprovam |
+| Escrever `secrets.PRODUCTION_*` à mão no meio do job | 1 teste reprova |
+| Mover a barreira para depois do primeiro `ssh` | 5 testes reprovam |
+| Trocar `exit 1` da barreira por `::warning::` | 4 testes reprovam |
+
+A última mutação **não** foi detectada na primeira versão do teste, e a falha é
+interessante: o teste reescrevia a lógica da barreira em vez de extraí-la do
+workflow, então provava que a *ideia* abortava, não que a barreira do workflow
+aborta. Trocar `exit 1` por `::warning::` mantinha 11/11 verdes. O teste agora
+extrai o `run:` do YAML e o executa — uma única cópia da lógica, e é a que roda em
+produção.
+
+Documentação: README, seção "Deployment → Como o ambiente é escolhido".
 
 ---
 

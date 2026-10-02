@@ -423,6 +423,35 @@ Secrets por ambiente (staging e produção), todos com prefixo
 `DEPLOY_BASE_URL` e, se a imagem do GHCR for privada, `REGISTRY_USERNAME` e
 `REGISTRY_TOKEN`. `DEPLOY_SSH_PORT` é opcional (default 22).
 
+#### Como o ambiente é escolhido
+
+O job `deploy` só roda em `workflow_dispatch`, e o ambiente vem **do input
+`environment`** da tela de execução (`staging` ou `production`, obrigatório,
+padrão `staging`):
+
+1. o job resolve o prefixo dos secrets a partir do input
+   (`production` → `PRODUCTION_*`, qualquer outro valor → `STAGING_*`);
+2. o primeiro passo, **antes de qualquer acesso a rede**, compara o prefixo
+   resolvido com o ambiente escolhido e aborta se divergirem;
+3. só depois disso a chave SSH é instalada, o registry é authenticado e o
+   servidor é contatado.
+
+Uma execução toca **exatamente um** ambiente. O input não é uma preferência: ele
+é a única fonte de verdade, e não existe caminho no qual o job leia secrets de
+ambiente diferente do escolhido. Antes da 1.0.0 o job usava uma matrix fixa com
+os dois ambientes e ignorava o input — escolher `staging` rodava staging **e**
+produção, com os secrets de produção.
+
+Os GitHub **Environments** (`staging` e `production`) seguem separados, e é
+neles que se configura o que exige aprovação: uma regra de *required reviewers*
+em `production` faz o deploy de produção esperar por revisão humana, o que o
+workflow sozinho não pode garantir.
+
+Deploy e produção saem com o mesmo caminho do restante do pipeline
+(`scripts/remote-deploy.sh`: pull por digest, backup da versão em vigor,
+`docker compose up -d`, espera por `/readiness`, smoke test e reversão
+automática em caso de falha).
+
 Para rodar o mesmo deploy localmente, sem CI:
 
 ```bash
