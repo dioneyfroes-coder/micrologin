@@ -178,25 +178,82 @@ describe('limites operacionais documentados', () => {
       }
     });
 
-    it('D20 declara o status em aberto e as duas saídas que fecham a lacuna', () => {
-      // Sem o status, a entrada seria lida como resolvida — que é o oposto do
-      // que ela diz. Sem as saídas, ela registra o problema sem dizer o que
-      // medir para fechá-lo.
-      const d20 = flatten(seguranca.slice(seguranca.indexOf('### D20 —')));
-      expect(d20).toMatch(/em aberto/);
-      expect(d20).toMatch(/promote manual/);
-      expect(d20).toMatch(/também no Mongo|tambem no Mongo/);
-      // E o que a operação tem hoje, para que "em aberto" não vire desculpa
-      // de não ter nada feito.
-      expect(d20).toMatch(/test:redis/);
+    // Duas visões do mesmo trecho: a achatada para comparar prosa, e a crua
+    // para os nomes de variável. O flatten remove `_` junto com o negrito do
+    // markdown, e `JWT_EXPIRES` sobrevive à achatagem só por acidente — não é por ele
+    // que se casa um nome de environment.
+    const d20Bruto = () =>
+      seguranca.slice(
+        seguranca.indexOf('### D20 —'),
+        seguranca.indexOf('### D21 —')
+      );
+    const d20 = () => flatten(d20Bruto());
+
+    it('D20 registra a decisão tomada, e ela é "limite aceito", não "resolvido"', () => {
+      // A P11 decidiu aceitar o limite. A linha que mais importa aqui é a que
+      // impede a leitura preguiçosa: "está no registro" não é o mesmo que "está
+      // resolvido", e um registro que deixa isso ambíguo serve para encobrir.
+      const d = d20();
+      expect(d).toMatch(/Status: aceito como limite/);
+      expect(d).not.toMatch(/Status: em aberto/);
+      // Um título de seção que ainda diz "continua em aberto" contradiz o status
+      // novo, e é a leitura que o leitor faz primeiro — a do subtítulo.
+      expect(d).not.toMatch(/Por que continua em aberto/);
+      // Aceitar o limite e parar de descrevê-lo não é a mesma coisa.
+      expect(d).toMatch(/fail-open de fato/);
+      expect(d).toMatch(/7 dias/);
+      // E as duas saídas continuam documentadas como não escolhidas: um risco
+      // aceito hoje é uma dívida, e dívida precisa ter endereço.
+      expect(d).toMatch(/promote manual/);
+      expect(d).toMatch(/também no Mongo|tambem no Mongo/);
     });
 
-    it('a entrada de D20 não contradiz a discussão em REDIS.md', () => {
-      // As duas entradas descrevem a mesma lacuna. Se uma delas mudar de
-      //ercdo, o leitor vai ler a outra e concluir que o problema não existe.
+    it('a janela de exposição citada bate com os TTL que o código usa', () => {
+      // "15 min" e "7 dias" não são arredondamento de texto: são a janela real
+      // que o limite aceita. Se alguém mudar JWT_REFRESH_EXPIRES, o número do
+      // registro passa a mentir em silêncio — que é como documento de risco
+      // deixa de ser consultável.
+      const appConfig = read('src/interfaces/config/appConfig.ts');
+      const envExample = read('.env.example');
+      for (const [variavel, valor] of [
+        ['JWT_EXPIRES', '15m'],
+        ['JWT_REFRESH_EXPIRES', '7d']
+      ] as const) {
+        expect(appConfig).toContain(`${variavel} || '${valor}'`);
+        expect(envExample).toContain(`${variavel}=${valor}`);
+      }
+      expect(d20Bruto()).toMatch(/JWT_EXPIRES=15m/);
+      expect(d20Bruto()).toMatch(/JWT_REFRESH_EXPIRES=7d/);
+    });
+
+    it('o custo aceito tem drill que o mede, e não só prosa', () => {
+      // Risco aceito sem forma de reconferir deixa de ser aceito e vira
+      // esquecido. O drill existe para isso — e o teste exige que o registro
+      // aponte para ele, senão ninguém descobre que parou de rodar.
+      const pkg = JSON.parse(read('package.json')) as {
+        scripts: Record<string, string>;
+      };
+      expect(pkg.scripts['test:redis:volume-loss']).toContain('--volume-loss');
+      expect(d20()).toMatch(/test:redis:volume-loss/);
+      // E o drill declara o sinal que o serviço dá: nenhum. É o que torna o
+      // risco silencioso, e o registro não pode suavizar isso.
+      expect(d20()).toMatch(/0 erros no log|nenhum erro no log/);
+    });
+
+    it('as três entradas que descrevem a lacuna não se contradizem', () => {
+      // D20 (registro), REDIS.md (discussão) e ARQUITETURA.md (topologia)
+      // descrevem o mesmo buraco. Se uma mudar de juízo, o leitor lê as outras
+      // duas e conclui que a decisão não existe.
       const redis = flatten(read('docs/REDIS.md'));
-      expect(redis).toMatch(/fail-open de fato/);
-      expect(redis).toMatch(/D20/);
+      const arq = flatten(read('docs/ARQUITETURA.md'));
+      for (const doc of [redis, arq]) {
+        expect(doc).toMatch(/fail-open de fato|D20/);
+        expect(doc).toMatch(/aceito|em aberto/);
+      }
+      // A topologia é onde o risco vive: se o registro aponta para a
+      // ARQUITETURA e ela não tem a seção, o aceite é promessa sem lugar.
+      expect(arq).toMatch(/Limite aceito: a revogação em nó único \(D20\)/);
+      expect(arq).toMatch(/SPOF/);
     });
   });
 });

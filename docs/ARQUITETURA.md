@@ -87,6 +87,42 @@ Como o Mongo deste Compose é standalone, não há read preference ou
 `readConcern` de replica set para ajustar: todas as leituras/escritas vão para
 o mesmo nó. A API pode compartilhar sessões e rate limit via Redis, mas isso não
 remove o SPOF do armazenamento de usuários.
+
+### Limite aceito: a revogação em nó único (D20)
+
+O segundo ponto de falha único desta topologia é o **Redis**, e o dano é
+diferente do do Mongo. O Mongo perde *usuários*; o Redis perde *o registro do
+que não pode mais entrar*.
+
+A persistência do Redis cobre **restart** (AOF `everysec`, D22): o container
+sobe com o histórico intacto. O que ela **não** cobre é a **perda do volume** —
+falha de disco, `docker volume rm`, restauração de VM a partir de snapshot
+antigo. Nesse caso o serviço volta sem histórico de revogação e opera em
+**fail-open de fato**: um token já revogado volta a valer até o próprio expirar,
+e nada no sistema consegue provar que o logout aconteceu. Não é escolha de
+projeto, é ausência do dado — e é silencioso, porque o serviço é fail-closed
+quando o Redis está *indisponível* (503, nunca 401). O buraco está exatamente
+onde o resto do sistema parece fechado.
+
+**Isto é aceito como limite desta topologia**, com as duas saídas conhecidas e
+não escolhidas: segundo Redis com réplica e `promote` manual, ou gravar o carimbo
+de revogação também no Mongo. Ambas mudam o modelo de operação — o primeiro
+custa um segundo nó e um procedimento de promote com janela de divergência; o
+segundo custa escrita no Mongo por logout e uma política de divergência entre os
+dois — e por isso são decisão de quem opera, não melhoria escondida em
+refatoração. Ver `docs/SEGURANCA.md` (D20) e `docs/REDIS.md`.
+
+A janela é da ordem do TTL do refresh, não do do access: quem guardou o par
+renova o access token a cada ~15 min durante **7 dias**
+(`JWT_REFRESH_EXPIRES=7d`), porque a detecção de reuso de refresh — o que tornaria
+o par inútil depois do logout — está no mesmo volume. E não há sinal: 0 erros no
+log do app, resposta 200 idêntica à de antes.
+
+O que a operação tem hoje são dois drills: `npm run test:redis` prova que a
+revogação sobrevive ao **restart** (AOF `everysec`, D22) e
+`npm run test:redis:volume-loss` prova que a perda de **volume** expõe o serviço,
+medindo a janela. O primeiro não cobre o segundo; cobrir isso é o que as duas
+saídas comprariam.
 O upstream nginx OSS usa falhas passivas (`max_fails`/`fail_timeout`); ele não
 consulta o healthcheck `/readiness` do Compose. Scale e failover precisam ser
 exercitados com Docker antes de afirmar remoção ativa de réplicas.

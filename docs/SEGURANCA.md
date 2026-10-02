@@ -511,8 +511,9 @@ eles é a única coisa que faz o portão valer alguma coisa.
 
 ### D20 — Revogação em nó único: o limite aceito e o que fecha a lacuna
 
-**Status: em aberto.** Registrada aqui para que a lacuna seja encontrável; não é
-decisão tomada.
+**Status: aceito como limite desta topologia** (decidido na P11, registrado em
+`docs/ARQUITETURA.md` ao lado do SPOF do Mongo). Fica aqui para que a lacuna seja
+encontrável, e para que aceitar um risco seja o mesmo que registrá-lo.
 
 O serviço de revogação (blacklist de tokens e carimbo de sessão) roda em **um
 único nó de Redis**. A D22 resolveu a outra metade do problema — o que o Redis
@@ -530,8 +531,8 @@ serviço é fail-closed quando o Redis está *indisponível* (D21 e o 503), o
 fail-open aqui é um buraco silencioso num sistema que parece fechado: o operador
 não tem nenhum sinal.
 
-**Por que continua em aberto e não fechado.** As duas saídas que funcionam de
-verdade mudam o modelo de operação, não o código:
+**Por que as duas saídas não foram implementadas agora.** Ambas mudam o
+modelo de operação, não o código:
 
 1. **Segundo Redis com réplica e `promote` manual.** Tira a revogação do caminho
    de nó único. Custa um segundo nó para operar, um procedimento de promote que
@@ -546,12 +547,34 @@ Escolher entre as duas é decisão de quem opera, porque a resposta depende de
 quanto o ambiente tolera de indisponibilidade e quanta competência de promote
 existe. Nenhuma das duas entra como "melhoria" escondida em refatoração.
 
+**O custo, medido.** Aceitar sem medir é trocar uma afirmação vaga por outra. O
+modo `--volume-loss` do drill (`npm run test:redis:volume-loss`) destrói o volume
+do Redis contra um Mongo **intacto** — e é o banco de pé que torna o resultado
+inequívoco: o usuário existe, o registro é que não — medindo o que sobra:
+
+| o que foi revogado | o que acontece depois da perda do volume |
+|---|---|
+| access token | volta a valer até o próprio expirar: **~15 min** (`JWT_EXPIRES=15m`) |
+| refresh token já consumido | **volta a valer**, e renova access tokens a cada 15 min até expirar: **7 dias** (`JWT_REFRESH_EXPIRES=7d`) |
+| detecção de reuso de refresh | não dispara: o marcador também morre com o volume |
+| sinal para o operador | **nenhum** — 0 erros no log do app, resposta 200 idêntica à de antes |
+
+A segunda linha é a que importa, e é pior do que a primeira sugere. O dano não é
+"um token de 15 minutos": quem guardou o par não precisa estar com o access
+token, ele **renova** o access token a cada 15 minutos durante 7 dias, e a
+proteção contra reuso de refresh — o que tornaria o par inútil depois do logout —
+morre no mesmo volume. A janela aceita é, portanto, da ordem do TTL do refresh,
+não do TTL do access.
+
 **O que a operação tem até lá.** O fail-closed no Redis indisponível (503, nunca
-401) e o drill `npm run test:redis`, que prova no ambiente de teste que a
-revogação sobrevive ao restart. Rodar esse drill depois de qualquer mudança no
-compose do Redis é o mais barato que existe para descobrir que alguém desligou a
-persistência. Ele **não** cobre a perda de volume — cobrir isso é justamente o
-que as duas opções acima comprariam.
+401), o drill `npm run test:redis` (prova que a revogação sobrevive ao **restart**
+— AOF `everysec`, D22) e o drill `npm run test:redis:volume-loss` (prova que a
+perda de volume **expõe**, e mede a janela). Rodar os dois depois de qualquer
+mudança no compose do Redis é o mais barato que existe para descobrir que alguém
+desligou a persistência — e para confirmar que o limite aceito continua sendo o
+limite aceito. Se um dia o segundo drill reprovar porque a revogação passou a
+sobreviver à perda de volume, é sinal bom: a D20 foi fechada e este registro, o
+`docs/REDIS.md` e o `docs/ARQUITETURA.md` precisam acompanhar.
 
 Referência cruzada: `docs/REDIS.md` traz a discussão completa da falha de
 volume e do fail-open acidental.

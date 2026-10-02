@@ -124,7 +124,7 @@ recomendação é `redis-cli --rdb` ou `BGSAVE` sob demanda, guardado fora do
 `serviço`, com a ressalva de que ele descreve um instante, não um estado
 recuperável.
 
-## Fail-open? Não — e o que a decisão D20 deixa em aberto
+## Fail-open? Não — e o limite que a D20 registra como aceito
 
 O fail-closed quando o Redis está indisponível é decisão antiga e mantida: sem
 armazenamento de revogação não há como garantir que um token não foi revogado, e
@@ -132,20 +132,27 @@ armazenamento de revogação não há como garantir que um token não foi revoga
 serviço de autenticação. O serviço responde **503**, não 401 — dizer "senha
 errada" seria mentira.
 
-O que fica **registrado e não implementado** (D20): se o volume do Redis for
+O que fica **registrado e aceito como limite** (D20): se o volume do Redis for
 destruído (falha de disco, `docker volume rm`, restauração de VM a partir de
 snapshot antigo), o serviço volta **sem histórico de revogação** e opera em
 fail-open de fato — não por escolha, mas por ausência do dado. O que fecha essa
 lacuna de verdade é tirar a revogação do caminho de um único nó: ou um segundo
 Redis com réplica e promote manual, ou persistir o carimbo de revogação também no
-Mongo, que já é a fonte de verdade e já tem backup. Nenhuma das duas está no
-escopo desta fase, e ambas mudam o modelo de operação — por isso são decisão,
-não detalhe de implementação.
+Mongo, que já é a fonte de verdade e já tem backup. Nenhuma das duas foi escolhida, e ambas mudam
+o modelo de operação — por isso foram decisão, não detalhe de implementação.
+A P11 optou por aceitar o limite como tal, e o custo foi medido em vez de
+descrito: com o volume destruído e o Mongo intacto, o token de access revogado
+volta a valer por ~15 min e o **refresh já consumido volta a valer e renova
+access tokens durante 7 dias** (`npm run test:redis:volume-loss`), sem nenhum
+erro no log. Ou seja: a janela real é a do refresh, porque a detecção de reuso
+morre no mesmo volume.
 
-Até lá, o que o operador tem é o drill: `npm run test:redis` prova, no ambiente
-de teste, que a revogação sobrevive ao restart. Rodar depois de qualquer
-mudança no compose do Redis é o mais barato que existe para descobrir que alguém
-desligou a persistência.
+Até lá, o operador tem dois drills: `npm run test:redis` prova, no ambiente de
+teste, que a revogação sobrevive ao **restart**, e `npm run test:redis:volume-loss`
+prova que a perda de **volume** expõe o serviço — e mede a janela. Rodar os dois
+depois de qualquer mudança no compose do Redis é o mais barato que existe para
+descobrir que alguém desligou a persistência, e para confirmar que o limite
+aceito continua sendo o limite aceito.
 
 ### O que não fazer
 

@@ -29,6 +29,7 @@
     "test:infra": "bash scripts/infra-resilience-test.sh",
     "test:backup": "bash scripts/test-backup.sh",
     "test:redis": "bash scripts/test-redis-persistence.sh",
+    "test:redis:volume-loss": "bash scripts/test-redis-persistence.sh --volume-loss",
     "test:config-backup": "bash scripts/test-config-backup.sh",
     "test:deploy": "bash scripts/test-deploy.sh",
     "test:secrets": "bash scripts/secret-scan.sh",

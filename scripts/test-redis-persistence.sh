@@ -30,16 +30,36 @@
 # Também mede o tempo entre derrubar o container e ele voltar a responder
 # (o RTO do Redis, que é o número que vai para docs/REDIS.md).
 #
+# O drill tem dois modos, porque "a persistência funciona" e "a revogação
+# sobrevive a perder o dado" são perguntas diferentes com respostas diferentes:
+#
+#   padrão (--restart)  o container reinicia, o volume fica. A revogação tem
+#                       que sobreviver. É o que a D22 comprou.
+#   --volume-loss       o volume do Redis é DESTRUIDO. O Mongo fica intacto de
+#                       propósito: se os usuários sumissem junto, um 401 do
+#                       token de A seria ambíguo (usuário inexistente ou
+#                       revogação perdida?). Com o banco de pé, um 200 do token
+#                       de A só pode significar que o registro de revogação foi
+#                       junto com o volume. É a D20: o limite aceito, medido.
+#
 # Uso:
-#   scripts/test-redis-persistence.sh [--keep] [--skip-build]
+#   scripts/test-redis-persistence.sh [--keep] [--skip-build] [--volume-loss]
 #
 #   --keep         não destrói o stack no fim (para depurar com docker logs)
 #   --skip-build   usa a imagem já construída em vez de reconstruir
+#   --volume-loss  destrói o volume do Redis e mede a exposição resultante, em
+#                  vez de provar que a revogação sobreviveu ao restart
 #
 # Códigos de saída:
-#   0  revogação sobreviveu ao restart, com o controle de B confirmando
+#   0  o modo terminou como se espera: no padrão, revogação sobreviveu ao
+#      restart; em --volume-loss, o limite aceito está presente e medido
 #   1  alguma asserção falhou
 #   2  pré-requisito ausente (docker parado, curl/python3 faltando)
+#
+# Atenção ao ler o resultado de --volume-loss: um drill verde aqui significa
+# "o buraco continua existindo", não "o sistema está bem". Se um dia esse drill
+# reprovar porque a revogação passou a sobreviver à perda de volume, é sinal
+# bom: a D20 foi fechada e a documentação precisa acompanhar.
 
 set -euo pipefail
 
@@ -53,13 +73,25 @@ COMPOSE=(docker compose -p "$PROJECT" -f "$COMPOSE_FILE")
 
 KEEP_STACK=0
 SKIP_BUILD=0
+VOLUME_LOSS=0
 for arg in "$@"; do
     case "$arg" in
         --keep)       KEEP_STACK=1 ;;
         --skip-build) SKIP_BUILD=1 ;;
+        --volume-loss) VOLUME_LOSS=1 ;;
         *) echo "argumento desconhecido: $arg" >&2; exit 2 ;;
     esac
 done
+
+if [ "$VOLUME_LOSS" -eq 1 ]; then
+    EVENTO="perda de volume"
+    DEPOIS="da perda de volume"
+    ESPERADO="o limite aceito da D20 estar presente e medido"
+else
+    EVENTO="restart"
+    DEPOIS="do restart"
+    ESPERADO="a revogação ter sobrevivido ao restart"
+fi
 
 WAIT_READY_TIMEOUT="${WAIT_READY_TIMEOUT:-180}"
 
@@ -83,6 +115,7 @@ PASSWORD="R3dis-Test-${RUN_ID}-Xx!"
 BODY_FILE="$(mktemp)"
 
 REDIS_CONTAINER="micrologin-redis-redis"
+REDIS_CONTAINER_APP="micrologin-redis-app"
 
 RED='\033[0.31m'; GREEN='\033[0.32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 
@@ -199,7 +232,7 @@ redis_file() { docker exec "$REDIS_CONTAINER" sh -c "$1" 2>/dev/null; }
 # 1. Stack de pé
 # ============================================================
 echo -e "${BLUE}══════════════════════════════════════════════════════════════${NC}"
-echo -e "${BLUE} Drill de persistência do Redis${NC}"
+echo -e "${BLUE} Drill de persistência do Redis — modo: ${EVENTO}${NC}"
 echo -e "${BLUE} Stack: ${PROJECT} @ ${BASE_URL}${NC}"
 echo -e "${BLUE}══════════════════════════════════════════════════════════════${NC}"
 
@@ -235,6 +268,10 @@ log_pass "stack no ar e pronto para tráfego"
 # criado na largada.
 DATA_MOUNT="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Type}}{{end}}{{end}}' "$REDIS_CONTAINER")"
 [ "$DATA_MOUNT" = "volume" ] || fail "/data do Redis está montado como '${DATA_MOUNT:-nada}', esperado volume nomeado"
+# `.Name` e não `.Source`: o Source é o caminho do mountpoint dentro do host
+# (/var/lib/docker/volumes/<nome>/_data) e `docker volume rm` recusa esse caminho.
+REDIS_VOLUME="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}' "$REDIS_CONTAINER")"
+[ -n "$REDIS_VOLUME" ] || fail "não foi possível localizar o volume nomeado montado em /data (necessário para o modo --volume-loss)"
 log_pass "/data em volume nomeado (o dado sobrevive ao container)"
 
 [ -n "$(redis_file 'test -d /data/appendonlydir && echo yes')" ] \
@@ -291,18 +328,31 @@ log_pass "escrita da revogação está no AOF (${AOF_BYTES} bytes em appendonly.
 # ============================================================
 # 5. Restart do container do Redis (mesmo volume, processo novo)
 # ============================================================
-log_warn "Reiniciando o container do Redis (o volume persiste; o processo não)..."
-# Em milissegundos: o restart de um container local leva menos de um segundo, e
-# "RTO 0s" é um número que não diz nada.
-RESTART_START_MS="$(date +%s%3N)"
-"${COMPOSE[@]}" restart redis >/dev/null
+if [ "$VOLUME_LOSS" -eq 1 ]; then
+    # Só o volume do Redis. O `down -v` derrubaria também o volume do Mongo, e
+    # aí o token de A poderia dar 401 só porque o usuário deixou de existir —
+    # o teste mediria a coisa errada. Destruir o /data do Redis e nada mais é a
+    #perda que a D20 descreve: o dado de revogação some, os usuários não.
+    log_warn "Destruindo o volume do Redis (${REDIS_VOLUME}); o Mongo fica intacto..."
+    EVENT_START_MS="$(date +%s%3N)"
+    "${COMPOSE[@]}" stop redis >/dev/null
+    "${COMPOSE[@]}" rm -f redis >/dev/null
+    docker volume rm "$REDIS_VOLUME" >/dev/null
+    "${COMPOSE[@]}" up -d redis >/dev/null
+else
+    log_warn "Reiniciando o container do Redis (o volume persiste; o processo não)..."
+    # Em milissegundos: o restart de um container local leva menos de um segundo,
+    # e "RTO 0s" é um número que não diz nada.
+    EVENT_START_MS="$(date +%s%3N)"
+    "${COMPOSE[@]}" restart redis >/dev/null
+fi
 wait_for "$WAIT_READY_TIMEOUT" "Redis responder de novo" redis_cli PING
-RTO_MS="$(( $(date +%s%3N) - RESTART_START_MS ))"
+RTO_MS="$(( $(date +%s%3N) - EVENT_START_MS ))"
 RTO_SEC="$(awk -v ms="$RTO_MS" 'BEGIN{printf "%.1f", ms/1000}')"
 log_pass "Redis de volta em ${RTO_SEC}s (PONG)"
 echo ""
 echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
-echo -e "${BLUE} RTO medido (container parado -> PONG): ${RTO_SEC}s${NC}"
+echo -e "${BLUE} Tempo de indisponibilidade do Redis (parou -> PONG): ${RTO_SEC}s${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
 
 # O app pode precisar de um instante para a reconexão do ioredis: o middleware
@@ -312,40 +362,108 @@ wait_for 30 "app aceitar requisição autenticada de novo" is_access_still_valid
 # ============================================================
 # 6. O controle: B (nunca revogado) tem que continuar funcionando
 # ============================================================
-is_access_still_valid "$ACCESS_B" || fail "controle B virou ${STATUS} depois do restart — o Redis não voltou de verdade, então o teste de A não diria nada"
-log_pass "controle B continua 200 depois do restart (Redis voltou e valida tokens)"
+is_access_still_valid "$ACCESS_B" || fail "controle B virou ${STATUS} depois ${DEPOIS} — o Redis não voltou de verdade, então o teste de A não diria nada"
+log_pass "controle B continua 200 depois ${DEPOIS} (Redis voltou e valida tokens)"
 
 # ============================================================
-# 7. A prova que interessa: A (revogado) tem que continuar morto
+# 7. O que acontece com A (revogado) — o modo decide o veredito
 # ============================================================
-if is_access_still_valid "$ACCESS_A"; then
-    log_warn "token de A voltou a valer (HTTP ${STATUS}) depois do restart"
-    fail "REGRESSÃO: revogação não sobreviveu ao restart do Redis — ou o appendonly/save/volume foi desligado"
-fi
-# "Não é 200" não basta: um 5xx também seria "não 200", e o teste passaria
-# batendo numa falha do serviço em vez de numa blacklist. O 401 é o que prova
-# que a revogação foi consultada e是国家 negada.
-[ "$STATUS" = "401" ] || fail "token de A respondeu ${STATUS} depois do restart (esperado 401) — se é 5xx, isto é indisponibilidade, não revogação"
-log_pass "token de A continua revogado (401) depois do restart — a blacklist sobreviveu"
-
-# E o dado tem de ter voltado do disco, não veio do caminho do fail-closed:
-# a chave de sessão de A tem que continuar no Redis, com o MESMO valor, depois
-# do restart.
 VERSION_AFTER="$(redis_cli GET "$VERSION_KEY" | tr -d '\r')"
-[ -n "$VERSION_AFTER" ] || fail "chave ${VERSION_KEY} sumiu depois do restart (versão de sessão não persistiu)"
-[ "$VERSION_AFTER" = "$VERSION_BEFORE" ] || fail "versão de sessão de A mudou no restart (${VERSION_BEFORE} -> ${VERSION_AFTER})"
-log_pass "${VERSION_KEY} = ${VERSION_AFTER} depois do restart (mesmo valor, relido do volume)"
-
 DBSIZE_AFTER="$(redis_cli DBSIZE | tr -d '\r')"
-[ "${DBSIZE_AFTER:-0}" -gt 0 ] 2>/dev/null || fail "Redis ficou sem chaves depois do restart (DBSIZE='${DBSIZE_AFTER}')"
-log_pass "Redis com ${DBSIZE_AFTER} chave(s) depois do restart (estado relido do volume)"
 
-# O AOF é reescrito do zero a cada 60s pelo Redis; o snapshot RDB é a segunda
-# camada e não aparece no mesmo instante. Aqui só se confirma que o diretório
-# continua lá depois do restart, e o flag `--save` é o que
-# `tests/unit/redis-persistence-config.test.ts` prende no compose.
-[ -n "$(redis_file 'test -d /data/appendonlydir && echo yes')" ] \
-    || fail "appendonlydir sumiu depois do restart"
-log_pass "appendonlydir intacto depois do restart"
+if [ "$VOLUME_LOSS" -eq 0 ]; then
+    # A tem que continuar morto: é o que a persistência comprou.
+    if is_access_still_valid "$ACCESS_A"; then
+        log_warn "token de A voltou a valer (HTTP ${STATUS}) depois do restart"
+        fail "REGRESSÃO: revogação não sobreviveu ao restart do Redis — ou o appendonly/save/volume foi desligado"
+    fi
+    # "Não é 200" não basta: um 5xx também seria "não 200", e o teste passaria
+    # batendo numa falha do serviço em vez de numa blacklist. O 401 é o que
+    # prova que a revogação foi consultada e foi negada.
+    [ "$STATUS" = "401" ] || fail "token de A respondeu ${STATUS} depois do restart (esperado 401) — se é 5xx, isto é indisponibilidade, não revogação"
+    log_pass "token de A continua revogado (401) depois do restart — a blacklist sobreviveu"
 
-echo -e "${GREEN}🎉 Persistência de revogação verificada: o que foi revogado continua revogado.${NC}"
+    # E o dado tem de ter voltado do disco, não veio do caminho do fail-closed:
+    # a chave de sessão de A tem que continuar no Redis, com o MESMO valor.
+    [ -n "$VERSION_AFTER" ] || fail "chave ${VERSION_KEY} sumiu depois do restart (versão de sessão não persistiu)"
+    [ "$VERSION_AFTER" = "$VERSION_BEFORE" ] || fail "versão de sessão de A mudou no restart (${VERSION_BEFORE} -> ${VERSION_AFTER})"
+    log_pass "${VERSION_KEY} = ${VERSION_AFTER} depois do restart (mesmo valor, relido do volume)"
+
+    [ "${DBSIZE_AFTER:-0}" -gt 0 ] 2>/dev/null || fail "Redis ficou sem chaves depois do restart (DBSIZE='${DBSIZE_AFTER}')"
+    log_pass "Redis com ${DBSIZE_AFTER} chave(s) depois do restart (estado relido do volume)"
+
+    # O AOF é reescrito do zero a cada 60s pelo Redis; o snapshot RDB é a segunda
+    # camada e não aparece no mesmo instante. Aqui só se confirma que o diretório
+    # continua lá depois do restart, e o flag `--save` é o que
+    # `tests/unit/redis-persistence-config.test.ts` prende no compose.
+    [ -n "$(redis_file 'test -d /data/appendonlydir && echo yes')" ] \
+        || fail "appendonlydir sumiu depois do restart"
+    log_pass "appendonlydir intacto depois do restart"
+
+    echo -e "${GREEN}🎉 Persistência de revogação verificada: o que foi revogado continua revogado.${NC}"
+    exit 0
+fi
+
+# --- modo --volume-loss: aqui o ESPERADO é o buraco existir, e ser medido ---
+
+# Primeiro o dado: a revogação de A tem que ter sumido do Redis. Sem isto, um
+# 200 do token de A poderia ser qualquer outra coisa (uma chave com TTL
+# expirada, um bug no filtro) em vez do que a D20 descreve: o registro sumiu.
+[ -z "$VERSION_AFTER" ] || fail "a chave ${VERSION_KEY} continua no Redis depois da perda de volume (valor ${VERSION_AFTER}) — a revogação NÃO foi perdida e o modo --volume-loss está medindo outra coisa"
+log_pass "${VERSION_KEY} sumiu do Redis (DBSIZE ${DBSIZE_BEFORE} -> ${DBSIZE_AFTER:-0} chave(s)): o registro de revogação foi perdido"
+
+# Agora o efeito. 200 no token de A é a prova de que a perda de dado virou
+# fail-open de fato — o serviço aceitou uma sessão que tinha sido encerrada.
+is_access_still_valid "$ACCESS_A" \
+    || fail "token de A respondeu ${STATUS} depois da perda de volume (esperado 200) — o limite da D20 NÃO se manifestou; se a revogação passou a sobreviver à perda de volume, a D20 foi fechada e a documentação precisa ser atualizada"
+log_pass "token de A voltou a valer (200) depois da perda de volume — fail-open de fato, por ausência do dado"
+
+# E a parte que define a gravidade: o par inteiro. O refresh de A já tinha sido
+# consumido pelo /logout; a detecção de reuso (que também mora no Redis
+# perdido) não tem como disparar. Se ele volta, o atacante que guardou o par não
+# precisa esperar o access token morrer: ele renova o access token a cada 15
+# minutos até o refresh expirar. É essa janela que D20 está aceitando.
+request POST "/refresh" "{\"refreshToken\":\"${REFRESH_A}\"}"
+if [ "$STATUS" = "200" ]; then
+    NEW_ACCESS="$(json_field "$BODY" data.accessToken)"
+    NEW_EXPIRES="$(json_field "$BODY" data.expiresIn)"
+    if [ -n "$NEW_ACCESS" ] && is_access_still_valid "$NEW_ACCESS"; then
+        EXPOSURE_OPEN=1
+        log_pass "refresh de A (já consumido) voltou a valer e emitiu um accessToken novo que autentica — janela de exposição aberta pela perda de volume"
+    else
+        EXPOSURE_OPEN=0
+    fi
+else
+    NEW_EXPIRES=""
+    EXPOSURE_OPEN=0
+    log_warn "refresh de A respondeu ${STATUS} após a perda de volume (o access token sozinho foi exposto)"
+fi
+
+echo ""
+echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
+echo -e "${BLUE} Custo medido do limite aceito (D20)${NC}"
+echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
+echo "  access token revogado ......... volta a valer por até o TTL dele"
+echo "  refresh token já consumido .... $( [ "$EXPOSURE_OPEN" -eq 1 ] \
+    && echo "volta a valer e renova access tokens até expirar" \
+    || echo "não voltou a valer neste drill" )"
+if [ -n "$NEW_EXPIRES" ]; then
+    # `expiresIn` do par de tokens sai em milissegundos (o próprio jwtTokenService
+    # converte com `expiresIn / 1000` ao montar o TTL da blacklist), então dividir
+    # por 1000 é leitura de campo, não unit trick. Os 899783 ms medidos são o
+    # `JWT_EXPIRES=15m` do ambiente, e é por isso que a janela do access token
+    # some ao lado dos 7 dias do refresh.
+    NEW_MIN="$(awk -v ms="$NEW_EXPIRES" 'BEGIN{printf "%.1f", ms/60000}')"
+    echo "  TTL do access token renovado ... ${NEW_EXPIRES} ms (~${NEW_MIN} min, medido na resposta)"
+fi
+# "Silencioso" é afirmação, então ela é conferida: o fail-open não pode estar
+# acompanhado de erro que o operador veria. Conta o que o app registrou como
+# erro depois do evento — se a perda de volume gritasse, o drill reprovaria.
+APP_ERRORS="$(docker logs "$REDIS_CONTAINER_APP" --since "${EVENT_START_MS%???}" 2>&1 | grep -cE '\b(error|fatal|unhandled|exception)\b' || true)"
+echo "  Erros no log do app após o evento ... ${APP_ERRORS:-0}"
+[ "${APP_ERRORS:-0}" -eq 0 ] 2>/dev/null || fail "o app registrou ${APP_ERRORS} erro(s) após a perda de volume — o fail-open não é silencioso, e a documentação diz que é"
+echo ""
+echo -e "${YELLOW}⚠️  Drill verde aqui significa que o limite da D20 continua valendo.${NC}"
+echo -e "${YELLOW}   Se um dia este drill reprovar porque a revogação sobreviveu à${NC}"
+echo -e "${YELLOW}   perda de volume, a D20 foi fechada e a documentação precisa ir junto.${NC}"
+echo -e "${GREEN}✅ Limite da D20 medido: ${ESPERADO}.${NC}"

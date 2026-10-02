@@ -480,6 +480,56 @@ em aberto, com duas saídas anotadas:
 medido — ou a pendência for formalmente aceitada como limite desta topologia,
 registrada como tal na `docs/ARQUITETURA.md` ao lado do SPOF do Mongo.
 
+**Feito — limite aceito, com o custo medido.** A escolha foi aceitar o limite
+como tal, e ela está registrada nos três lugares onde alguém procura por ela:
+`docs/ARQUITETURA.md` (nova seção "Limite aceito: a revogação em nó único (D20)",
+logo ao lado do SPOF do Mongo), `docs/SEGURANCA.md` (D20, agora com status
+**aceito como limite**) e `docs/REDIS.md` (que deixa de falar em "o que a D20
+deixa em aberto" e passa a falar do limite registrado).
+
+Aceitar sem medir seria trocar uma afirmação vaga por outra, então o custo foi
+medido no ambiente de teste, e não descrito. O drill ganhou o modo
+`--volume-loss` (`npm run test:redis:volume-loss`), que destrói o volume do
+Redis **contra um Mongo intacto** — o banco de pé é o que torna o resultado
+inequívoco, porque assim o usuário existe e o registro é que não. O que a
+medição mostrou é pior do que a formulaçãooriginal sugere:
+
+| o que foi revogado | o que acontece depois da perda do volume |
+|---|---|
+| access token | volta a valer até o próprio expirar — ~15 min (`JWT_EXPIRES=15m`) |
+| refresh token já consumido | **volta a valer** e renova access tokens a cada 15 min até expirar — 7 dias (`JWT_REFRESH_EXPIRES=7d`) |
+| detecção de reuso de refresh | não dispara: o marcador morre no mesmo volume |
+| sinal para o operador | nenhum: 0 erros no log, 200 idêntico ao de antes |
+
+A segunda linha é o achado. A formulação original dizia "um token revogado volta
+a valer até o expirar", o que sugere 15 minutos; o drill mostra que quem
+guardou o par **renova** o access token durante 7 dias, e que a proteção contra
+reuso de refresh — o que tornaria o par inútil depois do logout — está no mesmo
+volume que se foi. A janela aceita é da ordem do TTL do **refresh**, não do
+access.
+
+Dois detalhes que só apareceram porque o drill mediu de verdade:
+
+- o controle B (usuário nunca revogado) continua 200 depois da perda do volume.
+  Sem ele, o 200 do token de A seria ambíguo entre "revogação perdida" e
+  "serviço não está mais checando nada";
+- a afirmação "é silencioso" é conferida, não afirmada: o drill conta os erros no
+  log do app depois do evento (0) e reprova se houver algum.
+
+Controle negativo, para o drill não ser decorativo: com o `docker volume rm`
+neutralizado — simulando a D20 fechada — o drill reprova na primeira asserção,
+com a mensagem de que a revogação **não** foi perdida e o modo está medindo outra
+coisa. Um drill verde neste modo significa "o buraco continua existindo", e o
+cabeçalho do script diz isso para quem for ler o resultado.
+
+**Contrapartida no registro.** Um risco aceito que ninguém reconfira deixa de ser
+aceito e vira esquecido. Os quatro testes novos em
+`tests/unit/operational-limits-doc.test.ts` seguram isso: o status é conferido
+("aceito como limite", e não "em aberto"), a janela citada é presa aos TTL que o
+código usa (mudar `JWT_REFRESH_EXPIRES` reprova), o drill é exigido por nome no
+registro e no `package.json`, e as três entradas que descrevem o buraco não podem
+se contradizer. Quatro mutações confirmam cada guarda.
+
 ---
 
 ## 3. Ordem de execução
