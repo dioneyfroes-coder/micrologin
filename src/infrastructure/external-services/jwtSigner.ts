@@ -64,14 +64,6 @@ export interface TokenSigner {
   readonly algorithm: string;
   /** Identificador da chave no header (`kid`). Ausente em HS256. */
   readonly kid: string | undefined;
-  /**
-   * `true` quando a claim `token_type` é a ÚNICA separação entre access e
-   * refresh — caso do ES256, onde ambos usam o mesmo par de chaves. Nesse
-   * caminho, um refresh token aceito como access é uma escalada de privilégio
-   * (7 dias de validade em vez de 15 minutos), então o serviço precisa conferir
-   * a claim. Em HS256 os segredos já são distintos e a claim é redundante.
-   */
-  readonly reliesOnTokenType: boolean;
   sign(request: SignRequest): Promise<string>;
   verify(token: string, options: VerifyOptions): Promise<TokenClaims>;
   /** Lê as claims SEM validar a assinatura (inspeção, não segurança). */
@@ -104,8 +96,6 @@ const asExpiredError = (error: unknown): unknown => {
 export class Hs256Signer implements TokenSigner {
   readonly algorithm = 'HS256';
   readonly kid = undefined;
-  /** Segredos distintos já separam access de refresh. */
-  readonly reliesOnTokenType = false;
 
   constructor(private readonly secret: string) {}
 
@@ -181,8 +171,6 @@ const importPrivateKey = async(pem: string): Promise<CryptoKey> => {
  */
 export class Es256Signer implements TokenSigner {
   readonly algorithm = 'ES256';
-  /** Access e refresh partilham o par: a claim é o que os separa. */
-  readonly reliesOnTokenType = true;
 
   private keys: { signing: CryptoKey; verification: Map<string, CryptoKey> } | null = null;
   private loading: Promise<{ signing: CryptoKey; verification: Map<string, CryptoKey> }> | null = null;

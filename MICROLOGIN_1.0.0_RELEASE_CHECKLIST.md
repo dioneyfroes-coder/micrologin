@@ -844,19 +844,82 @@ Itens recomendados para entrar na própria 1.0.0, mas abaixo dos bloqueadores ac
 
 ## 2.1 — Garantir `token_type` em todos os modos JWT
 
-**Arquivo:** `src/infrastructure/external-services/jwtTokenService.ts` e signers relacionados.
+**Arquivos:** `src/infrastructure/external-services/jwtTokenService.ts`,
+`jwtSigner.ts`.
 
-[ ] Fazer `access` e `refresh` serem semanticamente distintos também em HS256.
+### Vulnerabilidade confirmada — escalada por troca de header
 
-[ ] Não depender exclusivamente de segredo diferente para diferenciar os dois tipos.
+A separação entre access e refresh descansava **inteiramente** no fato de os
+segredos HS256 serem diferentes. Isso não é propriedade do token: é consequência
+de como o HS256 funciona — e o construtor recai para `JWT_SECRET` quando
+`JWT_REFRESH_SECRET` não vem, com warning e não com erro.
 
-[ ] Testar tentativa de usar refresh token onde access token é exigido.
+Nesse estado os dois signers assinam com o mesmo material, e a verificação de
+tipo era ignorada: o `early return` que existia só conferia a claim em ES256.
+Reproduzido antes da correção, com `JWT_REFRESH_SECRET` ausente:
 
-[ ] Testar tentativa inversa.
+```text
+refresh entregue como access  ->  ACEITOU. id=u1 token_type=refresh exp=+7d
+access entregue como refresh  ->  ACEITOU. token_type=access
+```
 
-[ ] Manter ES256 obrigatório em produção se essa é a política atual.
+Refresh token de 7 dias servindo como Bearer em rota de access, e access de 15
+minutos servindo onde refresh é exigido — sem comprometimento de chave, só com o
+token que o próprio dono recebeu.
 
-[ ] Garantir que testes de segurança principais usem o mesmo modo criptográfico de produção quando possível.
+### Implementação
+
+[x] `access` e `refresh` são semanticamente distintos **também em HS256**: a
+conferência da claim `token_type` deixou de ser condicional e passou a valer nos
+dois algoritmos, em `verifyAccessToken` e `verifyRefreshToken`.
+
+[x] A separação não depende mais de segredo diferente. `reliesOnTokenType` foi
+removido de `TokenSigner`: a propriedade descrevia o comportamento antigo e,
+deixada no lugar, seria armadilha para quem a lidasse.
+
+[x] Token sem a claim é recusado. O comentário anterior dizia que "tokens legados
+sem a claim continuam válidos" — o que é aceitar exatamente o estado que a
+separação por segredo deixou passar. Não há token legado a preservar na 1.0.0.
+
+[x] Testar refresh onde access é exigido, e access onde refresh é exigido, nos
+três modos: HS256 com segredo compartilhado, HS256 com segredos distintos e
+ES256.
+
+[x] ES256 obrigatório em produção: **mantido como estava**, e já provado por
+`tests/unit/security-config.test.ts` ("recusa HS256 em produção: quem verifica não
+pode assinar"). Não dupliquei a prova — exigiria remontar a config por env, e o
+teste duplicado seria o mais frágil dos dois.
+
+[x] Testes de segurança no modo de produção: `credential-theft.real-redis` e
+`auth-http.e2e` já usavam ES256 com par de chaves gerado no teste. Verificado por
+asserção sobre o código das suítes, porque um teste de segurança rodando em
+HS256 prova o caminho que a produção não usa.
+
+### Testes
+
+`tests/unit/jwt-token-type.test.ts` — 24 testes.
+
+O achado mais útil da escrita deles: **a barreira não é a mesma nos dois
+HS256**, e a diferença é justamente o que importa. Com segredos distintos, a
+recusa vem da assinatura (`invalid signature`) e a claim nem chega a ser
+consultada. Com segredo compartilhado, a assinatura passa — os dois tokens têm a
+mesma assinatura válida sob o mesmo segredo — e a claim é a única barreira.
+Meu primeiro teste afirmava que a recusa viria da claim nos três modos, e falhou
+nos dois modos onde ela não vem. Está registrado assim: a rejeição é a asserção, o
+motivo é testado onde importa.
+
+Há também o teste que forja um token **com o segredo correto e `token_type`
+trocado**: a assinatura valida, issuer e audience batem, e só a claim barra. É o
+que distingue "a claim é consultada" de "a assinatura é consultada".
+
+Mutações, todas detectadas:
+
+| Mutação | Reprovas |
+| --- | --- |
+| Volta o `early return` que só validava em ES256 | 10 |
+| `verifyAccessToken` sem conferir o tipo | 7 |
+| `verifyRefreshToken` sem conferir o tipo | 3 |
+| Refresh emitido sem a claim `token_type` | 6 |
 
 ---
 

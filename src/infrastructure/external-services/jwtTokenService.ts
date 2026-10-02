@@ -180,15 +180,22 @@ export class JWTTokenService implements TokenService {
   /**
    * Impede que um refresh token seja usado como access (e vice-versa).
    *
-   * Com HS256 isso é redundante: os segredos já são diferentes, e tokens
-   * legados sem a claim continuam válidos. Com ES256 é obrigatório — o par de
-   * chaves é o mesmo, e aceitar um refresh como access entregaria 7 dias de
-   * sessão a quem só tem o refresh, inclusive depois de um logout.
+   * A claim `token_type` é conferida **sempre**, nos dois algoritmos. A
+   * separação por segredo distinto não é uma propriedade do token: é um
+   * efeito colateral de como o HS256 funciona, e o construtor recai para
+   * `JWT_SECRET` quando `JWT_REFRESH_SECRET` não vem — com um warning, não com
+   * um erro. Nesse estado os dois signers assinam com o mesmo material, e sem
+   * esta conferência um refresh token de 7 dias é aceito como access, enquanto
+   * um access de 15 minutos é aceito onde refresh é exigido.
+   *
+   * Isso é escalada de privilégio por troca de header: não exige
+   * comprometimento de chave nenhuma, só o token que o próprio dono recebeu.
+   *
+   * Token sem a claim é recusado. Não há token legado a preservar na 1.0.0, e
+   * aceitar ausência seria aceitar exatamente o estado que a separação por
+   * segredo deixou passar.
    */
   private assertTokenType(payload: JwtIssuedPayload, expected: 'access' | 'refresh'): void {
-    if (!this.accessSigner.reliesOnTokenType) {
-      return;
-    }
     if (payload.token_type !== expected) {
       throw new Error(`Token não é do tipo ${expected}`);
     }
