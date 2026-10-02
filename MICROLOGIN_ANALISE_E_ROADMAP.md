@@ -376,6 +376,52 @@ em crash-loop no orçamento de medição) que **não foi verificado**.
 **Pronto quando:** `test:capacity` verde do começo ao fim (o que valida o fix
 do driver), e §3/§4 atualizadas com o contraste pré/pós-tuning.
 
+**Feito:** `npm run test:capacity` verde nos 12 casos, com o trap de teardown
+validado (o serviço volta ao `.env.prod` ao fim, e `workers_vistos = 1` em
+todas as linhas — nenhuma mediu um container errado).
+
+O contraste pré/pós está em `docs/metricas.md` §3, e ele tem uma armadilha que
+a tabela sozinha não denuncia: **os +30% de rps no `/login` e no `/register` não
+são do tuning.** A rodada de 09-30 media através do nginx; a de 10-01 mede o
+container do Node direto, porque o proxy exige certificado TLS e não sobe sem
+ele. O `/login` é limitado pelo argon2 e continua limitado pelo argon2.
+
+O que é comparável, porque não depende do proxy: o `/refresh` a 400 VUs cai de
+**2483 ms para 1066 ms de p99** e de 375 MB para 325 MB de RSS. É a única
+ganho real do teto de 1024, e confirma a §5 na matriz completa. O `/health` a
+400 VUs é o controle: 784.6 → 768.4 ms, dentro do ruído.
+
+A §4 (2 workers) continua marcada como pré-tuning e medida através do proxy,
+com a ressalva escrita na própria seção — comparar os rps dela com os da §3
+pós-tuning seria leitura errada.
+
+### Defeito encontrado na própria reexecução
+
+A primeira matriz pós-tuning **registrou zero coleta de GC em 3 dos 12 casos** —
+inclusive `/health` a 400 VUs, que tinha registrado 2186 na medição da P8. Não
+era zero: era perda.
+
+A causa é a rotação do log do container (`max-size: 10m`, `max-file: 3`). O
+driver marcava o começo da janela contando **quantas linhas o log já tinha** e
+depois cortava com `tail -n +N`. Numa corrida de 400 VUs o container escreve
+dezenas de milhares de linhas, o arquivo mais antigo sai do `docker logs`, e o
+offset apontava para uma linha que já não existia — a janela voltava vazia e a
+tabela publicava "zero coleta" onde houve milhares. É a pior classe de defeito
+numa métrica: some com o dado e ainda affirmative.
+
+Corrigido com carimbo de tempo (`docker logs --since`), que o daemon filtra por
+timestamp e não por posição, e a captura passou a avisar `NENHUMA linha de GC`
+em vez de aceitar o zero calado. Provado com mutação, na mesma sequência de
+casos que reproduz o defeito:
+
+| caso | com o bug (offset) | com o fix (timestamp) |
+| --- | --- | --- |
+| /health 100 VUs | 2302 | 2308 |
+| /health 200 VUs | 282 (rotacionou) | 2285 |
+| /health 400 VUs | **ZERO — perdido** | 1988 |
+
+A matriz final, reexecutada com o fix, capturou GC nos 12 casos.
+
 ## P10 — Papel desatualizado
 
 1. Cinco afirmações do roadmap v2 diziam "Docker CLI não está instalado neste

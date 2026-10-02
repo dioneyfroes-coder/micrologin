@@ -157,12 +157,20 @@ compose_plain() {
     docker compose --env-file "$ENV_FILE" -f "$COMPOSE_PROD" "$@"
 }
 
-# Quantas linhas o log do container ja tinha. Tirado antes da janela de carga,
-# porque `docker logs` entrega o log INTEIRO do container: sem o corte, as
-# coletadas do startup e das corridas anteriores entrariam na conta da corrida e
-# o total de pausa sairia inflado sem nenhum aviso.
-gc_log_offset() {
-    docker logs "$1" 2>&1 | wc -l | tr -d ' '
+# Instante de inicio da janela de carga, em UTC, no formato que o
+# `docker logs --since` entende.
+#
+# Por que carimbo de tempo e nao "quantas linhas o log ja tinha": o log do
+# container ROTACIONA (`logging.max-size: 10m`, `max-file: 3`, em
+# `docker-compose.prod.yml`). Numa corrida de 400 VUs o container escreve
+# dezenas de milhares de linhas e o arquivo mais antigo some de dentro do
+# `docker logs` -- o daemon devolve so o que ainda existe. O offset por
+# contagem apontava entao para uma linha que ja nao existia, e o recorte
+# devolvia vazio: a corrida era registrada como "zero coleta" quando o
+# processo tinha coletado milhares de vezes. Com `--since` quem filtra e o
+# daemon, por timestamp de cada linha, e nao por posicao.
+gc_window_since() {
+    date -u +%Y-%m-%dT%H:%M:%SZ
 }
 
 # Recorta o log da janela e deixa so as linhas de coleta. O arquivo fica em
@@ -171,13 +179,15 @@ gc_log_offset() {
 capture_gc_log() {
     local cid="$1" since="$2" out="$3"
     : > "$out"
-    docker logs "$cid" 2>&1 | tail -n "+$((since + 1))" \
+    docker logs --since "$since" "$cid" 2>&1 \
         | grep -aE 'ms: (Scavenge|Mark-sweep|Mark-Compact)' > "$out" || true
     if [ -s "$out" ]; then
         echo "$(wc -l < "$out" | tr -d ' ') coleta(s) em $(basename "$out")"
     else
         rm -f "$out"
-        echo "nenhuma linha de GC nesta janela (rode com --no-gc-trace para assumir que e o esperado)"
+        echo "NENHUMA linha de GC na janela desde $since -- trate como medicao perdida"
+        echo "  (com --trace-gc ligado, uma janela de 85 s TEM linhas; se chegou aqui,"
+        echo "   o log do container rotacionou ou o processo nao subiu com o comando esperado)"
     fi
 }
 
@@ -370,7 +380,7 @@ for workers in ${WORKERS_LIST//,/ }; do
             echo
             log_step "  workers=${workers} endpoint=/${endpoint} vus=${vus}"
 
-            gc_offset="$(gc_log_offset "$CID")"
+            gc_since="$(gc_window_since)"
             sample_memory "${OUT_DIR}/mem_${tag}.csv" &
             mem_pid=$!
             sample_docker_stats "${OUT_DIR}/stats_${tag}.csv" "$CID" &
@@ -400,7 +410,7 @@ for workers in ${WORKERS_LIST//,/ }; do
 
             kill "$mem_pid" "$stats_pid" 2>/dev/null || true
             wait "$mem_pid" "$stats_pid" 2>/dev/null || true
-            capture_gc_log "$CID" "$gc_offset" "${OUT_DIR}/gc_${tag}.log" | sed 's/^/   /'
+            capture_gc_log "$CID" "$gc_since" "${OUT_DIR}/gc_${tag}.log" | sed 's/^/   /'
 
             if [ -f "${OUT_DIR}/k6_${tag}.json" ]; then
                 tail -n 2 "$log_file" | head -1 | sed 's/^/   /'

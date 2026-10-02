@@ -386,6 +386,46 @@ esconde: (a) o `max_memory_restart: 500M` do PM2 está a 107 MB do pico, mas
 isso que a 3.2 não pode ser só "mais workers": tem que vir com teto de
 requisições em andamento e orçamento de heap por processo.
 
+### Reexecução pós-tuning (2026-10-01, Fase 3.2/P9)
+
+A matriz de 12 casos foi reexecutada depois do tuning de `inFlightLimit` (teto
+1024), do `--max-old-space-size=512` e do fix de capture de GC. O `test:capacity`
+rodou do começo ao fim, o que valida o fix do trap de teardown que ainda estava
+não commitado.
+
+**O ganho de vazão do `/login` e do `/register` NÃO é do tuning, e esta tabela
+seria uma leitura errada sem o aviso abaixo.** As duas rodadas não são
+comparáveis em vazão: a de 2026-09-30 media através do `auth-proxy` (nginx) e a
+de 2026-10-01 mede o container do Node direto, porque o proxy exige certificado
+TLS e não sobe sem ele. Os +30% de rps no `/login` e `/register` são a camada de
+nginx fora do caminho, não o teto de 1024 — o `/login` é limitado pelo argon2 e
+continua limitado pelo argon2.
+
+O que **é** comparável, porque não depende do proxy:
+
+| endpoint | VUs | p99 antes | p99 depois | RSS antes | RSS depois |
+| --- | --- | --- | --- | --- | --- |
+| /refresh | 400 | 2483.1 ms | **1065.9 ms** | 375.4 MB | 325.0 MB |
+| /login | 400 | 18851.4 ms | 14007.2 ms | 365.8 MB | 387.4 MB |
+| /register | 400 | 24229.5 ms | 15940.4 ms | 372.7 MB | 386.4 MB |
+| /health | 400 | 784.6 ms | 768.4 ms | 144.1 MB | 150.8 MB |
+
+**O `/refresh` a 400 VUs é o único ganho real do tuning, e ele é grande: p99 de
+2483 ms para 1066 ms (−57%), RSS de 375 MB para 325 MB.** É a confirmação
+medida da §5: o `/refresh` era o único endpoint que * perdia vazão* subindo a
+carga (592.6 → 485.2 rps), e o teto de 1024 tira o processo do joelho de fila.
+A §5 já tinha medido esse efeito isoladamente (485.15 → 543.83 rps, p99
+2483 → 993 ms); aqui aparece na matriz completa, com o resto dos endpoints junto.
+
+O `/health` a 400 VUs é o controle: p99 de 784.6 para 768.4 ms, dentro do
+ruído. O tuning não mexeu nele, como esperado — o `/health` nunca entrou no
+joelho de fila.
+
+Memória: o RSS de pico subiu de 134.7 para 141.2 MB no `/health` a 100 VUs e de
+365.8 para 387.4 MB no `/login` a 400 VUs, **mas a tabela de GC mostra que a
+heap pós-collect é a mesma** (52–66 MB em todos os 12 casos, §7). A diferença é
+memória nativa do argon2 e variação de página, não crescimento do processo.
+
 ### Conclusão da Fase 3.1
 
 Gargalo identificado com número: **22 logins/s por 2.0 CPU, limitado pelo
@@ -433,6 +473,13 @@ pior.
 Zero 5xx nas seis linhas. Detalhe honesto: em 2 workers o `/refresh` ainda
 degrada de 691.8 para 541.8 rps entre 200 e 400 VUs (−22%). Workers não
 resolveram o fila; só adiaram o joelho.
+
+**Ressalva de comparação:** esta matriz é de 2026-09-30, **pré-tuning**, e foi
+medida através do `auth-proxy`. A reexecução pós-tuning (§3) mediu o container
+do Node direto porque o proxy exige TLS, então **os rps desta tabela não são
+comparáveis com os da §3 pós-tuning**. O que se pode dizer é o que não mudou
+de propósito: 2 workers continua sendo o teto escolhido, e a §7 confirma que a
+memória por processo se sustenta com o teto de heap fixado.
 
 ### As três leituras
 
