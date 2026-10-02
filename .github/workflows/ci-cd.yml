@@ -204,13 +204,17 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    
+    permissions:
+      contents: read
+      # Upload de SARIF em evento `push` é rejeitado sem esta permissão.
+      security-events: write
+
     steps:
       - name: 📥 Checkout code
         uses: actions/checkout@v4
 
       - name: 🔍 Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           # A mesma referência que será implantada: o metadata-action publica a
           # tag `sha-<40 chars>`, então `:${{ github.sha }}` apontava para uma
@@ -219,8 +223,36 @@ jobs:
           format: 'sarif'
           output: 'trivy-results.sarif'
 
+          # Gate de verdade. `exit-code` não tem default no trivy-action: sem isto
+          # o passo terminava em 0 com a SARIF preenchida de vulnerabilidades, e
+          # o job `security` ficava verde mesmo com achados.
+          exit-code: '1'
+
+          # Política de imagem: HIGH e CRITICAL. Um pouco mais permissivo que o
+          # threshold `moderate` do `audit-ci` (1.6), e a assimetria é deliberada:
+          # o audit-ci governa dependências que o projeto escolhe e fixa em
+          # lockfile; aqui o alvo é a imagem inteira, incluindo pacotes da base
+          # que o projeto não controla, onde MEDIUM é ruído frequente. Nenhum dos
+          # dois é mais forte sozinho, e juntos não deixam buraco: dependência da
+          # aplicação continua coberta a partir de moderate.
+          severity: 'HIGH,CRITICAL'
+
+          # Bloquear por vulnerabilidade sem correção disponível não torna o
+          # software mais seguro: torna o gate ignorável. O achado continua no
+          # relatório SARIF; o que reprova é o que dá para corrigir.
+          ignore-unfixed: true
+
+          # `trivy-action@v0.36.0` embute o motor v0.70.0 por default. Deixar no
+          # default significa que vulnerabilidade disclosed depois do v0.70.0 não
+          # é detectada, e o gate passa em silêncio — o pior modo de falha para um
+          # gate. O próprio action tem input `version`; usá-lo evita trazer outro
+          # action para a cadeia de dependências.
+          version: 'v0.75.0'
+
       - name: 📤 Upload Trivy scan results
         uses: github/codeql-action/upload-sarif@v2
+        # `always()` é o que faz o relatório ser publicado justamente quando o
+        # gate reprova. Sem isto, um gate vermelho custaria também a evidência.
         if: always()
         with:
           sarif_file: 'trivy-results.sarif'

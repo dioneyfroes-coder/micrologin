@@ -372,6 +372,39 @@ O workflow [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml) executa:
 
 1. **code-quality**: ESLint, `npm audit` e `audit-ci` — **falham o pipeline** quando encontram erros reais (sem `continue-on-error`)
 
+#### Política de imagem (Trivy)
+
+O gate do Trivy é sobre a **imagem inteira**, não sobre o código: pacote da base,
+dependência da aplicação, o que estiver lá dentro. Três decisões, e o motivo de
+cada uma:
+
+**`exit-code: '1'`.** `exit-code` não tem default no `aquasecurity/trivy-action`.
+Sem ele, o passo termina em 0 com a SARIF cheia de achados, o job fica verde e
+o deploy segue, porque `deploy` depende de `security`. Relatório que ninguém lê
+e barreira que nunca barra levam ao mesmo resultado: imagem vulnerável em
+produção.
+
+**`severity: 'HIGH,CRITICAL'`.** Um pouco mais permissivo que o `moderate` do
+`audit-ci`, e a assimetria é deliberada. O `audit-ci` governa dependências que
+este projeto escolhe e fixa em lockfile — dá para assumir a escolha. O Trivy
+governa a imagem completa, incluindo pacotes da base que o projeto não controla,
+onde MEDIUM é ruído frequente. Nenhum dos dois é mais forte sozinho e, juntos,
+não deixam buraco: dependência da aplicação continua coberta a partir de
+moderate. O `severity` filtra o que o gate considera; o relatório SARIF continua
+completo.
+
+**`ignore-unfixed: true`.** Bloquear por vulnerabilidade sem correção
+disponível não torna o software mais seguro: torna o gate ignorável, porque não
+existe ação que a equipe possa tomar. O achado continua aparecendo no SARIF; o
+que reprova é o que dá para corrigir. Se um dia essa escolha não servir, é uma
+linha.
+
+Duas camadas de versão, porque pinar uma não pina a outra: `trivy-action` está
+em `@v0.36.0`, e o motor vai em `version: 'v0.75.0'` — o action embute `v0.70.0`
+por default, e deixar no default significa que vulnerabilidade disclosed depois
+do `v0.70.0` não é detectada e o gate passa em silêncio. O `version` é input do
+próprio action, então não entra um segundo action na cadeia de dependências.
+
 #### Política de dependências
 
 O gate é o `audit-ci`, com threshold **moderate**: reprova em moderate ou
@@ -401,7 +434,7 @@ Uma exceção futura precisa de advisory, motivo, escopo e validade — e o
 relatório direto do registry.
 2. **tests**: unitários rápidos, integração e upload de cobertura para Codecov
 3. **build**: build e push da imagem multi-plataforma (amd64/arm64) para GHCR
-4. **security**: scan de vulnerabilidades com Trivy, na mesma referência de imagem que será implantada (o digest)
+4. **security**: scan de vulnerabilidades com Trivy, na mesma referência de imagem que será implantada (o digest) — **reprova o pipeline** em HIGH/CRITICAL (`exit-code: '1'`, `ignore-unfixed: true`)
 5. **deploy**: deploy real por SSH, apenas em `workflow_dispatch` (ver abaixo). Sem servidor configurado, o job falha com mensagem explícita em vez de reportar sucesso
 
 ### Deployment

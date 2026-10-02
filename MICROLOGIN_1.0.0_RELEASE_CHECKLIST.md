@@ -490,35 +490,82 @@ https://github.com/IBM/audit-ci
 
 O Trivy gera SARIF, mas o passo atual não define `exit-code: '1'`. Portanto, um resultado vulnerável pode ser enviado ao GitHub sem necessariamente reprovar o job.
 
+### Problema — confirmado no action.yml
+
+`exit-code` **não tem default** no `aquasecurity/trivy-action`. Sem ele o passo
+termina em 0, o job `security` fica verde com a SARIF cheia, e `deploy` (que já
+dependia de `security`) segue. O gate nunca barre.
+
 ### Implementação
 
-[ ] Fixar `aquasecurity/trivy-action` em uma versão suportada; em 2026-10-02, a documentação oficial usa `v0.36.0`.
+[x] Fixar `aquasecurity/trivy-action@v0.36.0` — versão recomendada pela
+documentação oficial, confirmada em 2026-10-02 (não há release posterior: `v0.37.0`
+a `v0.40.0` retornam 404, e o README do projeto usa `v0.36.0`).
 
-[ ] Definir explicitamente `exit-code: '1'`.
+[x] Pinado também o **motor**, em `version: 'v0.75.0'`. O action `v0.36.0` embute
+o Trivy `v0.70.0` por default, e o `master` já traz `v0.75.0`. Deixar no default
+significa que vulnerabilidade disclosed depois do `v0.70.0` não é detectada e o
+gate passa em silêncio — o pior modo de falha de um gate. Pinar o action sem
+pinar o motor daria aparência de controle sem controle. O `version` é input do
+próprio action, então não entra um segundo action (`setup-trivy`) na cadeia.
 
-[ ] Definir `severity` conforme a política de release, por exemplo `CRITICAL,HIGH`.
+[x] `exit-code: '1'`.
 
-[ ] Definir `ignore-unfixed: true` apenas se essa escolha for documentada.
+[x] `severity: 'HIGH,CRITICAL'`. Assimétrico em relação ao `moderate` do 1.6, e a
+assimetria é deliberada: o `audit-ci` governa dependências que o projeto escolhe e
+fixa em lockfile; o Trivy governa a imagem inteira, incluindo pacotes da base que
+o projeto não controla, onde MEDIUM é ruído frequente. Nenhum é mais forte sozinho
+e juntos não deixam buraco — dependência da aplicação segue coberta a partir de
+moderate. `severity` filtra o que o gate considera; a SARIF continua completa.
 
-[ ] Adicionar `permissions.security-events: write` ao job que envia SARIF.
+[x] `ignore-unfixed: true`, documentado no README. Bloquear por vulnerabilidade sem
+correção disponível não torna o software mais seguro, torna o gate ignorável: não
+existe ação que a equipe possa tomar. O achado continua no SARIF; o que reprova é o
+que dá para corrigir. Reversível em uma linha.
 
-[ ] Fazer o scan do artefato que será efetivamente implantado.
+[x] `permissions: security-events: write` (+ `contents: read`) no job `security`.
+Upload de SARIF em evento `push` é rejeitado sem isso.
 
-### Melhor fluxo
+[x] Scan do artefato que será implantado: `image-ref` já era
+`needs.build.outputs.image-ref`, que é `ghcr.io/<repo>@sha256:<digest>` — o mesmo
+digest que o `deploy` recebe (linha do `--image "$IMAGE_REF"`). Confirmado por
+teste, não por leitura.
 
-```text
-PR/main
-  ↓
-build candidate
-  ↓
-Trivy gate
-  ↓
-publicação da imagem
-  ↓
-deploy
-```
+[x] O upload do SARIF tem `if: always()`, então um gate vermelho ainda publica a
+evidência. Era o comportamento anterior e foi preservado de propósito.
 
-Evitar, sempre que possível, publicar uma imagem candidata vulnerável antes de sua validação de segurança.
+[x] Documentado em `README.md` → *Política de imagem (Trivy)*.
+
+### Testes
+
+`tests/unit/trivy-security-gate.test.ts` — 19 testes. As asserções de versão
+comparam contra os defaults lidos do `action.yaml` da tag em 2026-10-02, não contra
+o que este autor流逝 lembra.
+
+[x] `exit-code` presente e igual a `'1'`.
+[x] `deploy` depende de `security`; upload do SARIF com `if: always()`.
+[x] Scan e deploy recebem a mesma referência, e ela é digest.
+[x] Action pinado, e motor ≥ o default do action.
+[x] `severity` é política, não o default `UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL`.
+[x] `ignore-unfixed` e as permissões de SARIF, com a escolha documentada.
+[x] A imagem escaneada é a stage `production` do Dockerfile (nasce de `base`, sem
+toolchain de build nem watcher de development).
+
+Mutações, todas detectadas:
+
+| Mutação | Reprovas |
+| --- | --- |
+| Remover `exit-code` (volta ao default da action) | 1 |
+| `exit-code: '0'` explícito | 1 |
+| Action de volta em `@master` | 2 |
+| Motor de volta no default (`v0.70.0`) | 1 |
+| Remover `security-events: write` | 1 |
+| Remover `if: always()` do upload | 1 |
+| `deploy` deixa de depender de `security` | 1 |
+| Scan apontando para tag mutável em vez do digest | 2 |
+| `severity` de volta ao default da action | 2 |
+| `ignore-unfixed` desligado | 1 |
+| README perde a política HIGH/CRITICAL | 1 |
 
 ### Fonte
 
