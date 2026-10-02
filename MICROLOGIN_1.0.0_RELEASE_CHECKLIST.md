@@ -842,6 +842,50 @@ Itens recomendados para entrar na própria 1.0.0, mas abaixo dos bloqueadores ac
 
 ---
 
+
+### Revisão pós-commit — três defeitos que os testes não pegavam
+
+O pipeline foi commitado como encerrado e não estava. Três defeitos, nenhum
+detectável pelos testes existentes, porque todos eles são sobre a **estrutura**
+do workflow — o que um step enxerga do anterior — e os testes executam cada
+`run:` com as variáveis que precisam injetadas à mão.
+
+**1. `$TAG` não existia nos steps que o usavam.** A tag anterior e o checkout
+da árvore viviam em steps seguintes ao que resolvia a tag. Cada `run:` é um
+shell novo: variável de shell não atravessa a fronteira. Com `set -u`, o job
+morria na primeira linha. Nos testes passava, porque `runScript` recebia
+`TAG: 'v1.0.0'` na mão. Resolvido juntando tudo no step que já tem a tag — não
+exportando a variável, que é o remendo que deixa a mesma armadilha para quem
+crescer o arquivo depois.
+
+**2. Os gates rodavam no branch, não na tag.** `quality`, `tests`, `image` e
+`release` faziam `actions/checkout@v4` sem `ref:`. No push funciona por
+acidente — o ref do evento já é a tag. No dispatch o ref é o branch escolhido
+na UI, e aí um gate verde não diz nada sobre a versão publicada. Todos agora
+fazem `ref: ${{ needs.validate.outputs.tag }}`. Junto disso, a checagem de
+`package.json` foi movida para **depois** do checkout da tag: antes ela lia a
+versão do branch, que é a fonte errada no dispatch.
+
+**3. O digest não chegava ao scan.** O step escrevia `digest=...` no
+`GITHUB_OUTPUT`, mas o job não declarava `outputs:`. Output de step morre no
+fim do step: `needs.image.outputs.digest` chegava vazio no `security` e no
+`release`. O Trivy escanearia `ghcr.io/repo@` e o resumo da release mostraria
+digest em branco — sem erro visível, só um gate que passa por cima de ar.
+
+`tests/unit/release-pipeline.test.ts` — 32 → **43 testes**. Os novos olham a
+estrutura, não só a execução: nenhum step referencia variável que ele mesmo não
+define, todo job tag-dependente declara o `ref:`, e o job `image` declara o
+output de digest.
+
+Mutações, todas detectadas:
+
+| Mutação | Reprovas |
+| --- | --- |
+| Checkout sem `ref:` (volta ao ref do evento) | 4 |
+| Job `image` sem `outputs:` de digest | 1 |
+| Tag anterior de volta para um step sem `env:` | 2 |
+| `package.json` lido antes do checkout da tag | 2 |
+
 ## 2.1 — Garantir `token_type` em todos os modos JWT
 
 **Arquivos:** `src/infrastructure/external-services/jwtTokenService.ts`,

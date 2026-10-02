@@ -73,8 +73,42 @@ const sh = (command: string, cwd: string, env: NodeJS.ProcessEnv = {}): string =
   execFileSync('bash', ['-c', command], { cwd, env: { ...process.env, ...env }, encoding: 'utf8' });
 
 const RESOLVE_SCRIPT = scriptOf('validate', '🏷️ Resolve and validate tag');
-const PREVIOUS_SCRIPT = scriptOf('validate', '🔎 Resolve previous tag');
 const IMAGE_SCRIPT = scriptOf('image', '🐳 Build and push image');
+
+/**
+ * Os três defeitos abaixo eram invisíveis para os testes deste arquivo, e
+ * nenhum deles apareceria em nenhum run local: os testes executam o `run:` com
+ * as variáveis que precisam injetadas na mão. O que faltava era olhar a
+ * *estrutura* do workflow — o que um step enxerga do step anterior.
+ */
+
+/** Nomes dos jobs que precisam da árvore da tag, e não do ref do evento. */
+const TAG_DEPENDENT_JOBS = ['quality', 'tests', 'image', 'release'];
+
+const blockOf = (job: string): string => {
+  const start = WORKFLOW.indexOf(`\n  ${job}:`);
+  if (start === -1) {
+    throw new Error(`job não encontrado: ${job}`);
+  }
+  const end = WORKFLOW.indexOf('\n  # ====', start);
+  return WORKFLOW.slice(start, end === -1 ? undefined : end);
+};
+
+/** Todo `run:` do job, com o `env:` que o step declara. */
+const stepsOf = (block: string): { name: string; env: string; with: string; run: string }[] =>
+  block
+    .split('\n      - name: ')
+    .slice(1)
+    .map(chunk => ({
+      name: chunk.slice(0, chunk.indexOf('\n')).trim(),
+      // `env:` e `with:` são blocos YAML sob indentação fixa. Sem âncora de
+      // linha eles casariam também com o `env:` de outro step.
+      env: (chunk.match(/\n {8}env:\n((?: {10}.+\n)+)/) as RegExpMatchArray)?.[1] ?? '',
+      with: (chunk.match(/\n {8}with:\n((?: {10}.+\n)+)/) as RegExpMatchArray)?.[1] ?? '',
+      run: chunk.includes('run: |')
+        ? chunk.slice(chunk.indexOf('run: |') + 8).replace(/^ {10}/gm, '')
+        : ''
+    }));
 
 /**
  * Repositório de teste: `v0.9.0` numa tag antiga e `v1.0.0` na `main`, com
@@ -280,16 +314,25 @@ describe('release: o changelog tem range', () => {
   });
 
   it('o script do workflow resolve v0.9.0 para a tag v1.0.0', () => {
-    const summary = join(repoDir, 'prev_summary');
-    rmSync(summary, { force: true });
+    // Roda o step completo, com o mesmo env que o GitHub monta, em vez de um
+    // step isolado com $TAG injetado na mão. A versão anterior deste teste
+    // fazia exatamente essa injeção — e por isso nunca percebeu que o step
+    // seguinte não tinha como saber a tag.
+    const outputFile = join(repoDir, 'prev_output');
+    const summaryFile = join(repoDir, 'prev_summary');
+    rmSync(outputFile, { force: true });
+    rmSync(summaryFile, { force: true });
 
-    runScript(PREVIOUS_SCRIPT, repoDir, {
-      TAG: 'v1.0.0',
-      GITHUB_STEP_SUMMARY: summary,
-      GITHUB_OUTPUT: join(repoDir, 'prev_output')
+    runScript(RESOLVE_SCRIPT, repoDir, {
+      EVENT_NAME: 'workflow_dispatch',
+      DISPATCH_TAG: 'v1.0.0',
+      PUSH_TAG: 'main',
+      GITHUB_STEP_SUMMARY: summaryFile,
+      GITHUB_OUTPUT: outputFile
     });
 
-    expect(readFileSync(summary, 'utf8')).toMatch(/v0\.9\.0/);
+    expect(readFileSync(summaryFile, 'utf8')).toMatch(/v0\.9\.0/);
+    expect(readFileSync(outputFile, 'utf8')).toMatch(/^previous=v0\.9\.0$/m);
   });
 
   it('o range da release não está vazio', () => {
@@ -450,5 +493,111 @@ describe('release: os gates do item 1.9 estão todos lá', () => {
     expect(WORKFLOW).toMatch(/contents:\s*write/);
     expect(WORKFLOW).toMatch(/packages:\s*write/);
     expect(WORKFLOW).toMatch(/security-events:\s*write/);
+  });
+});
+
+describe('release: o workflow sobrevive à fronteira entre steps', () => {
+  // Cada `run:` é um shell novo. Variável de shell não sobrevive, e `set -u`
+  // transforma a references esquecida em job vermelho.
+  it('nenhum step usa uma variável que ele mesmo não define', () => {
+    const offenders: string[] = [];
+
+    for (const job of ['validate', 'quality', 'tests', 'image', 'release', 'security']) {
+      for (const step of stepsOf(blockOf(job))) {
+        if (!step.run.includes('set -u')) {
+          continue;
+        }
+
+        // Variáveis que o próprio step precisa ter em mãos para funcionar.
+        const used = [...step.run.matchAll(/\b(TAG|PREV|PREVIOUS|VERSION|IS_PRERELEASE|DIGEST|SHA)\b/g)]
+          .map(m => m[1]);
+        const defined = new Set(
+          [...step.env.matchAll(/^\s{10}([A-Z_]+):/gm)].map(m => m[1] as string)
+        );
+        for (const name of new Set(used)) {
+          if (defined.has(name)) {
+            continue;
+          }
+          // A diferença é checada em outro step do mesmo job, e lá ela é
+          // exportada para o GITHUB_OUTPUT.
+          if (step.run.includes(`echo "${name}=`) || step.run.includes(`echo "${name}`)) {
+            continue;
+          }
+          offenders.push(`${job} / ${step.name}: $${name}`);
+        }
+      }
+    }
+
+    expect(offenders).toEqual([]);
+  });
+
+  it('a tag anterior é resolvida dentro do step que já tem a tag', () => {
+    // A versão anterior tinha um step "🔎 Resolve previous tag" que usava $TAG
+    // sem declarar em env:. Nos testes passava (injetavam TAG), no GitHub real
+    // era reprovação garantida.
+    const validate = blockOf('validate');
+    expect(validate).not.toContain('Resolve previous tag');
+    expect(validate).toContain('previous=$PREV');
+  });
+
+  it('a checagem de package.json acontece depois do checkout da tag', () => {
+    // Antes: o dispatch validava a versão do branch, e só depois trocava para a
+    // tag. Uma tag v9.9.9 num branch com package.json 9.9.9 passaria, e a
+    // release sairia com a árvore de outro commit.
+    const resolve = RESOLVE_SCRIPT;
+    const checkoutAt = resolve.indexOf('git checkout');
+    const versionAt = resolve.indexOf('require(\'./package.json\').version');
+
+    expect(checkoutAt).toBeGreaterThan(-1);
+    expect(versionAt).toBeGreaterThan(checkoutAt);
+  });
+});
+
+describe('release: os gates e o build rodam sobre a tag', () => {
+  it.each(TAG_DEPENDENT_JOBS)('%s faz checkout da tag validada, não do ref do evento', job => {
+    const block = blockOf(job);
+    const checkout = stepsOf(block).find(s => s.name.includes('Checkout'));
+
+    expect(checkout).toBeDefined();
+    // O `ref:` é do `with:` do action, não do `env:` do run — e é ele que decide
+    // de qual árvore o job roda.
+    expect(checkout!.with).toContain('ref: ${{ needs.validate.outputs.tag }}');
+  });
+
+  it('nenhum gate depende do checkout padrão do action', () => {
+    // Um `uses: actions/checkout@v4` sem `ref:` no push funciona por acidente
+    // (o ref do evento já é a tag) e falha no dispatch.
+    for (const job of TAG_DEPENDENT_JOBS) {
+      const uses = [...blockOf(job).matchAll(/uses: actions\/checkout@\S+/g)];
+      expect(uses.length).toBeGreaterThan(0);
+      expect(blockOf(job)).not.toMatch(/actions\/checkout@\S+\n(?!\s+with:)/);
+    }
+  });
+});
+
+describe('release: o digest da imagem chega ao scan e ao resumo', () => {
+  it('o job image declara o digest como output de job', () => {
+    // Sem isto, `steps.build.outputs.digest` morre no fim do step e
+    // `needs.image.outputs.digest` chega vazio: o Trivy escaneava `repo@` e o
+    // resumo da release mostrava digest em branco. Nenhum teste pegou.
+    const image = blockOf('image');
+    const outputs = image.slice(0, image.indexOf('\n    steps:'));
+
+    expect(outputs).toContain('outputs:');
+    expect(outputs).toContain('digest: ${{ steps.build.outputs.digest }}');
+  });
+
+  it('o scan de segurança consome o digest do job image', () => {
+    expect(blockOf('security')).toContain('needs.image.outputs.digest');
+    expect(blockOf('security')).toMatch(/image-ref:.*@\$\{\{ needs\.image\.outputs\.digest \}\}/);
+  });
+
+  it('o resumo da release mostra o digest, não uma interpolação de template', () => {
+    // Dentro de um `run:` o `${{ }}` é resolvido pelo runner, mas entre aspas
+    // simples num heredoc-ish ele vira texto literal. Aqui é interpolado no
+    // env, que é o que funciona.
+    const release = blockOf('release');
+    expect(release).toContain('DIGEST: ${{ needs.image.outputs.digest }}');
+    expect(release).toMatch(/echo "- digest: \\`\$DIGEST\\`"/);
   });
 });

@@ -40,7 +40,7 @@ jobs:
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
       version: ${{ steps.resolve.outputs.version }}
-      previous-tag: ${{ steps.previous.outputs.previous }}
+      previous-tag: ${{ steps.resolve.outputs.previous }}
       is-prerelease: ${{ steps.resolve.outputs.is_prerelease }}
 
     steps:
@@ -55,6 +55,11 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           DISPATCH_TAG: ${{ inputs.tag }}
           PUSH_TAG: ${{ github.ref_name }}
+        # Tudo numa única etapa de propósito: cada `run:` é um shell novo, e
+        # variável de shell não atravessa a fronteira entre steps. A versão
+        # anterior da tag anterior vivia num step seguinte que usava `$TAG` sem
+        # defini-lo no `env:` — os testes passavam porque injetavam `TAG` na
+        # mão, e no GitHub real o `set -u` matava o job.
         run: |
           set -euo pipefail
 
@@ -82,6 +87,11 @@ jobs:
             exit 1
           fi
 
+          # No dispatch o checkout traz o branch, não a tag. Trocar aqui, antes
+          # de ler o package.json, é o que faz a checagem de versão validar a
+          # árvore da tag: ler antes devolveria a versão do branch.
+          git checkout --quiet "$TAG"
+
           # package.json é a segunda fonte de verdade; as duas têm que concordar.
           PKG=$(node -p "require('./package.json').version")
           if [ "${TAG#v}" != "$PKG" ]; then
@@ -103,30 +113,18 @@ jobs:
             IS_PRERELEASE=true
           fi
 
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
-          echo "is_prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
-          echo "✅ Tag '$TAG' válida (versão ${TAG#v}, prerelease=$IS_PRERELEASE)"
-
-      - name: 🔎 Resolve previous tag
-        id: previous
-        run: |
-          set -euo pipefail
           # `git describe --tags --abbrev=0 HEAD` devolveria a própria tag da
           # release, porque HEAD é a tag — o range viraria vazio e o changelog
           # sairia em branco. O `^` aponta para o commit pai, que é onde a tag
           # anterior vive.
           PREV=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || echo "")
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
           echo "previous=$PREV" >> "$GITHUB_OUTPUT"
           echo "previous_tag=${PREV:-<primeira versão deste repositório>}" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: 🧾 Use the tagged tree
-        run: |
-          set -euo pipefail
-          # No dispatch o checkout traz o branch, não a tag. Todos os gates e o
-          # build precisam rodar sobre a árvore da tag.
-          git checkout --quiet "$TAG"
-          echo "HEAD após checkout: $(git describe --tags --exact-match 2>/dev/null || git rev-parse --short HEAD)"
+          echo "✅ Tag '$TAG' válida (versão ${TAG#v}, prerelease=$IS_PRERELEASE, anterior=${PREV:-nenhuma})"
 
   # ========================
   # GATES DE QUALIDADE E SEGURANÇA
@@ -139,9 +137,13 @@ jobs:
       contents: read
 
     steps:
-      - name: 📥 Checkout code
+      - name: 📥 Checkout the tagged tree
         uses: actions/checkout@v4
         with:
+          # Gates rodam sobre a tag validada, não sobre o ref do evento: no
+          # dispatch o ref é o branch escolhido na UI, e um gate verde ali não
+          # diz nada sobre a versão que está sendo publicada.
+          ref: ${{ needs.validate.outputs.tag }}
           fetch-depth: 0
 
       - name: 🟢 Setup Node.js
@@ -183,8 +185,10 @@ jobs:
     needs: validate
 
     steps:
-      - name: 📥 Checkout code
+      - name: 📥 Checkout the tagged tree
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
 
       - name: 🟢 Setup Node.js
         uses: actions/setup-node@v4
@@ -218,10 +222,19 @@ jobs:
     permissions:
       contents: read
       packages: write
+    # Output do job é o que o `security` e o `release` consomem. Sem isto o
+    # `steps.build.outputs.digest` morre no fim do step e
+    # `needs.image.outputs.digest` chega vazio lá embaixo — o Trivy estaria
+    # escaneando `repo@` e o resumo da release mostraria digest em branco.
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      image: ${{ steps.build.outputs.image }}
 
     steps:
-      - name: 📥 Checkout code
+      - name: 📥 Checkout the tagged tree
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
 
       - name: 🐳 Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -326,9 +339,10 @@ jobs:
       contents: write
 
     steps:
-      - name: 📥 Checkout code
+      - name: 📥 Checkout the tagged tree
         uses: actions/checkout@v4
         with:
+          ref: ${{ needs.validate.outputs.tag }}
           fetch-depth: 0
 
       - name: 📝 Generate changelog
