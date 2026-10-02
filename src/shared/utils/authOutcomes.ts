@@ -94,6 +94,9 @@ const OUTCOME_BY_CODE: Readonly<Record<AuthEventKind, Readonly<Record<string, Au
     REFRESH_TOKEN_REUSED: 'reused',
     REFRESH_TOKEN_INVALID: 'invalid',
     REFRESH_TOKEN_EXPIRED: 'invalid',
+    // Token criptograficamente válido de uma conta que não existe mais (ou foi
+    // excluída). Do ponto de vista do cliente é credencial que não autentica.
+    USER_NOT_FOUND: 'invalid',
     // Redis fora em fail-closed: a sessão não foi encerrada. "unavailable"
     // separa "não deu para revogar" de "token ruim".
     REVOCATION_UNAVAILABLE: 'unavailable'
@@ -111,6 +114,14 @@ const OUTCOME_BY_CODE: Readonly<Record<AuthEventKind, Readonly<Record<string, Au
     // 'rejected': recusar por política contra um usuário que não fez nada de
     // errado esconde um defeito de infraestrutura.
     PASSWORD_HISTORY_UNAVAILABLE: 'unavailable',
+    // Revogação indisponível (Redis fora do ar, fail-closed). A troca NÃO
+    // aconteceu: recusar por política aqui esconderia que a culpa foi da
+    // infraestrutura.
+    REVOCATION_UNAVAILABLE: 'unavailable',
+    // Revogação confirmada e gravação da nova senha falhou. As sessões foram
+    // encerradas e a senha antiga continua valendo — estado seguro, mas que o
+    // usuário precisa saber para refazer a troca.
+    PASSWORD_CHANGE_NOT_PERSISTED: 'unavailable',
     // Semáforo do argon2id saturado no momento de gravar o novo hash.
     ARGON2_OVERLOADED: 'unavailable'
   }

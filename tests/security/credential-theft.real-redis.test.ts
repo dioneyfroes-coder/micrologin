@@ -8,11 +8,25 @@ import mongoose from 'mongoose';
 import { decodeProtectedHeader } from 'jose';
 import { createClient } from 'redis';
 import type { RedisClientType } from 'redis';
-import { AuthService } from '../../src/domain/index.js';
+import { AuthService, User } from '../../src/domain/index.js';
 import { JWTTokenService } from '../../src/infrastructure/external-services/jwtTokenService.js';
 import { disconnectRedis } from '../../src/infrastructure/cache/connection.js';
 import type { Server } from 'node:http';
 import { registerSurvivalScenarios, type SurvivalHarness } from './credential-theft.scenarios.js';
+
+/**
+ * Repositório que responde "o usuário existe" para qualquer id.
+ *
+ * Desde a 1.0.0 a renovação confere a existência do usuário antes de emitir o
+ * par novo: um refresh token criptograficamente válido não é prova de que a
+ * conta continua de pé. Um repositório vazio (`{}`) faria essa checagem estourar
+ * uma exceção e o cenário falharia com `REFRESH_TOKEN_INVALID` — uma falha que
+ * parece de token, mas é do harness. Estes cenários testam o comportamento de
+ * sessão, então o que importa é que a conta exista.
+ */
+const existingUsers = {
+  findById: async(id: string) => new User(id, 'usuario', 'hash-da-senha', new Date('2025-01-01'), new Date('2025-01-01'))
+};
 
 /**
  * T1–T6 contra o Redis do compose, na assinatura de produção (ES256).
@@ -92,6 +106,7 @@ describe('credential theft survival - Redis real + ES256', () => {
   let keysDir: string | null = null;
   let keyMaterial: { kid: string; privateKeyPem: string; publicKeyPem: string };
 
+
   const makeHarness = ({
     autoRevokeOnRefreshReuse = true
   }: {
@@ -110,7 +125,7 @@ describe('credential theft survival - Redis real + ES256', () => {
       keyMaterial
     );
     const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
-    const authService = new AuthService({}, {}, tokenService, logger, autoRevokeOnRefreshReuse);
+    const authService = new AuthService(existingUsers, {}, tokenService, logger, autoRevokeOnRefreshReuse);
     return { authService, tokenService, logger, secret: '', es256: keyMaterial };
   };
 

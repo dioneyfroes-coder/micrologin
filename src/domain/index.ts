@@ -397,7 +397,15 @@ export class AuthService {
 
     } catch (error) {
       this.logger.error('Erro no registro', error);
-      return { success: false, error: domainFailureMessage(error, 'Não foi possível registrar o usuário') };
+      // O código viaja porque a fronteira HTTP precisa distinguir "não deu
+      // conta agora" (saturação do argon2id) de "não foi possível criar a
+      // conta". Sem ele, saturação vira 400 e o cliente leva o erro como se
+      // fosse a requisição.
+      return {
+        success: false,
+        error: domainFailureMessage(error, 'Não foi possível registrar o usuário'),
+        code: (error as { code?: string }).code
+      };
     }
   }
 
@@ -620,18 +628,66 @@ export class AuthService {
       }
 
       const newHashedPassword = await this.crypto.hash(newPassword);
-      user.changePassword(newHashedPassword);
-      const savedUser = await this.userRepository.save(user);
 
-      // Encerrar todas as sessões: a senha trocada invalida o que já foi emitido
-      await this.tokenGenerator.revokeUserTokens(userId);
+      /**
+       * ORDEM É UMA EXIGÊNCIA DE SEGURANÇA, NÃO ESTILO.
+       *
+       * Revogar ANTES de gravar é o que impede o estado que não pode ser
+       * desfeito: senha nova persistida + revogação que falha depois. Nesse
+       * estado o usuário acha que trocou a senha, todas as sessões antigas
+       * continuam válidas até expirarem, e nada no sistema registra que houve
+       * um problema. Na ordem antiga (gravar, depois revogar) a falha da
+       * revogação era justamente o caso silencioso mais perigoso possível —
+       * e `revokeUserTokens` devolvia `boolean` que ninguém checava.
+       *
+       * A ordem inversa tem um custo real e conhecido: se a revogação der certo
+       * e o `save()` falhar, o usuário fica com a senha antiga e sem sessão
+       * nenhuma. Isso é seguro — ninguém entra sem a senha antiga, e o
+       * contorno é refazer a troca. O estado inverso (senha trocada, sessão
+       * viva) não tem contorno nenhum. Trocar disponibilidade por integridade
+       * é a escolha correta aqui, e o cenário é registrado logo abaixo.
+       */
+      const revocation = await this.revokeUserTokens(userId);
+      if (!revocation.success) {
+        // Infraestrutura, não erro do usuário: a senha NÃO é alterada. O
+        // código decide entre 503 e uma resposta de credencial, e dizer 401
+        // aqui seria mentir sobre a causa.
+        this.logger.error('Troca de senha recusada: revogação não confirmada; senha inalterada', {
+          userId,
+          code: revocation.code ?? 'REVOCATION_FAILED'
+        });
+        return {
+          success: false,
+          error: revocation.code === REVOCATION_UNAVAILABLE_CODE
+            ? 'Não foi possível encerrar as sessões agora; a senha não foi alterada'
+            : 'Não foi possível encerrar as sessões; a senha não foi alterada',
+          code: revocation.code ?? REVOCATION_UNAVAILABLE_CODE
+        };
+      }
 
-      this.logger.info('Senha alterada; sessões do usuário revogadas', { userId: savedUser.id });
+      try {
+        user.changePassword(newHashedPassword);
+        const savedUser = await this.userRepository.save(user);
 
-      return {
-        success: true,
-        user: savedUser.toSafeObject()
-      };
+        this.logger.info('Senha alterada; sessões do usuário revogadas', { userId: savedUser.id });
+
+        return {
+          success: true,
+          user: savedUser.toSafeObject()
+        };
+      } catch (saveError) {
+        // Estado seguro por construção: as sessões JÁ foram encerradas, então
+        // nenhum token emitido antes desta chamada continua valendo. O que
+        // resta é a senha antiga valendo — que é o estado normal de uma troca
+        // que não chegou a acontecer. Registrado porque é o preço, assumido e
+        // conhecido, da ordem escolhida acima.
+        this.logger.error('Troca de senha falhou ao gravar; sessões encerradas e senha antiga preservada', saveError);
+        return {
+          success: false,
+          error: 'As sessões foram encerradas, mas a nova senha não pôde ser salva. Tente novamente.',
+          code: 'PASSWORD_CHANGE_NOT_PERSISTED'
+        };
+      }
 
     } catch (error) {
       this.logger.error('Erro ao trocar senha', error);
@@ -641,17 +697,57 @@ export class AuthService {
 
   /**
    * Caso de uso: Deletar usuário
+   *
+   * ORDEM É UMA EXIGÊNCIA DE SEGURANÇA, não estilo: revogar ANTES de excluir.
+   *
+   * Na ordem antiga (excluir, depois revogar), uma falha de revogação deixava
+   * tokens de um usuário que não existe mais continuarem válidos — um access
+   * token continua passando pelo middleware enquanto não expirar, e
+   * qualquer verificação que não dependa de o usuário existir na base aceitaria
+   * a credencial de uma conta apagada. Um access token é curto (15 min), mas
+   * refresh tokens vivem 7 dias, e era a revogação que deveria cortá-los.
+   *
+   * A ordem inversa custa uma janela pequena e conhecida: se a revogação der
+   * certo e o `delete()` falhar, o usuário continua existindo com as sessões já
+   * encerradas. Isso é seguro e reversível — ele refaz o login. O estado
+   * inverso (conta apagada, sessão viva) não tem reversão.
    */
   async deleteUser(userId: string): Promise<ServiceResult> {
     try {
       const user = await this.userRepository.findById(userId);
       if (!user) {
-        return { success: false, error: 'Usuário não encontrado' };
+        return { success: false, error: 'Usuário não encontrado', code: 'USER_NOT_FOUND' };
       }
 
-      await this.userRepository.delete(userId);
+      const revocation = await this.revokeUserTokens(userId);
+      if (!revocation.success) {
+        this.logger.error('Exclusão recusada: revogação não confirmada; usuário preservado', {
+          userId,
+          code: revocation.code ?? 'REVOCATION_FAILED'
+        });
+        return {
+          success: false,
+          error: 'Não foi possível encerrar as sessões; a conta não foi excluída',
+          code: revocation.code ?? REVOCATION_UNAVAILABLE_CODE
+        };
+      }
 
-      this.logger.info('Usuário deletado', { userId });
+      try {
+        await this.userRepository.delete(userId);
+      } catch (deleteError) {
+        // Estado seguro: as sessões foram encerradas, então nenhum token desta
+        // conta funciona. O que resta é um usuário sem sessão ativa, que pode
+        // refazer o login. Registrado porque é o preço, assumido e conhecido,
+        // da ordem escolhida.
+        this.logger.error('Exclusão falhou ao remover o usuário; sessões encerradas e conta preservada', deleteError);
+        return {
+          success: false,
+          error: 'As sessões foram encerradas, mas a conta não pôde ser excluída. Tente novamente.',
+          code: 'USER_DELETE_NOT_PERSISTED'
+        };
+      }
+
+      this.logger.info('Usuário deletado; sessões revogadas', { userId });
 
       return { success: true };
 
@@ -663,11 +759,49 @@ export class AuthService {
 
   /**
    * Caso de uso: Renovar par de tokens usando refresh token (com rotação)
+   *
+   * A existência do usuário é conferida ANTES de emitir o novo par, e não
+   * depois. Um refresh token válido criptograficamente não é prova de que a
+   * conta existe: entre a emissão e a renovação, o usuário pode ter sido
+   * excluído. Sem esta checagem, um par emitido para um usuário apagado
+   * sobreviveria a todas as verificações seguintes — o token é assinado, o
+   * `sv` bate, a revogação em massa foi confirmada na exclusão, e mesmo assim
+   * ele continuaria sendo aceito por 7 dias.
+   *
+   * "Existe" é a única condição verificável aqui: o modelo de usuário não tem
+   * conceito de conta desativada (ver `models/User.ts`), e inventar um在这里
+   * seria uma funcionalidade nova, não uma correção de segurança.
    */
   async refreshUserTokens(refreshToken: string): Promise<ServiceResult> {
     try {
       if (!this.tokenGenerator.refreshTokens) {
         throw new Error('TokenService não implementa refreshTokens');
+      }
+
+      // Checagem antes da rotação: girar o token de um usuário inexistente
+      // gastaria a única credencial de renovação que ele tinha, para então
+      // recusarmos a emissão.
+      //
+      // `verifyRefreshToken` é opcional na porta para os duplos de teste
+      // históricos; sem ele, a checagem é simplesmente pulada e o próximo par é
+      // emitido sem confirmar a existência do usuário.
+      const subject = await this.tokenGenerator.verifyRefreshToken?.(refreshToken) as { id?: string } | undefined;
+      if (subject?.id) {
+        const existing = await this.userRepository.findById(subject.id);
+        if (!existing) {
+          this.logger.warn('Refresh token de usuário inexistente; renovação recusada', { userId: subject.id });
+
+          // Revoga o token mesmo assim: é a única coisa que ainda dá para fazer
+          // por essa sessão, e deixá-lo permitir nova tentativa seria transformar
+          // um token órfão em um loop de renovações.
+          await this.revokeUserTokens(subject.id);
+
+          return {
+            success: false,
+            error: 'Não foi possível renovar os tokens',
+            code: 'USER_NOT_FOUND'
+          };
+        }
       }
 
       const tokens = await this.tokenGenerator.refreshTokens(refreshToken);

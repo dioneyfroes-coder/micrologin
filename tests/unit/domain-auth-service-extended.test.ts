@@ -127,18 +127,26 @@ describe('AuthService - perfil do usuário', () => {
     expect(user.hashedPassword).toBe(originalHash);
   });
 
-  it('deleta usuário com sucesso', async() => {
+  it('deleta usuário com sucesso, revogando antes de remover', async() => {
     const logger = makeLogger();
     const repo = {
       findById: jest.fn().mockResolvedValue(makeUser()),
       delete: jest.fn().mockResolvedValue(undefined)
     };
+    const tokens = { revokeUserTokens: jest.fn().mockResolvedValue(true) };
 
-    const service = new AuthService(repo, {}, {}, logger);
+    const service = new AuthService(repo, {}, tokens, logger);
     const result = await service.deleteUser('u-1');
 
     expect(result.success).toBe(true);
+    expect(tokens.revokeUserTokens).toHaveBeenCalledWith('u-1');
     expect(repo.delete).toHaveBeenCalledWith('u-1');
+
+    // A ordem é a garantia: revogar depois de apagar deixaria, se a revogação
+    // falhasse, os tokens de uma conta inexistente vivos.
+    const revokeOrder = tokens.revokeUserTokens.mock.invocationCallOrder[0];
+    const deleteOrder = repo.delete.mock.invocationCallOrder[0];
+    expect(revokeOrder).toBeLessThan(deleteOrder);
   });
 
   it('falha ao deletar usuário inexistente', async() => {

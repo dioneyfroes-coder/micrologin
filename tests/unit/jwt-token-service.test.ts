@@ -244,7 +244,11 @@ describe('JWTTokenService - rotação de refresh token', () => {
     const redis = makeRedisClient();
     const tokenService = new JWTTokenService(SECRET, SECRET, redis as never);
     const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
-    const authService = new AuthService({}, {}, tokenService, logger);
+    // O repositório responde que o usuário existe: desde a 1.0.0 a renovação
+    // confere a existência antes de emitir o par novo, então um repositório
+    // vazio faria todo teste de rotação cair na checagem de vida.
+    const userRepository = { findById: jest.fn().mockResolvedValue({ id: 'user-sequential-reuse' }) };
+    const authService = new AuthService(userRepository, {}, tokenService, logger);
     const original = await tokenService.generateTokenPair(
       { id: 'user-sequential-reuse', username: 'alice' },
       { refreshExpiresIn: '1h' }

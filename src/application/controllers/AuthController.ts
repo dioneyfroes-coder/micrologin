@@ -169,9 +169,16 @@ export class AuthWebController {
       }
 
       // 401 para refresh inválido/expirado/reusado, 400 para demais falhas
+      //
+      // `USER_NOT_FOUND` entra no 401 de propósito: o token é criptograficamente
+      // válido, mas pertence a uma conta que não existe mais, então do ponto de
+      // vista do cliente é a mesma coisa que uma credencial que não autentica
+      // ninguém. Um 400 diria que a requisição está malformada — e ela está
+      // correta, só não há mais o que renovar.
       const statusCode = result.code === 'REFRESH_TOKEN_EXPIRED' ||
                          result.code === 'REFRESH_TOKEN_INVALID' ||
-                         result.code === 'REFRESH_TOKEN_REUSED' ? 401 :
+                         result.code === 'REFRESH_TOKEN_REUSED' ||
+                         result.code === 'USER_NOT_FOUND' ? 401 :
         result.code === REVOCATION_UNAVAILABLE_CODE ? 503 :
           result.code === ARGON2_OVERLOADED_CODE ? 503 : 400;
       next(new HttpError(statusCode, result.code || 'REFRESH_TOKEN_INVALID', result.error || 'Falha ao renovar tokens'));
@@ -326,9 +333,17 @@ export class AuthWebController {
       // 401 = a senha que ele disse estar usando está errada; 503 = o serviço
       // não conseguiu responder, e o cliente precisa poder repetir. Um 400 aqui
       // faria o usuário acreditar que a senha nova era o problema.
+      //
+      // Os três 503 são infraestrutura, e nenhum deles é culpa da senha nova:
+      // revogação fora do ar impediu a troca de acontecer, o histórico não pôde
+      // ser consultado, ou a gravação falhou depois de as sessões já terem sido
+      // encerradas. Responder 400 nesses casos diria ao usuário que a senha é o
+      // problema — e ele trocaria a senha de novo, para o mesmo 503.
       const statusCode = result.code === 'CURRENT_PASSWORD_INVALID'
         ? 401
         : result.code === 'PASSWORD_HISTORY_UNAVAILABLE'
+          || result.code === REVOCATION_UNAVAILABLE_CODE
+          || result.code === 'PASSWORD_CHANGE_NOT_PERSISTED'
           || result.code === ARGON2_OVERLOADED_CODE
           ? 503
           : 400;
@@ -354,6 +369,16 @@ export class AuthWebController {
           success: true,
           message: 'Perfil deletado com sucesso'
         });
+      } else if (isServiceUnavailable(result.code)) {
+        // A exclusão é recusada porque as sessões não puderam ser encerradas:
+        // remover a conta agora deixaria os tokens vivos sem forma de matá-los.
+        // 503 diz a verdade certa — nada foi excluído, e repetir resolve.
+        res.setHeader('Retry-After', '1');
+        next(new HttpError(503, result.code as string, 'Exclusão temporariamente indisponível'));
+      } else if (result.code === 'USER_NOT_FOUND') {
+        next(new HttpError(404, 'USER_NOT_FOUND', result.error || 'Usuário não encontrado'));
+      } else if (result.code === 'USER_DELETE_NOT_PERSISTED') {
+        next(new HttpError(503, result.code, result.error || 'Falha ao deletar perfil'));
       } else {
         next(new HttpError(400, 'PROFILE_DELETE_FAILED', result.error || 'Falha ao deletar perfil'));
       }

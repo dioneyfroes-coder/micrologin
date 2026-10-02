@@ -1,5 +1,5 @@
 import { describe, expect, it, jest } from '@jest/globals';
-import { AuthService } from '../../src/domain/index.js';
+import { AuthService, User } from '../../src/domain/index.js';
 import { JWTTokenService } from '../../src/infrastructure/external-services/jwtTokenService.js';
 import { registerSurvivalScenarios, type SurvivalHarness } from './credential-theft.scenarios.js';
 
@@ -30,6 +30,20 @@ const makeRedisClient = () => {
 };
 
 /**
+ * Repositório que responde "o usuário existe" para qualquer id.
+ *
+ * Desde a 1.0.0 a renovação confere a existência do usuário antes de emitir o
+ * par novo: um refresh token criptograficamente válido não é prova de que a
+ * conta continua de pé. Um repositório vazio (`{}`) faria essa checagem estourar
+ * uma exceção e o cenário falharia com `REFRESH_TOKEN_INVALID` — uma falha que
+ * parece de token, mas é do harness. Estes cenários testam o comportamento de
+ * sessão, então o que importa é que a conta exista.
+ */
+const existingUsers = {
+  findById: async(id: string) => new User(id, 'usuario', 'hash-da-senha', new Date('2025-01-01'), new Date('2025-01-01'))
+};
+
+/**
  * Harness em memória: sem Docker, para `npm run test:unit`.
  *
  * Os cenários T1–T6 vivem em `credential-theft.scenarios.ts` e são registrados
@@ -57,7 +71,7 @@ const makeHarness = ({
     { failOpen: false }
   );
   const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
-  const authService = new AuthService({}, {}, tokenService, logger, autoRevokeOnRefreshReuse);
+  const authService = new AuthService(existingUsers, {}, tokenService, logger, autoRevokeOnRefreshReuse);
   return { authService, tokenService, redisClient, logger, secret: SECRET, es256: null };
 };
 
