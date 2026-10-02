@@ -53,23 +53,48 @@ Ela participa do cálculo de orçamento de memória, mas não representa necessa
 
 ### Implementação
 
-[ ] Criar um semáforo/limiter específico para operações Argon2.
+[x] Criar um semáforo/limiter específico para operações Argon2.
 
-[ ] Fazer `hash` e `verify` passarem pelo mesmo mecanismo quando forem operações de autenticação.
+[x] Fazer `hash` e `verify` passarem pelo mesmo mecanismo quando forem operações de autenticação.
 
-[ ] O limite deve ser configurável e validado no bootstrap.
+[x] O limite deve ser configurável e validado no bootstrap.
 
-[ ] O cálculo de orçamento de memória deve usar o mesmo limite que a execução realmente impõe.
+[x] O cálculo de orçamento de memória deve usar o mesmo limite que a execução realmente impõe.
 
-[ ] Manter o `inFlight` como proteção de HTTP; não substituir uma proteção pela outra.
+[x] Manter o `inFlight` como proteção de HTTP; não substituir uma proteção pela outra.
 
 ### Testes obrigatórios
 
-[ ] Disparar dezenas de operações de login em paralelo e medir a concorrência real de Argon2.
+[x] Disparar dezenas de operações de login em paralelo e medir a concorrência real de Argon2.
 
-[ ] Provar que o máximo simultâneo nunca excede o limite configurado.
+[x] Provar que o máximo simultâneo nunca excede o limite configurado.
 
-[ ] Criar teste de regressão que falhe caso o semáforo seja removido.
+[x] Criar teste de regressão que falhe caso o semáforo seja removido.
+
+### Evidência (2026-10-02)
+
+`src/shared/utils/argon2Limiter.ts` (novo): `Argon2Limiter` + `runArgon2`,
+`configureArgon2Limiter`, `argon2Snapshot`, `resetArgon2Metrics`. FIFO com fila
+limitada; saturação devolve `ARGON2_OVERLOADED_CODE`/`Argon2OverloadedError`.
+
+Configuração: `ARGON2_MAX_CONCURRENCY` / `ARGON2_MAX_QUEUE` em
+`securityConfig.passwordHash.concurrency = { limit, maxQueue }`; `< 1` e `< 0`
+rejeitados; `configureArgon2Limiter()` chamado no bootstrap; orçamento de memória
+passa a usar o `limit` realmente aplicado; `getConfigSummary()` publica os dois
+valores.
+
+`PasswordHasher.hash()` e `.compare()` passam por `runArgon2` — a mesma fronteira
+nos dois caminhos. Métricas em `requests.argon2`.
+
+**Resposta de projeto registrada:** a fila limitada devolve **503 + `Retry-After: 1`**,
+não 401/400. Erro de capacidade não é erro de credencial, e o cliente precisa poder
+tentar de novo; 401 diria ao usuário que a senha dele está errada.
+
+Testes: `tests/unit/argon2-limiter.test.ts` (15) e `tests/unit/argon2-concurrency.test.ts`
+(6, instrumentando chamadas reais a `@node-rs/argon2`).
+
+Mutação: removendo o `runArgon2` do adapter, o teste observou **48 operações
+simultâneas com limite 4** e reprovou. Restaurado; 21/21 verdes.
 
 ### Critério de aceite
 
@@ -101,31 +126,53 @@ Resultado: a senha mudou, mas os tokens antigos podem continuar válidos.
 
 ### Implementação mínima recomendada para a 1.0.0
 
-[ ] Revogar as sessões **antes** de persistir a nova senha.
+[x] Revogar as sessões **antes** de persistir a nova senha.
 
-[ ] Exigir `true`/sucesso explícito de `revokeUserTokens()` antes de salvar a nova senha.
+[x] Exigir `true`/sucesso explícito de `revokeUserTokens()` antes de salvar a nova senha.
 
-[ ] Se a revogação estiver indisponível, retornar erro de infraestrutura e não alterar a senha.
+[x] Se a revogação estiver indisponível, retornar erro de infraestrutura e não alterar a senha.
 
-[ ] Se a revogação funcionar e o `save()` falhar, aceitar o estado de segurança resultante: a senha antiga continua válida, mas as sessões foram encerradas. Registrar esse cenário.
+[x] Se a revogação funcionar e o `save()` falhar, aceitar o estado de segurança resultante: a senha antiga continua válida, mas as sessões foram encerradas. Registrar esse cenário.
 
-[ ] Não ignorar o retorno booleano de `revokeUserTokens()`.
+[x] Não ignorar o retorno booleano de `revokeUserTokens()`.
 
 ### Testes obrigatórios
 
-[ ] Revogação falha -> senha não muda.
+[x] Revogação falha -> senha não muda.
 
-[ ] Revogação retorna `false` -> senha não muda.
+[x] Revogação retorna `false` -> senha não muda.
 
-[ ] Revogação funciona + `save()` funciona -> senha muda e sessões são encerradas.
+[x] Revogação funciona + `save()` funciona -> senha muda e sessões são encerradas.
 
-[ ] Revogação funciona + `save()` falha -> nenhuma sessão antiga continua válida.
+[x] Revogação funciona + `save()` falha -> nenhuma sessão antiga continua válida.
 
-[ ] Criar mutação de teste que remova a checagem da revogação e confirme que o build/teste reprova.
+[x] Criar mutação de teste que remova a checagem da revogação e confirme que o build/teste reprova.
 
 ### Critério de aceite
 
 Nunca existir o estado “senha nova gravada + revogação de sessão falhou silenciosamente”.
+
+### Evidência (2026-10-02)
+
+Ordem implementada em `AuthService.changePassword`: hash novo -> `revokeUserTokens` (com
+checagem explícita de `success`) -> `user.changePassword()` -> `save()`. O código
+`PASSWORD_CHANGE_NOT_PERSISTED` cobre a falha de gravação após revogação, e
+`REVOCATION_UNAVAILABLE` cobre a revogação não confirmada — ambos mapeados para
+**503** em `AuthController.changePassword`, nunca 401/400 (a senha não é o problema).
+`AUTH_OUTCOMES.password_change` classifica os dois como `unavailable`.
+
+Testes: `tests/unit/session-invalidation-order.test.ts` (17 testes no arquivo, 7
+deste item) mais `tests/unit/domain-auth-service-extended.test.ts`.
+
+Mutações executadas contra `src/domain/index.ts`, todas revertidas:
+
+| Mutação | Resultado |
+| --- | --- |
+| Remover a checagem `!revocation.success` (`if (false)`) | 6 testes reprovam |
+| Mover a revogação para depois do `save()` | 4 testes reprovam |
+
+Gates após o item: `typecheck` limpo, `lint` limpo, unit 748/748, integração 38/38,
+credential-theft (Map) 10/10, credential-theft (Redis real + ES256) 14/14, e2e 15/15.
 
 ---
 
@@ -140,23 +187,53 @@ Nunca existir o estado “senha nova gravada + revogação de sessão falhou sil
 
 ### Implementação
 
-[ ] Antes da exclusão, chamar `revokeUserTokens(userId)`.
+[x] Antes da exclusão, chamar `revokeUserTokens(userId)`.
 
-[ ] Só executar o `delete()` do repositório após a revogação ter sido confirmada.
+[x] Só executar o `delete()` do repositório após a revogação ter sido confirmada.
 
-[ ] Se a revogação falhar, não excluir o usuário.
+[x] Se a revogação falhar, não excluir o usuário.
 
-[ ] No fluxo de refresh, confirmar que o usuário ainda existe e está ativo antes de emitir novo par de tokens.
+[x] No fluxo de refresh, confirmar que o usuário ainda existe e está ativo antes de emitir novo par de tokens.
 
 ### Testes obrigatórios
 
-[ ] delete + revogação bem-sucedidos -> usuário removido e tokens inválidos.
+[x] delete + revogação bem-sucedidos -> usuário removido e tokens inválidos.
 
-[ ] revogação indisponível -> usuário permanece.
+[x] revogação indisponível -> usuário permanece.
 
-[ ] usuário removido -> refresh token antigo não produz novos tokens.
+[x] usuário removido -> refresh token antigo não produz novos tokens.
 
-[ ] Criar mutação que retire a verificação de existência no refresh; o teste precisa reprovar.
+[x] Criar mutação que retire a verificação de existência no refresh; o teste precisa reprovar.
+
+### Evidência (2026-10-02)
+
+`AuthService.deleteUser` revoga antes de remover; revogação não confirmada devolve
+`REVOCATION_UNAVAILABLE` (503 + `Retry-After` em `AuthController.deleteProfile`) e o
+usuário **permanece**. Falha de `delete()` depois da revogação devolve
+`USER_DELETE_NOT_PERSISTED` (503), estado seguro e registrado no log: as sessões já
+foram encerradas e a conta continua de pé.
+
+`AuthService.refreshUserTokens` verifica a existência do usuário **antes** de rotacionar,
+para não emitir par novo (nem consumir o token) de conta apagada; o token órfão é
+revogado e a resposta é `USER_NOT_FOUND` (401). “Ativo” não é verificável: `models/User.ts`
+não tem conceito de conta desativada, e introduzi-lo seria funcionalidade nova.
+
+Códigos adicionados a `AUTH_OUTCOMES`: `token_refresh.USER_NOT_FOUND = 'invalid'`.
+
+Testes em `tests/unit/session-invalidation-order.test.ts` e
+`tests/unit/domain-auth-service-extended.test.ts`.
+
+Mutações executadas, todas revertidas:
+
+| Mutação | Resultado |
+| --- | --- |
+| `deleteUser` voltando a remover antes de revogar | 4 testes reprovam |
+| Refresh sem a checagem de existência | 2 testes reprovam |
+
+Ajuste de harness necessário: `tests/security/credential-theft.{survival,real-redis}.test.ts`
+passavam `{}` como repositório. Com a checagem de existência, isso estourava uma exceção e
+fazia os cenários de roubo de credencial falharem com `REFRESH_TOKEN_INVALID` — uma falha
+que parece de token mas era do harness. Passaram a responder que a conta existe.
 
 ---
 
@@ -171,23 +248,63 @@ Existe um `return` especial para erros cuja mensagem contém `forEach`. Um `unca
 
 ### Implementação
 
-[ ] Remover o `if (err.message.includes('forEach')) return`.
+[x] Remover o `if (err.message.includes('forEach')) return`.
 
-[ ] Ao ocorrer `uncaughtException`, registrar o erro e iniciar graceful shutdown.
+[x] Ao ocorrer `uncaughtException`, registrar o erro e iniciar graceful shutdown.
 
-[ ] Manter o comportamento de reinício pelo PM2/Docker/orquestrador.
+[x] Manter o comportamento de reinício pelo PM2/Docker/orquestrador.
 
-[ ] Manter `unhandledRejection` no mesmo modelo.
+[x] Manter `unhandledRejection` no mesmo modelo.
 
-[ ] Garantir que o shutdown seja idempotente para não disparar múltiplas rotinas concorrentes.
+[x] Garantir que o shutdown seja idempotente para não disparar múltiplas rotinas concorrentes.
 
 ### Testes
 
-[ ] Forçar `uncaughtException` em ambiente de teste controlado.
+[x] Forçar `uncaughtException` em ambiente de teste controlado.
 
-[ ] Provar que o processo entra no fluxo de encerramento.
+[x] Provar que o processo entra no fluxo de encerramento.
 
-[ ] Provar que erros que contenham a palavra `forEach` não recebem tratamento especial.
+[x] Provar que erros que contenham a palavra `forEach` não recebem tratamento especial.
+
+### Evidência (2026-10-02)
+
+A isenção foi removida de `src/shared/utils/errorHandler.ts`. A isenção nunca teve
+o efeito pretendido: `forEach` aparecia na mensagem de qualquer `TypeError` de
+domínio, e não só de uma biblioteca de métricas — a mesma falha com uma palavra a
+menos ou a mais decidia se o processo sobrevivia.
+
+`gracefulShutdown` ganhou trava de idempotência (`shuttingDown`). Sem ela, um SIGTERM
+seguido de um `uncaughtException` abria duas rotinas: dois `server.close()`, dois
+`mongoose.close()` e dois timers de force-close — e o segundo `close()` numa conexão
+já fechada lança, cai no `catch` e chama `exit(1)` no meio do encerramento limpo.
+
+**Correção de uma afirmação que o checklist não pedia:** o código de saída passou a
+diferenciar crash de encerramento pedido (`SIGTERM`/`SIGINT` → 0;
+`uncaughtException`/`unhandledRejection` → 1). A justificativa é esta, e não a de
+"garantir o reinício": Docker `restart: unless-stopped` e PM2 com `autorestart` no
+default reiniciam em **qualquer** código de saída, então o `1` não é o que mantém o
+processo no ar aqui. Ele evita que a queda por estado inconsistente seja reportada
+como parada bem-sucedida por alertas baseados no código de saída, e é o que
+impediria a sobrevivência em supervisors que distinguem sucesso de falha (systemd
+`Restart=on-failure`, Kubernetes).
+
+Testes em `tests/unit/error-handler.test.ts` (12 testes, 5 novos). O teste que
+existia ("ignora exceções não tratadas de métricas para manter a app rodando")
+foi substituído pelo seu oposto.
+
+Mutações executadas, todas revertidas:
+
+| Mutação | Resultado |
+| --- | --- |
+| Reintroduzir `if (err.message.includes('forEach')) return` | 1 teste reprova |
+| Remover a trava de idempotência (`if (false)`) | 1 teste reprova |
+| `uncaughtException` voltando a sair com 0 | 1 teste reprova |
+| `unhandledRejection` sem derrubar o processo | 1 teste reprova |
+
+A terceira mutação exigiu corrigir os testes antes de ser detectada: a afirmação do
+código de saída era feita **depois** de disparar o timer de force-close, que também
+chama `exit(1)` — o teste passava pelo motivo errado. As afirmações agora rodam antes
+dos timers.
 
 ---
 
@@ -1067,6 +1184,30 @@ Marque somente depois de todas as etapas acima:
 - [ ] Imagem Docker versionada publicada.
 - [ ] Smoke pós-release verde.
 - [ ] Nenhum TODO restante classificado como blocker.
+
+## Achados durante a execução
+
+Problemas que apareceram enquanto os itens eram executados e que não são
+causados pelos itens em si.
+
+### `tests/integration/login-throttle.test.ts` falha na aggregated run de cobertura
+
+- **Sintoma:** `ajustar a caixa do username não renova o orçamento` passa em
+  `npm run test:integration` e reprova em `npm run test:coverage`.
+- **Pré-existente:** confirmado em 2026-10-02 com a árvore limpa no commit
+  `9c879bc` (`git stash`), onde o mesmo teste reprova.
+- **Leitura provável:** o teste consome `LOGIN_POINTS` orçamento com origens
+  distintas e depende da janela fixa não virar entre as tentativas. Sob
+  instrumentação a execução fica mais lenta e a janela vira.
+- **Não é bloqueante para a 1.0.0**, mas o teste é dependente de tempo e
+  deveria usar relógio injetável. Anotado para não ser confundido com
+  regressão dos itens 1.2/1.3.
+
+### Tag `v1.0.0` já publicada
+
+- `v1.0.0` existe local e no remote apontando para `e29032f`, 69 commits atrás
+  de `main`. A estratégia de versionamento precisa ser decidida antes do
+  freeze — ver item 5.1 e a seção de Git.
 
 ## Estado final
 
