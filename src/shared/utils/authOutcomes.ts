@@ -82,7 +82,11 @@ const OUTCOME_BY_CODE: Readonly<Record<AuthEventKind, Readonly<Record<string, Au
     // Exceção que não é credencial: em fail-closed, com o armazenamento de
     // revogação fora do ar, o login recusa por indisponibilidade. Contar como
     // `failure` transformaria uma queda do Redis em tentativa de ataque.
-    REVOCATION_UNAVAILABLE: 'unavailable'
+    REVOCATION_UNAVAILABLE: 'unavailable',
+    // Semáforo de hash saturado: também é o serviço recusando por capacidade,
+    // não a credencial sendo julgada. Contar como 'failure' transformaria
+    // sobrecarga em tentativa de ataque nos gráficos de segurança.
+    ARGON2_OVERLOADED: 'unavailable'
   },
   token_refresh: {
     // Reuso é sinal de comprometimento, não erro de usuário: precisa de label
@@ -106,7 +110,9 @@ const OUTCOME_BY_CODE: Readonly<Record<AuthEventKind, Readonly<Record<string, Au
     // Não deu para consultar o histórico (comparação de hash falhou). Não é
     // 'rejected': recusar por política contra um usuário que não fez nada de
     // errado esconde um defeito de infraestrutura.
-    PASSWORD_HISTORY_UNAVAILABLE: 'unavailable'
+    PASSWORD_HISTORY_UNAVAILABLE: 'unavailable',
+    // Semáforo do argon2id saturado no momento de gravar o novo hash.
+    ARGON2_OVERLOADED: 'unavailable'
   }
 };
 

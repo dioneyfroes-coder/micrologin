@@ -317,6 +317,69 @@ describe('configuração de hash de senha', () => {
     expect(() => validateConfiguration()).toThrow(/768 MiB/);
   });
 
+  it('o teto de concorrência é 8 por padrão e é o mesmo que a memória orça', async() => {
+    const { securityConfig, getConfigSummary } = await loadConfig();
+
+    expect(securityConfig.passwordHash.concurrency).toEqual({ limit: 8, maxQueue: 64 });
+    // O número é publicado para que a simultaneidade observada em runtime possa
+    // ser conferida contra o valor que o orçamento aprovou.
+    expect((getConfigSummary() as unknown as {
+      security: { passwordHash: { argon2MaxConcurrency: number } };
+    }).security.passwordHash.argon2MaxConcurrency).toBe(8);
+  });
+
+  it('ARGON2_MAX_CONCURRENCY configura o teto que a memória orça', async() => {
+    process.env.ARGON2_MAX_CONCURRENCY = '4';
+
+    const { securityConfig, validateConfiguration } = await loadConfig();
+
+    expect(securityConfig.passwordHash.concurrency.limit).toBe(4);
+    expect(validateConfiguration()).toBe(true);
+  });
+
+  it('recusa ARGON2_MAX_CONCURRENCY abaixo de 1', async() => {
+    // 0 significaria "sem teto" com a conta de memória ainda descrevendo 0
+    // hashes: a validação passaria e a máquina aceitaria quantos vierem. O
+    // número que orça memória e o número que a impõe não podem divergir.
+    process.env.ARGON2_MAX_CONCURRENCY = '0';
+
+    const { validateConfiguration } = await loadConfig();
+
+    expect(() => validateConfiguration()).toThrow(/ARGON2_MAX_CONCURRENCY/);
+  });
+
+  it('a memória é orçada com o teto que será IMPOSTO, não com o padrão', async() => {
+    // m=128MiB × 4 = 512 MiB: cabe. Com o teto padrão de 8, o mesmo m seria
+    // 1 GiB e seria recusado. É a prova de que a conta usa o número configurado
+    // em vez de uma constante — a divergência que existia antes desta 1.0.0.
+    process.env.ARGON2_MEMORY_COST = '131072';
+    process.env.ARGON2_MAX_CONCURRENCY = '4';
+
+    const { validateConfiguration, securityConfig } = await loadConfig();
+
+    expect(securityConfig.passwordHash.concurrency.limit).toBe(4);
+    expect(validateConfiguration()).toBe(true);
+  });
+
+  it('recusa quando o teto configurado estoura o orçamento, mesmo que o padrão caiba', async() => {
+    // m=96MiB × 8 = 768 MiB, exatamente o orçamento: passa. Com teto 16, a
+    // mesma memória passa a pedir 1.5 GiB e precisa ser recusada no arranque.
+    process.env.ARGON2_MEMORY_COST = '98304';
+    process.env.ARGON2_MAX_CONCURRENCY = '16';
+
+    const { validateConfiguration } = await loadConfig();
+
+    expect(() => validateConfiguration()).toThrow(/768 MiB/);
+  });
+
+  it('recusa ARGON2_MAX_QUEUE negativo', async() => {
+    process.env.ARGON2_MAX_QUEUE = '-1';
+
+    const { validateConfiguration } = await loadConfig();
+
+    expect(() => validateConfiguration()).toThrow(/ARGON2_MAX_QUEUE/);
+  });
+
   it('aceita o padrão de 64MiB com folga para o runtime', async() => {
     // 64 MiB × 8 logins = 512 MiB, dentro do orçamento de 768 MiB, com ~33%
     // de folga para o runtime. Este é o motivo do padrão não ser 96 MiB.

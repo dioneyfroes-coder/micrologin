@@ -13,6 +13,7 @@ import { readFileSync } from 'fs';
 import { parseEnvNumber } from './rateLimitConfig.js';
 import { getMongoConfig } from './mongoConfig.js';
 import { getRedisConfig } from './redisConfig.js';
+import { DEFAULT_ARGON2_CONCURRENCY, DEFAULT_ARGON2_QUEUE } from '../../shared/utils/argon2Limiter.js';
 import { logger } from '../../shared/utils/logger.js';
 
 /**
@@ -240,15 +241,30 @@ export const databaseConfig = {
  */
 
 /**
- * Logins simultâneos que o serviço precisa absorver sem trocar de hash.
+ * Teto de operações argon2id SIMULTÂNEAS por processo.
  *
- * É o número que decide o teto de memória do argon2id: `memoryCost` KiB por
- * hash, vezes logins concorrentes, tem que caber no container. Não é uma
- * constante arbitrária — é a concorrência que o serviço já o serviço entrega sem
- * fila perceptível (medido em `docs/metricas.md`), e o que passar disso é
- * traffic shaping, não parameter de hash.
+ * Este número não é mais uma constante decorativa: ele é o limite que
+ * `src/shared/utils/argon2Limiter.ts` IMPÕE em tempo de execução, e é também o
+ * multiplicador da conta de memória abaixo. Antes eram duas verdades — uma
+ * imposta (nenhuma) e outra orçada (esta) — e a diferença entre elas era
+ * exatamente o buraco que um burst de login atravessava.
+ *
+ * O default é 8 por medição, não por dogma: é a concorrência que o serviço
+ * entrega sem fila perceptível (ver `docs/metricas.md`), e com `m=64MiB` são
+ * 512 MiB dos 768 MiB do orçamento do container.
  */
-const MAX_CONCURRENT_LOGINS = 8;
+const ARGON2_MAX_CONCURRENCY = parseEnvNumber(
+  process.env.ARGON2_MAX_CONCURRENCY,
+  DEFAULT_ARGON2_CONCURRENCY
+);
+
+/**
+ * Profundidade da fila de espera do semáforo argon2id.
+ */
+const ARGON2_MAX_QUEUE = parseEnvNumber(
+  process.env.ARGON2_MAX_QUEUE,
+  DEFAULT_ARGON2_QUEUE
+);
 
 /**
  * Memória disponível para hashes do argon2id, em KiB.
@@ -257,6 +273,11 @@ const MAX_CONCURRENT_LOGINS = 8;
  * conexões, buffer de request e o que o /health considera estrutura do
  * processo. Medido: em repouso o serviço fica em ~52 MiB, e 8 logins com
  * `m=64MiB` sobem para ~512 MiB.
+ *
+ * O orçamento conta `memoryCost × ARGON2_MAX_CONCURRENCY` porque é exatamente
+ * o que o semáforo permite acontecer ao mesmo tempo. Se a conta usasse um
+ * número maior que o aplicado, ela continuaria "verde" com a máquina estourando
+ * o container; se usasse um menor, ela derrubaria arranjos que rodam folgados.
  */
 const ARGON2_MEMORY_BUDGET_KIB = 786432;
 
@@ -457,7 +478,20 @@ export const securityConfig = {
      * Pepper anterior, para verificar hashes já gravados durante uma rotação.
      * Quem não voltar a fazer login não pode ser derrubado por uma rotação.
      */
-    previousPepper: readPepper('PASSWORD_PEPPER_PREVIOUS', 'PASSWORD_PEPPER_PREVIOUS_VERSION')
+    previousPepper: readPepper('PASSWORD_PEPPER_PREVIOUS', 'PASSWORD_PEPPER_PREVIOUS_VERSION'),
+
+    /**
+     * Limite de execução do argon2id (`argon2Limiter`), e não do HTTP.
+     *
+     * Fica dentro de `passwordHash` porque é orçamento DE MEMÓRIA do argon2id:
+     * é este número que a validação de arranque multiplica por `memoryCost` para
+     * decidir se o container aguenta. `serverConfig.inFlight` é outro teto, de
+     * outro recurso, e os dois ficam de pé ao mesmo tempo.
+     */
+    concurrency: {
+      limit: ARGON2_MAX_CONCURRENCY,
+      maxQueue: ARGON2_MAX_QUEUE
+    }
   },
 
   cors: {
@@ -685,10 +719,23 @@ export function validateConfiguration(): boolean {
   // folga que o framework precisa, e não de um dogma de parâmetro. Com o
   // padrão de 64 MiB, 8 logins usam 512 MiB dos 768 MiB: sobra ~33% de folga
   // para o runtime, e 96 MiB seria recusado aqui.
-  if (memoryCost * MAX_CONCURRENT_LOGINS > ARGON2_MEMORY_BUDGET_KIB) {
+  //
+  // `concurrency.max` é o mesmo valor que `argon2Limiter` IMPÕE: se a conta
+  // usasse um número diferente do aplicado, ela validaria um orçamento que a
+  // máquina não respeita.
+  const argon2Concurrency = passwordHash.concurrency.limit;
+
+  if (argon2Concurrency < 1) {
+    errors.push('ARGON2_MAX_CONCURRENCY deve ser pelo menos 1: com 0 o argon2id não tem teto e o orçamento de memória abaixo não descreve nada');
+  }
+  if (passwordHash.concurrency.maxQueue < 0) {
+    errors.push('ARGON2_MAX_QUEUE não pode ser negativo');
+  }
+
+  if (memoryCost * argon2Concurrency > ARGON2_MEMORY_BUDGET_KIB) {
     errors.push(
-      `ARGON2_MEMORY_COST/ARGON2_PARALLELISM altos demais: ${MAX_CONCURRENT_LOGINS} logins ` +
-      `simultâneos pediriam ${(memoryCost * MAX_CONCURRENT_LOGINS / 1024).toFixed(0)} MiB, ` +
+      `ARGON2_MEMORY_COST/ARGON2_PARALLELISM altos demais: ${argon2Concurrency} logins ` +
+      `simultâneos pediriam ${(memoryCost * argon2Concurrency / 1024).toFixed(0)} MiB, ` +
       `acima do orçamento de ${(ARGON2_MEMORY_BUDGET_KIB / 1024).toFixed(0)} MiB do container ` +
       '(veja docs/metricas.md)'
     );
@@ -806,6 +853,10 @@ export function getConfigSummary() {
       passwordHash: {
         algorithm: securityConfig.passwordHash.algorithm,
         argon2: securityConfig.passwordHash.argon2,
+        // O limite real de hash, publicado para que o valor observado em
+        // runtime possa ser conferido contra o valor que o orçamento orçou.
+        argon2MaxConcurrency: securityConfig.passwordHash.concurrency.limit,
+        argon2MaxQueue: securityConfig.passwordHash.concurrency.maxQueue,
         pepperConfigured: Boolean(securityConfig.passwordHash.pepper),
         previousPepperConfigured: Boolean(securityConfig.passwordHash.previousPepper)
       }

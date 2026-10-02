@@ -2,6 +2,7 @@ import { container } from './ServiceContainer.js';
 import { AuthService } from '../domain/index.js';
 import type { CryptoService, Logger, TokenService, UserRepository } from '../domain/index.js';
 import { AdapterFactory } from '../infrastructure/adapters/index.js';
+import { configureArgon2Limiter } from '../shared/utils/argon2Limiter.js';
 import { AuthWebController } from '../application/controllers/AuthController.js';
 import { AuthWebMiddleware } from '../application/middleware/AuthMiddleware.js';
 import { JWTTokenService } from '../infrastructure/external-services/jwtTokenService.js';
@@ -18,6 +19,12 @@ import {
 export function bootstrapServices() {
   // Validar configurações primeiro
   validateConfiguration();
+
+  // O limite de hash é aplicado ANTES de qualquer hasher existir. A validação
+  // acima aprovou `ARGON2_MAX_CONCURRENCY`, e este é o passo que faz o código
+  // obedecer a esse número — sem ele, o orçamento de memória descreve uma
+  // concorrência que ninguém impõe.
+  configureArgon2Limiter(securityConfig.passwordHash.concurrency);
 
   // Configurar adapters de infraestrutura
   const adapterFactory = AdapterFactory;

@@ -12,6 +12,18 @@ import { HttpError } from '../../shared/utils/errorHandler.js';
 import { recordSecurityEvent, recordTokenRefresh } from '../observability/authEventSink.js';
 import type { AuthService } from '../../domain/index.js';
 import { REVOCATION_UNAVAILABLE_CODE } from '../../domain/index.js';
+import { ARGON2_OVERLOADED_CODE } from '../../shared/utils/argon2Limiter.js';
+
+/**
+ * Falha de capacidade do serviço, e não de credencial.
+ *
+ * Saturação do semáforo argon2id e revogação indisponível são a mesma coisa do
+ * ponto de vista do cliente: o serviço não conseguiu agora, e a resposta certa
+ * é 503 com `Retry-After`, não 401 (que diria "senha errada") nem 400 (que
+ * diria "requisição malformada"). Nenhum dos dois seria verdade.
+ */
+const isServiceUnavailable = (code?: string | null): boolean =>
+  code === REVOCATION_UNAVAILABLE_CODE || code === ARGON2_OVERLOADED_CODE;
 
 export class AuthWebController {
   private authService: AuthService;
@@ -62,11 +74,12 @@ export class AuthWebController {
             expiresIn: result.token.expiresIn
           }
         });
-      } else if (result.code === REVOCATION_UNAVAILABLE_CODE) {
-        // Fail-closed: sem armazenamento de revogação não há token a emitir, e
-        // 401 seria mentira - diria que a senha está errada. O corpo continua
-        // genérico, o status diz que a culpa é nossa.
-        next(new HttpError(503, REVOCATION_UNAVAILABLE_CODE, 'Autenticação temporariamente indisponível'));
+      } else if (isServiceUnavailable(result.code)) {
+        // Fail-closed (revogação fora do ar) e saturação do argon2id caem no
+        // mesmo status: 401 seria mentira - diria que a senha está errada. O
+        // corpo continua genérico, o status diz que a culpa é nossa.
+        res.setHeader('Retry-After', '1');
+        next(new HttpError(503, result.code as string, 'Autenticação temporariamente indisponível'));
       } else {
         next(new HttpError(401, 'AUTHENTICATION_FAILED', 'Credenciais inválidas'));
       }
@@ -101,6 +114,9 @@ export class AuthWebController {
             user: result.user
           }
         });
+      } else if (isServiceUnavailable(result.code)) {
+        res.setHeader('Retry-After', '1');
+        next(new HttpError(503, result.code as string, 'Cadastro temporariamente indisponível'));
       } else {
         next(new HttpError(400, 'REGISTRATION_FAILED', 'Não foi possível criar a conta'));
       }
@@ -156,7 +172,8 @@ export class AuthWebController {
       const statusCode = result.code === 'REFRESH_TOKEN_EXPIRED' ||
                          result.code === 'REFRESH_TOKEN_INVALID' ||
                          result.code === 'REFRESH_TOKEN_REUSED' ? 401 :
-        result.code === REVOCATION_UNAVAILABLE_CODE ? 503 : 400;
+        result.code === REVOCATION_UNAVAILABLE_CODE ? 503 :
+          result.code === ARGON2_OVERLOADED_CODE ? 503 : 400;
       next(new HttpError(statusCode, result.code || 'REFRESH_TOKEN_INVALID', result.error || 'Falha ao renovar tokens'));
 
     } catch (error) {
@@ -312,6 +329,7 @@ export class AuthWebController {
       const statusCode = result.code === 'CURRENT_PASSWORD_INVALID'
         ? 401
         : result.code === 'PASSWORD_HISTORY_UNAVAILABLE'
+          || result.code === ARGON2_OVERLOADED_CODE
           ? 503
           : 400;
       next(new HttpError(statusCode, result.code || 'PASSWORD_CHANGE_FAILED', result.error || 'Falha ao alterar a senha'));

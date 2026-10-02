@@ -12,7 +12,11 @@ describe('AuthWebController - contrato HTTP', () => {
     res = {
       status: jest.fn().mockReturnThis(),
       json: jest.fn().mockReturnThis(),
-      set: jest.fn()
+      set: jest.fn(),
+      // `Retry-After` é emitido nos 503 de indisponibilidade. Sem o método, o
+      // mock quebraria dentro do handler e o teste mediria a exceção, não o
+      // status.
+      setHeader: jest.fn()
     };
     next = jest.fn();
     req = {

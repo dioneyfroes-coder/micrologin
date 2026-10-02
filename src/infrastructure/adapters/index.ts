@@ -10,6 +10,7 @@ import { createHmac } from 'node:crypto';
 import type { CryptoService, Logger, UserRepository } from '../../domain/index.js';
 import { User } from '../../domain/index.js';
 import { normalizeUsername } from '../../shared/utils/usernamePolicy.js';
+import { runArgon2 } from '../../shared/utils/argon2Limiter.js';
 import { getUserModel } from '../database/models/User.js';
 import { logger } from '../../shared/utils/logger.js';
 
@@ -245,12 +246,12 @@ export class PasswordHasher implements CryptoService {
     const toHash = pepper ? this.pepper(plainText, pepper.secret) : plainText;
 
     return this.envelope(
-      await argon2Hash(toHash, {
+      await runArgon2(() => argon2Hash(toHash, {
         algorithm: Algorithm.Argon2id,
         memoryCost: this.options.argon2.memoryCost,
         timeCost: this.options.argon2.timeCost,
         parallelism: this.options.argon2.parallelism
-      })
+      }))
     );
   }
 
@@ -270,7 +271,7 @@ export class PasswordHasher implements CryptoService {
     for (const secret of this.pepperCandidates(pepperVersion)) {
       const toCompare = secret === null ? plainText : this.pepper(plainText, secret);
 
-      if (await argon2Verify(value, toCompare)) {
+      if (await runArgon2(() => argon2Verify(value, toCompare))) {
         return true;
       }
     }

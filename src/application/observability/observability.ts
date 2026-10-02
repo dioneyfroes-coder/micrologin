@@ -13,6 +13,7 @@
 import { performHealthCheck } from '../../shared/utils/healthCheck.js';
 import { securityAuditLogger } from '../middleware/securityAudit.js';
 import { inFlightSnapshot } from '../middleware/inFlightLimit.js';
+import { argon2Snapshot } from '../../shared/utils/argon2Limiter.js';
 import { requestLogAggregator } from './requestLogAggregator.js';
 import { getAuthEventSnapshot } from './authEventSink.js';
 import { hostname } from 'node:os';
@@ -59,6 +60,14 @@ export interface ObservabilitySnapshot {
     // que o teto de 256 por processo foi encostado, e `high_water_mark` diz o
     // quanto falta para encostar.
     in_flight: ReturnType<typeof inFlightSnapshot>;
+    /**
+     * Semáforo do argon2id, e é o número que fecha o critério de
+     * "concorrência de hash <= limite": `high_water_mark` é a maior
+     * simultaneidade realmente observada neste processo, `limit` é o teto
+     * configurado. Se `high_water_mark > limit`, o teto não está sendo
+     * aplicado — e isso aparece aqui sem precisar de instrumentação externa.
+     */
+    argon2: ReturnType<typeof argon2Snapshot>;
   };
   health: HealthReportLike;
   security: Record<string, unknown>;
@@ -102,7 +111,8 @@ export const buildObservabilitySnapshot = async(deps: ObservabilityDeps = {}): P
     },
     requests: {
       ...requests,
-      in_flight: inFlightSnapshot()
+      in_flight: inFlightSnapshot(),
+      argon2: argon2Snapshot()
     },
     health: health as HealthReportLike,
     security: {
