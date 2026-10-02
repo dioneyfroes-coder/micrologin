@@ -150,21 +150,151 @@ describe('setupErrorHandlers - graceful shutdown', () => {
     timeoutSpy.mockRestore();
   });
 
-  it('ignora exceções não tratadas de métricas para manter a app rodando', async() => {
+  it('derruba o processo em qualquer uncaughtException, inclusive com "forEach" na mensagem', async() => {
+    // A isenção antiga era `if (err.message.includes('forEach')) return`. O
+    // ponto deste teste é que a palavra deixou de ter qualquer efeito: um
+    // `TypeError` de domínio dentro de um `forEach` derrubava o processo igual
+    // a qualquer outro erro.
     const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const exitSpy = jest.spyOn(process, 'exit').mockImplementation(() => 0 as never);
+    const { setupErrorHandlers } = await loadErrorHandler();
+    const { handlers, spy } = captureProcessHandlers();
+    const { captured, spy: timeoutSpy } = captureTimeouts();
+    const server = createFakeServer();
+
+    setupErrorHandlers(server, 100);
+    handlers.uncaughtException(new TypeError('x is not a function in forEach'));
+
+    expect(server.close).toHaveBeenCalled();
+    await new Promise(resolve => globalThis.setImmediate(resolve));
+
+    // Saída não-zero: é isso que faz o PM2/systemd reiniciarem. Um exit(0)
+    // seria lido como encerramento limpo e o processo inconsistente sobreviveria.
+    //
+    // A afirmação vem ANTES de disparar o timer de force-close de propósito: ele
+    // também chama exit(1), e checar depois transformaria qualquer código de
+    // saída em teste verde.
+    expect(exitSpy).toHaveBeenCalledWith(1);
+
+    captured.forEach(entry => entry.fn());
+
+    logSpy.mockRestore();
+    errorSpy.mockRestore();
+    exitSpy.mockRestore();
+    spy.mockRestore();
+    timeoutSpy.mockRestore();
+  });
+
+  it('registra a causa do uncaughtException antes de derrubar', async() => {
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     const exitSpy = jest.spyOn(process, 'exit').mockImplementation(() => 0 as never);
     const { setupErrorHandlers } = await loadErrorHandler();
     const { handlers, spy } = captureProcessHandlers();
     const { spy: timeoutSpy } = captureTimeouts();
+
+    setupErrorHandlers(createFakeServer(), 100);
+    handlers.uncaughtException(new Error('banana'));
+
+    // Um exit sem log é um processo que morre sem explicação: quem lê o log
+    // depois do restart não tem como saber por que o container caiu. O logger
+    // formata mensagem e causa numa string só, então é ela que carrega as duas.
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Erro não tratado'));
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('banana'));
+
+    // O `close()` do fake é síncrono, mas o callback que ele dispara é async:
+    // o `process.exit` acontece numa microtask depois daqui. Sem esta espera, o
+    // `mockRestore()` rodaria antes e o exit chamaria o `process.exit` de
+    // verdade — matando a própria suíte.
+    await new Promise(resolve => globalThis.setImmediate(resolve));
+
+    logSpy.mockRestore();
+    errorSpy.mockRestore();
+    exitSpy.mockRestore();
+    spy.mockRestore();
+    timeoutSpy.mockRestore();
+  });
+
+  it('graceful shutdown é idempotente: dois sinais não abrem duas rotinas', async() => {
+    // Sem a trava, o segundo shutdown chamaria `server.close()` de novo sobre
+    // um servidor já fechado — o que lança, cai no `catch` e chama exit(1) no
+    // meio do encerramento limpo, antes do `close()` bem-sucedido completar.
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const exitSpy = jest.spyOn(process, 'exit').mockImplementation(() => 0 as never);
+    const { setupErrorHandlers } = await loadErrorHandler();
+    const { handlers, spy } = captureProcessHandlers();
+    const { captured, spy: timeoutSpy } = captureTimeouts();
     const server = createFakeServer();
 
     setupErrorHandlers(server, 100);
-    handlers.uncaughtException(new Error('metrics forEach() failed'));
+    handlers.SIGTERM?.();
+    handlers.uncaughtException?.(new Error('segunda coisa'));
+    handlers.SIGINT?.();
 
-    expect(server.close).not.toHaveBeenCalled();
-    expect(exitSpy).not.toHaveBeenCalled();
+    expect(server.close).toHaveBeenCalledTimes(1);
+    // Um único timer de force-close, senão os dois compete para matar o processo.
+    expect(captured).toHaveLength(1);
+
+    captured.forEach(entry => entry.fn());
+    await new Promise(resolve => globalThis.setImmediate(resolve));
 
     logSpy.mockRestore();
+    errorSpy.mockRestore();
+    exitSpy.mockRestore();
+    spy.mockRestore();
+    timeoutSpy.mockRestore();
+  });
+
+  it('SIGTERM encerra com saída 0: encerramento pedido é sucesso', async() => {
+    // O inverso do uncaughtException: aqui exit(0) é o correto, e é o que evita
+    // que um deploy ou um `docker stop` treatable vire reinício eternal.
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const exitSpy = jest.spyOn(process, 'exit').mockImplementation(() => 0 as never);
+    const { setupErrorHandlers } = await loadErrorHandler();
+    const { handlers, spy } = captureProcessHandlers();
+    const { captured, spy: timeoutSpy } = captureTimeouts();
+
+    setupErrorHandlers(createFakeServer(), 100);
+    handlers.SIGTERM?.();
+    await new Promise(resolve => globalThis.setImmediate(resolve));
+
+    // Antes do timer: o exit(1) do force-close não pode satisfazer esta
+    // afirmação, que é justamente sobre o exit(0) do encerramento limpo.
+    expect(exitSpy).toHaveBeenCalledWith(0);
+    expect(exitSpy).not.toHaveBeenCalledWith(1);
+
+    captured.forEach(entry => entry.fn());
+
+    logSpy.mockRestore();
+    errorSpy.mockRestore();
+    exitSpy.mockRestore();
+    spy.mockRestore();
+    timeoutSpy.mockRestore();
+  });
+
+  it('unhandledRejection usa o mesmo modelo e também derruba com saída não-zero', async() => {
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const exitSpy = jest.spyOn(process, 'exit').mockImplementation(() => 0 as never);
+    const { setupErrorHandlers } = await loadErrorHandler();
+    const { handlers, spy } = captureProcessHandlers();
+    const { captured, spy: timeoutSpy } = captureTimeouts();
+    const server = createFakeServer();
+
+    setupErrorHandlers(server, 100);
+    handlers.unhandledRejection?.(new Error('query falhou'), Promise.resolve());
+
+    expect(server.close).toHaveBeenCalled();
+    await new Promise(resolve => globalThis.setImmediate(resolve));
+    expect(exitSpy).toHaveBeenCalledWith(1);
+
+    captured.forEach(entry => entry.fn());
+
+    logSpy.mockRestore();
+    errorSpy.mockRestore();
     exitSpy.mockRestore();
     spy.mockRestore();
     timeoutSpy.mockRestore();

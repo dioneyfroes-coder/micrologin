@@ -79,11 +79,74 @@ interface NodeServer {
 
 /**
  * Configura handlers para erros não tratados
+ *
+ * ## Um `uncaughtException` sempre derruba o processo
+ *
+ * Uma exceção que escapou do fluxo normal significa que o estado do processo
+ * não é confiável: pode haver um lock tomado sem metade da escrita, uma
+ * transação aberta, um cache pela metade. Continuar rodando parece gentileza e
+ * na prática adia o problema para um `TypeError` muito mais distante, sem
+ * nenhum registro de que a causa existiu.
+ *
+ * Havia aqui uma isenção por mensagem:
+ *
+ * ```js
+ * if (err.message.includes('forEach')) return; // "mantém a app de pé"
+ * ```
+ *
+ * O efeito colateral era o oposto do pretendido. `forEach` aparece na mensagem
+ * de qualquer `TypeError` lançado dentro de um `forEach` do domínio — não de
+ * uma biblioteca de métricas, que era a origem histórica da isenção. Um erro
+ * de domínio com a palavra no meio da frase mantinha o processo vivo com estado
+ * possivelmente inconsistente, enquanto qualquer outro erro derrubava tudo. A
+ * mesma falha, com uma palavra a menos ou a mais, decidia se o processo
+ * sobrevivia.
+ *
+ * Decidir entre derrubar e continuar é decisão de resiliência — e ela é feita
+ * uma vez, aqui, de forma uniforme e em favor da integridade. A disponibilidade
+ * vem do orquestrador, que reinicia o processo: Docker com `restart:
+ * unless-stopped` e PM2 com `autorestart` no default (`true`) sobem de novo
+ * depois de qualquer saída, inclusive a não-zero de um crash.
+ *
+ * ## Por que o código de saída distingue crash de encerramento
+ *
+ * O `exit(0)` de um crash afirmaria que o processo terminou como deveria, e ele
+ * não terminou. Nos dois orquestradores deste projeto isso não muda o
+ * reinício — ambos reiniciam em qualquer código —, mas a informação errada
+ * escapa para fora: alertas e runbooks que leem o código de saída do container
+ * tratariam uma queda por estado inconsistente como uma parada programada, e
+ * qualquer supervisor que *sim* distingue sucesso de falha (systemd com
+ * `Restart=on-failure`, Kubernetes) deixaria o processo com estado inconsistente
+ * no ar justamente por causa do `0`.
+ *
+ * Por isso: SIGTERM/SIGINT saem com 0 (encerramento pedido é sucesso), e
+ * `uncaughtException`/`unhandledRejection` saem com 1.
  */
 export const setupErrorHandlers = (server: NodeServer, timeoutMs = 10000) => {
   const forceCloseTimeoutMs = timeoutMs;
-  const gracefulShutdown = async(signal: string) => {
-    logger.info(`📵 Recebido ${signal}, iniciando graceful shutdown...`);
+
+  /**
+   * Trava de idempotência.
+   *
+   * Sem ela, um SIGTERM seguido de um `uncaughtException` dispararia duas
+   * rotinas concorrentes: dois `server.close()`, dois `mongoose.close()` e dois
+   * timers de force-close. Pior, o segundo `close()` numa conexão já fechada
+   * lança, cai no `catch` e chama `process.exit(1)` no meio do encerramento
+   * limpo — pullando o `close()` bem-sucedido pela janela.
+   */
+  let shuttingDown = false;
+
+  const gracefulShutdown = async(signal: string, exitCode = 0) => {
+    if (shuttingDown) {
+      // Registrado e ignorado de propósito: o processo já está encerrando e a
+      // rotina em curso vai fechar tudo. Um segundo shutdown aqui só criaria
+      // duas bulbosas para o mesmo socket.
+      logger.warn(`⚠️ ${signal} recebido durante graceful shutdown em andamento; encerramento já em curso`);
+      return;
+    }
+    shuttingDown = true;
+
+    logger.info(`📵 Recebido ${signal}, iniciando graceful shutdown (exit ${exitCode})...`);
 
     try {
       server.close(async() => {
@@ -96,7 +159,7 @@ export const setupErrorHandlers = (server: NodeServer, timeoutMs = 10000) => {
           logger.error('⚠️ Erro ao fechar MongoDB', dbError);
         }
 
-        process.exit(0);
+        process.exit(exitCode);
       });
     } catch (serverError) {
       logger.error('⚠️ Erro ao fechar servidor', serverError);
@@ -110,31 +173,21 @@ export const setupErrorHandlers = (server: NodeServer, timeoutMs = 10000) => {
     }, forceCloseTimeoutMs);
   };
 
-  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM', 0));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT', 0));
 
-  // MELHOR tratamento de erros não críticos
+  // Um `uncaughtException` não é um erro de requisição: é o processo inteiro
+  // perdeu a confiança em si mesmo. Registra a causa e derruba.
   process.on('uncaughtException', (err: Error) => {
     logger.error('❌ Erro não tratado', err);
-
-    // Isenção por mensagem, legada de quando a coleta de métricas era feita por
-    // biblioteca de terceiros. Hoje o caminho de observabilidade se protege
-    // sozinho (o sink engole o próprio erro), então nada daqui deveria casar.
-    //
-    // O efeito colateral é o oposto do pretendido: `forEach` aparece na
-    // mensagem de qualquer TypeError lançado dentro de um forEach do domínio,
-    // e esse processo segue rodando com estado possivelmente inconsistente.
-    // Tratar isso é decisão de resiliência (derrubar e deixar o PM2 reiniciar,
-    // ou continuar), não de remoção de stack.
-    if (err.message.includes('forEach')) {
-      return; // NÃO chamar gracefulShutdown
-    }
-
-    gracefulShutdown('uncaughtException');
+    gracefulShutdown('uncaughtException', 1);
   });
 
   process.on('unhandledRejection', (reason: unknown, _promise: Promise<unknown>) => {
     logger.error('❌ Rejeição não tratada', reason);
-    gracefulShutdown('unhandledRejection');
+    // Mesma escala de `uncaughtException`: uma promessa rejeitada que ninguém
+    // tratou é estado desconhecido, e saída 0 aqui diria ao orquestrador que
+    // está tudo bem.
+    gracefulShutdown('unhandledRejection', 1);
   });
 };
