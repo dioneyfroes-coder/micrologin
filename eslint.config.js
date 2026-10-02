@@ -58,7 +58,11 @@ export default tseslint.config(
         __ENV: 'readonly',
         __VU: 'readonly',
         __ITER: 'readonly',
-        process: 'readonly'
+        process: 'readonly',
+        // `console` também é global do runtime do k6 (injetado pelo goja), e
+        // o runner precisa dele para dizer QUAL requisição tomou 5xx — o
+        // `--summary-export` só entrega a contagem.
+        console: 'readonly'
       }
     }
   },

@@ -64,8 +64,19 @@ const recordStatus = (response) => {
   }
   if (response.status >= 500) {
     serverErrors.add(1);
+    // O summary-export diz QUANTOS 5xx houve, nunca o que eles eram. Sem isto,
+    // um 503 deliberado (fail-closed sem Redis) e um 500 de bug contam igual no
+    // relatório, e a diferença entre "o limitezagou" e "o serviço quebrou"
+    // fica impossível saber, depois do fim do flood. Amostra, não despejo: o log
+    // inteiro de um flood seria grande demais para ser útil.
+    if (fivexxLogged < 5) {
+      fivexxLogged += 1;
+      console.log(`[5xx] ${response.status} ${response.request?.method} ${response.url} :: ${String(response.body).slice(0, 300)}`);
+    }
   }
 };
+
+let fivexxLogged = 0;
 
 const login = (password = LOGIN_PASS, headers = {}) => {
   const response = http.post(`${BASE_URL}/login`, JSON.stringify({

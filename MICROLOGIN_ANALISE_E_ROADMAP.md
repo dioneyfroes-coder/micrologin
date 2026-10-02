@@ -14,17 +14,43 @@ artefato atrás. Este documento é o que falta, em ordem de execução.
 
 | Prova | Comando | Resultado |
 | --- | --- | --- |
-| Portões | `lint`, `typecheck`, `test:secrets` | verdes |
-| Unidade | `test:unit` | 628/628 em 48 suítes |
-| Integração | `test:integration` | 38/38 |
+| Portões | `lint`, `typecheck` | verdes |
+| Unidade | `test:unit` | 704/704 em 53 suítes |
+| Integração | `test:integration` | 38/38 em 6 suítes |
 | E2E | `test:e2e` | 15/15 contra stack real |
-| Roubo de credenciais | `test:credential-theft` | 15 E2E + 7 (T1–T6) |
+| Roubo de credenciais | `test:credential-theft` | 15 E2E + 10 + 14 (T1–T6 e as duas unidades de falha) |
 | Infraestrutura | `test:infra` | 13/13 |
-| Persistência Redis | `test:redis` | RTO 0,6 s; revogado continua revogado |
+| Persistência Redis | `test:redis` | RTO 0,5 s; revogado continua revogado |
+| Limite D20 | `test:redis:volume-loss` | revogado volta a valer (7 dias via refresh) — o limite aceito, medido |
 | Backup/restore | `test:backup` | dump → gpg → apaga → restaura → login 200, RTO 1 s |
 | Config/rollback | `test:config-backup` | imagem + config v1 restauradas |
-| DDoS | `test:ddos` | **falha** — ver P1 |
-| Capacidade | `test:capacity` | não reexecutado pós-tuning — ver P9 |
+| DDoS | `test:ddos` | 4120 limited, 0 liveness, **0** 5xx, 3/3 réplicas, pico 285,6 MiB |
+| Capacidade | `test:capacity` | 12/12 casos pós-tuning, todos com GC capturado |
+
+Esta é a execução que fecha o documento, rodada depois da P10 como manda o
+portão da seção 3. Três coisas dela merecem entrar na tabela, porque as três são
+armadilhas de leitura:
+
+- **`test:ddos` exige k6 no host**, e este host não tem. Rodado pela imagem
+  `grafana/k6:0.54.0` com `--network host` (o VU precisa alcançar o proxy do
+  Compose) — é a mesma imagem que o `test:capacity` já usava, então a
+  dependência de k6 ficou uneven entre dois runners: um resolve por container, o
+  outro não. Não é falha do serviço; é uma assimetria do harness que convém
+  registrar antes que alguém conclua o contrário.
+- **O primeiro `test:ddos` desta sessão acusou 13 respostas 5xx** em `/login` e
+  reprovou o limite `count<5`. Cinco execuções seguintes, todas com a mesma
+  configuração (27 VUs, 20 s), deram 0. A diferença do primeiro run: foi o que
+  rodou logo depois do `--build` das três réplicas, com o host disputando CPU
+  com a imagem. **A causa não foi estabelecida** — e é por isso que o script do
+  k6 agora imprime corpo e URL de todo 5xx (`[5xx]`), porque o
+  `--summary-export` só entrega a contagem, e uma contagem sem corpo não
+  distingue "503 deliberado por fail-closed" de "500 de bug". Instrumentado,
+  não resolvido.
+- **`test:redis:volume-loss` reprovando é o resultado esperado** (P11): drill
+  verde naquele modo significa que o limite D20 continua valendo. Se um dia ele
+  ficar vermelho porque a revogação passou a sobreviver à perda de volume, a
+  D20 foi fechada e esta tabela, o `docs/SEGURANCA.md` e o
+  `docs/ARQUITETURA.md` precisam mudar junto.
 
 ---
 
@@ -549,6 +575,11 @@ P11 decisão D20                  projeto
 ```
 
 **Portão:** a suíte inteira (`test:unit`, `test:integration`, `test:e2e`,
-`test:credential-theft`, `test:infra`, `test:redis`, `test:backup`,
-`test:config-backup`, `test:ddos`) só roda ao fim, depois das correções de
-código, e o resultado é o que fecha este documento.
+`test:credential-theft`, `test:infra`, `test:redis`, `test:redis:volume-loss`,
+`test:backup`, `test:config-backup`, `test:ddos`) só roda ao fim, depois das
+correções de código, e o resultado é o que fecha este documento.
+
+**Portão cumprido.** Executado depois da P10, como a regra exige, e o resultado
+está na tabela da seção 1 — com `test:redis:volume-loss` incluído, que é o
+segundo drill de Redis: ele não valida o serviço, valida o **limite aceito**, e
+por isso entra no portão com a mesma obrigação de ser verde.
