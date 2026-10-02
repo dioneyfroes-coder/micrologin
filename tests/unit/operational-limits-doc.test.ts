@@ -156,4 +156,47 @@ describe('limites operacionais documentados', () => {
       expect(flatten(seguranca)).toMatch(/Failover ativo continua sem prova/);
     });
   });
+
+  describe('o registro de decisões não tem buraco de numeração', () => {
+    // D20 morou anos só em `docs/REDIS.md`, com referência cruzada aqui. Quem
+    // abre o registro procurando "por que a revogação aceita fail-open quando
+    // o volume do Redis some" não achava nada — e a ausência parecia "não há
+    // questão aberta", que é a leitura mais perigosa possível de um índice.
+    const numeros = [...seguranca.matchAll(/^### D(\d+) — /gm)].map((m) =>
+      Number(m[1])
+    );
+
+    it('tem D20 e a sequência não pula número entre D1 e o fim', () => {
+      expect(numeros).toContain(20);
+      const ordenados = [...new Set(numeros)].sort((a, b) => a - b);
+      for (let i = 1; i < ordenados.length; i++) {
+        // Só a partir de D1: o registro começa em D1 e a ausência de D0 não é
+        // buraco, é o começo.
+        if (ordenados[i - 1] >= 1) {
+          expect(ordenados[i]).toBe(ordenados[i - 1] + 1);
+        }
+      }
+    });
+
+    it('D20 declara o status em aberto e as duas saídas que fecham a lacuna', () => {
+      // Sem o status, a entrada seria lida como resolvida — que é o oposto do
+      // que ela diz. Sem as saídas, ela registra o problema sem dizer o que
+      // medir para fechá-lo.
+      const d20 = flatten(seguranca.slice(seguranca.indexOf('### D20 —')));
+      expect(d20).toMatch(/em aberto/);
+      expect(d20).toMatch(/promote manual/);
+      expect(d20).toMatch(/também no Mongo|tambem no Mongo/);
+      // E o que a operação tem hoje, para que "em aberto" não vire desculpa
+      // de não ter nada feito.
+      expect(d20).toMatch(/test:redis/);
+    });
+
+    it('a entrada de D20 não contradiz a discussão em REDIS.md', () => {
+      // As duas entradas descrevem a mesma lacuna. Se uma delas mudar de
+      //ercdo, o leitor vai ler a outra e concluir que o problema não existe.
+      const redis = flatten(read('docs/REDIS.md'));
+      expect(redis).toMatch(/fail-open de fato/);
+      expect(redis).toMatch(/D20/);
+    });
+  });
 });

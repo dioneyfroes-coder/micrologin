@@ -436,6 +436,36 @@ A matriz final, reexecutada com o fix, capturou GC nos 12 casos.
 **Pronto quando:** D20 ganha entrada própria no registro de decisões, com o
 status "em aberto" e o porquê.
 
+**Feito:** `D20` entrou em `docs/SEGURANCA.md` como entrada própria, com o
+status **em aberto**, a descrição do dano (token revogado volta a valer até o
+expirar, e nada no sistema prova que o logout aconteceu), as duas saídas que
+fecham a lacuna e por que ambas mudam o modelo de operação — mais o que a
+operação tem hoje (fail-closed no Redis indisponível, drill `test:redis`) e o
+que ele **não** cobre: a perda de volume, que é exatamente o que as duas opções
+comprariam.
+
+Sobre as três afirmações desatualizadas, verificadas e não reproduzíveis:
+
+1. **"Docker CLI não está instalado neste host" / "prova de Docker pendente"** —
+   nenhuma das frases existe em `README.md`, `docs/` ou no roadmap v2. O host
+   tem Docker 29.8.1 e Compose v5.5.1, e as provas de D1–D29 estão executadas
+   (`scripts/test-deploy.sh`, `scripts/test-backup.sh`, `scripts/test-config-backup.sh`,
+   `scripts/ddos-survival-test.mjs`). As cinco frases estavam só na versão
+   anterior do roadmap, já superada. O teste `operational-limits-doc.test.ts`
+   já barra a reincidência ("nenhuma ameaça já medida continua declarada como
+   pendente", "aguarda host Docker").
+2. **D20 sem entrada no registro** — corrigido acima.
+3. **"decisões D15–D18" (Fase 7 do roadmap v2)** — o documento já estava em D29.
+   Os documentos vivos citam D15 a D18 apenas em listas e links para outras
+   entradas, o que é correto; não há nenhum texto vivo prometendo um registro
+   que acabe em D18.
+
+O teste novo fecha a porta pelo lado que importa: **`operational-limits-doc.test.ts`
+agora exige que a sequência `### Dn —` não pule número** entre D1 e o fim, e
+que D20 declare o status e as duas saídas. Provado com mutação — removendo a
+entrada D20, que é o estado exato que o roadmap descrevia, dois casos reprovam
+(16/15 verdes com a entrada, 14/16 sem ela).
+
 ## P11 — `D20`: decisão de projeto, não tarefa
 
 Se o volume do Redis for destruído, a revogação volta sem histórico e o

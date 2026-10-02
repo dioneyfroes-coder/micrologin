@@ -509,6 +509,55 @@ eles é a única coisa que faz o portão valer alguma coisa.
 
 ---
 
+### D20 — Revogação em nó único: o limite aceito e o que fecha a lacuna
+
+**Status: em aberto.** Registrada aqui para que a lacuna seja encontrável; não é
+decisão tomada.
+
+O serviço de revogação (blacklist de tokens e carimbo de sessão) roda em **um
+único nó de Redis**. A D22 resolveu a outra metade do problema — o que o Redis
+perde em restart agora sobrevive a restart, por AOF — mas o que o Redis perde em
+**perda do volume** continua perdido: se o `docker volume` for destruído (falha
+de disco, `docker volume rm`, restauração de VM a partir de snapshot antigo), o
+serviço volta sem histórico de revogação e opera em **fail-open de fato** — não
+por escolha de projeto, e sim por ausência do dado.
+
+O ponto que importa é o alcance do dano. Não é "o login parou de funcionar" nem
+"o banco sumiu": é que **um token que já foi revogado volta a valer até o seu
+próprio expirar**, e nada no sistema consegue provar que o logout aconteceu. Um
+atacante que guardou o token tem a janela inteira da validade dele. Como o
+serviço é fail-closed quando o Redis está *indisponível* (D21 e o 503), o
+fail-open aqui é um buraco silencioso num sistema que parece fechado: o operador
+não tem nenhum sinal.
+
+**Por que continua em aberto e não fechado.** As duas saídas que funcionam de
+verdade mudam o modelo de operação, não o código:
+
+1. **Segundo Redis com réplica e `promote` manual.** Tira a revogação do caminho
+   de nó único. Custa um segundo nó para operar, um procedimento de promote que
+   alguém tem de saber executar, e uma janela de divergência no momento do
+   promote — que precisa ser declarada, não descoberta.
+2. **Persistir o carimbo de revogação também no Mongo**, que já é fonte de
+   verdade e já tem backup (§D21). Elimina a dependência do dado estar no Redis,
+   ao custo de escrever no Mongo a cada logout e de decidir o que acontece quando
+   os dois divergem.
+
+Escolher entre as duas é decisão de quem opera, porque a resposta depende de
+quanto o ambiente tolera de indisponibilidade e quanta competência de promote
+existe. Nenhuma das duas entra como "melhoria" escondida em refatoração.
+
+**O que a operação tem até lá.** O fail-closed no Redis indisponível (503, nunca
+401) e o drill `npm run test:redis`, que prova no ambiente de teste que a
+revogação sobrevive ao restart. Rodar esse drill depois de qualquer mudança no
+compose do Redis é o mais barato que existe para descobrir que alguém desligou a
+persistência. Ele **não** cobre a perda de volume — cobrir isso é justamente o
+que as duas opções acima comprariam.
+
+Referência cruzada: `docs/REDIS.md` traz a discussão completa da falha de
+volume e do fail-open acidental.
+
+---
+
 ### D21 — Backup do Mongo é gpg AES-256 simétrico sobre archive único, RPO 24h
 
 O roadmap da fase 2.1 citava "age/gpg simétrico" e "tar". O que foi entregue:
