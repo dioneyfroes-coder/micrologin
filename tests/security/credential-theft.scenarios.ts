@@ -70,7 +70,8 @@ export const registerSurvivalScenarios = (makeHarness: MakeSurvivalHarness) => {
           (plain === 'CurrentPass123!' && hash === 'old-hash') ||
           (plain === 'NewStrongPass456!' && hash === 'new-hash')
         )),
-        hash: jest.fn(async() => 'new-hash')
+        hash: jest.fn(async() => 'new-hash'),
+        compareDummy: jest.fn(async() => false)
       };
       const harness = makeHarness();
       const authService = new AuthService(repository, crypto, harness.tokenService, harness.logger);
@@ -132,7 +133,8 @@ export const registerSurvivalScenarios = (makeHarness: MakeSurvivalHarness) => {
         findByUsername: jest.fn(async(username: string) => accounts.get(username) ?? null)
       };
       const crypto = {
-        compare: jest.fn(async(plain: string, hash: string) => plain === 'LeakedPass123!' && hash === 'same-hash')
+        compare: jest.fn(async(plain: string, hash: string) => plain === 'LeakedPass123!' && hash === 'same-hash'),
+        compareDummy: jest.fn(async() => false)
       };
       const { tokenService, logger } = makeHarness();
       const authService = new AuthService(repository, crypto, tokenService, logger);

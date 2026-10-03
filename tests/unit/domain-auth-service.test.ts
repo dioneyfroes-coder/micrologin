@@ -45,12 +45,18 @@ describe('AuthService - registro', () => {
     const userRepository = makeRepo({
       exists: jest.fn().mockResolvedValue(true)
     });
+    const crypto = { compareDummy: jest.fn().mockResolvedValue(false) };
 
-    const service = new AuthService(userRepository, {}, {}, logger);
+    const service = new AuthService(userRepository, crypto, {}, logger);
     const result = await service.registerUser('alice', 'StrongPass123!');
 
     expect(result.success).toBe(false);
     expect(result.error).toBe('Usuário já existe');
+    // Username repetido é "não existe" de outro jeito, e sem este argon2 o
+    // caminho respondia sem custo de hash: a diferença de tempo entre "conta
+    // criada" e "conta repetida" enumerava a base tão bem quanto a do login.
+    expect(crypto.compareDummy).toHaveBeenCalledWith('StrongPass123!');
+    expect(userRepository.save).not.toHaveBeenCalled();
   });
 
   it('falha ao registrar com credenciais inválidas (DomainError mapeado)', async() => {
@@ -133,12 +139,18 @@ describe('AuthService - autenticação', () => {
     const userRepository = makeRepo({
       findByUsername: jest.fn().mockResolvedValue(null)
     });
+    const crypto = { compare: jest.fn(), compareDummy: jest.fn().mockResolvedValue(false) };
 
-    const service = new AuthService(userRepository, { compare: jest.fn() }, { generateTokenPair: jest.fn() }, logger);
+    const service = new AuthService(userRepository, crypto, { generateTokenPair: jest.fn() }, logger);
     const result = await service.authenticateUser('alice', 'StrongPass123!');
 
     expect(result.success).toBe(false);
     expect(result.error).toBe('Usuário não encontrado');
+    // O caminho do username inexistente passa por argon2id. Sem isso, a
+    // resposta era rápida demais e a diferença de tempo entre "não existe" e
+    // "senha errada" virava oráculo de enumeração.
+    expect(crypto.compareDummy).toHaveBeenCalledWith('StrongPass123!');
+    expect(crypto.compare).not.toHaveBeenCalled();
   });
 
   it('falha quando a senha está incorreta', async() => {

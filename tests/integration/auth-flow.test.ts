@@ -59,7 +59,11 @@ const makeInMemoryStore = () => {
 
   const crypto = {
     hash: jest.fn(async(plain: string) => `hash:${plain}`),
-    compare: jest.fn(async(plain: string, hash: string) => `hash:${plain}` === hash)
+    compare: jest.fn(async(plain: string, hash: string) => `hash:${plain}` === hash),
+    // O caminho "username não existe"/"já existe" paga um hash descartável para
+    // não responder mais rápido que o caminho que faz argon2 de verdade. O
+    // double paga o mesmo custo e sempre nega, como o adapter real.
+    compareDummy: jest.fn(async(_plain: string) => false)
   };
 
   return { users, revoked, userRepository, tokenGenerator, crypto };

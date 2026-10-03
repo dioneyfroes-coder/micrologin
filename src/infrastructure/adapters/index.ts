@@ -6,7 +6,7 @@
  */
 
 import { Algorithm, hash as argon2Hash, verify as argon2Verify } from '@node-rs/argon2';
-import { createHmac } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import type { CryptoService, Logger, UserRepository } from '../../domain/index.js';
 import { User } from '../../domain/index.js';
 import { normalizeUsername } from '../../shared/utils/usernamePolicy.js';
@@ -228,6 +228,19 @@ const PEPPER_ENVELOPE_PATTERN = /^(p\d+):([\s\S]+)$/;
 export class PasswordHasher implements CryptoService {
   private readonly options: PasswordHasherOptions;
 
+  /**
+   * Hash descartável para o caminho "usuário não existe", derivado dos
+   * parâmetros deste hasher e gerado uma vez.
+   *
+   * `null` significa "ainda não gerado" ou "a última tentativa rejeitou". A
+   * promessa é reusada por instância: um burst de 30 logins de username
+   * inexistente paga **um** hash, não 30 — se cada requisição gerasse o seu, o
+   * caminho "não existe" ficaria mais lento que o de usuário real, e a
+   * mitigação viraria um oráculo do sentido inverso, além de ser um amplificador
+   * de carga para quem não tem conta.
+   */
+  private dummyHash: Promise<string> | null = null;
+
   constructor(options: PasswordHasherOptions) {
     this.options = options;
 
@@ -238,7 +251,64 @@ export class PasswordHasher implements CryptoService {
     // "nunca reutilizada".
     this.hash = this.hash.bind(this);
     this.compare = this.compare.bind(this);
+    this.compareDummy = this.compareDummy.bind(this);
     this.needsRehash = this.needsRehash.bind(this);
+  }
+
+  /**
+   * Hash descartável, gerado com os mesmos parâmetros do hasher.
+   *
+   * A senha é um valor aleatório: não é a senha de ninguém e não precisa
+   * colidir com nada. O que importa é que o argon2 veja o mesmo custo.
+   */
+  private ensureDummyHash(): Promise<string> {
+    if (this.dummyHash) {
+      return this.dummyHash;
+    }
+
+    const pending = (async() => {
+      const random = randomBytes(32).toString('base64');
+
+      return this.hash(random);
+    })();
+
+    this.dummyHash = pending;
+
+    // Rejeição é erro explícito, e não silêncio: se o argon2 está com defeito,
+    // um no-op aqui devolveria o login inexistente **rápido** de novo, que é o
+    // que a mitigação existe para impedir — e o serviço inteiro está quebrado
+    // nesse momento, porque `compare` falha do mesmo jeito para usuário real.
+    //
+    // A promessa é descartada ao rejeitar para que uma falha transitória não
+    // fique guardada para sempre: senão, um pico de uso de memória que fizesse o
+    // primeiro `hash` falhar tornaria permanente a devolução rápida do caminho
+    // "não existe", sem que nada apontasse para o motivo.
+    pending.catch(() => {
+      if (this.dummyHash === pending) {
+        this.dummyHash = null;
+      }
+    });
+
+    return pending;
+  }
+
+  /**
+   * Compara a senha contra um hash descartável e devolve `false` sempre.
+   *
+   * Usa `compare` de verdade, e não um atalho: o atalho seria um `argon2Verify`
+   * direto, mas `compare` acrescenta o pepper e o `unwrap`, e é o custo
+   * **dele** que precisa casar com o login de um usuário real.
+   */
+  async compareDummy(plainText: string): Promise<false> {
+    const dummy = await this.ensureDummyHash();
+
+    // O retorno é descartado de propósito. `compare` pode devolver `true` só se
+    // a senha casar com o valor aleatório que o próprio processo acabou de
+    // gerar; mesmo assim o resultado não vaza, porque `false` é devolvido
+    // incondicionalmente.
+    await this.compare(plainText, dummy);
+
+    return false;
   }
 
   async hash(plainText: string): Promise<string> {

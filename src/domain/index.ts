@@ -83,6 +83,31 @@ export interface CryptoService {
    * em claro está disponível (foi provada no login).
    */
   needsRehash?(hash: string): boolean;
+/**
+   * Compara a senha contra um hash descartável e devolve `false` sempre.
+   *
+   * É o que o login chama quando o usuário não existe, e o que o registro chama
+   * quando o username já existe. Sem isso, os dois caminhos "nãofound" respondiam
+   * sem passar por argon2id, e a diferença de tempo entre "não existe" e "senha
+   * errada" virava um oráculo de enumeração: uma requisição por username, sem
+   * tentativa de senha, já bastava para distinguir os dois.
+   *
+   * O hash precisa ter o **mesmo custo** do hash de um usuário real, e é por
+   * isso que o método existe em vez de o dominio guardar uma constante: o
+   * adapter deriva o descarte dos parâmetros que ele próprio usa. Uma constante
+   * fixa no dominio passaria a divergir assim que alguém mudasse `m=`, `t=` ou
+   * `p=`, e a mitigação viraria decorativa.
+   *
+   * Vale no registro mesmo sendo o caminho novo um `hash()` e não uma
+   * comparação: em argon2id o custo vem dos parâmetros codificados no hash, não
+   * do tipo da operação, e `verify` contra um hash de mesmo custo mede 0.97-1.01
+   * vezes o `hash` (medido em 2026-10-02 nos três pontos de operação usados
+   * aqui). Isso está em `tests/unit/timing-enumeration.test.ts`, que reprova se
+   * a razão sair da faixa.
+   *
+   * O resultado é sempre `false` e nenhuma entrada é aceita por acidente.
+   */
+  compareDummy(plainText: string): Promise<false>;
 }
 
 /**
@@ -367,6 +392,16 @@ export class AuthService {
       // Regra de negócio: usuário não pode já existir
       const userExists = await this.userRepository.exists(credentials.username);
       if (userExists) {
+        // O mesmo oráculo do login, na forma espelhada: "já existe" é a resposta
+        // **mais rápida** que um registro novo, porque aqui o argon2id nem roda.
+        // Um registro novo paga um `hash()` inteiro antes de gravar; este
+        // caminho pagava uma consulta ao banco e nada mais. A diferença mede
+        // quem já tem conta — exatamente o dado que o login tenta esconder, e
+        // que o `/register` não entrega em texto: o controller responde 400
+        // genérico tanto para conta nova quanto para username repetido. O
+        // tempo era o único oráculo que restava, e ele estava aberto.
+        await this.crypto.compareDummy(credentials.plainPassword);
+
         this.logger.warn('Falha ao registrar usuário', {
           username: credentials.username,
           reason: 'USER_ALREADY_EXISTS'
@@ -426,6 +461,15 @@ export class AuthService {
       // Buscar usuário
       const user = await this.userRepository.findByUsername(credentials.username);
       if (!user) {
+        // O username não existir é uma resposta **mais rápida** que senha errada:
+        // aqui não há argon2id para rodar. A diferença é pequena o bastante para
+        // passar despercebida num teste funcional e grande o bastante para
+        // enumerar a base por HTTP, medindo.
+        //
+        // O argon2 roda do mesmo jeito, contra um hash descartável, e o
+        // resultado é descartado. O que muda é só o custo, que é o que estava
+        // entregando a resposta.
+        await this.crypto.compareDummy(credentials.plainPassword);
         return AuthResult.failure('Usuário não encontrado');
       }
 
