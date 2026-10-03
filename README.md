@@ -425,13 +425,36 @@ transforma o gate em ruído, e gate que se acostuma a ser ignorado não é gate.
 revogável — não é a base para aceitar advisory transitivo de severidade média
 sem decisão explícita.
 
-A `allowlist` começa **vazia** e não é para ser preenchida por convenience.
-Uma exceção futura precisa de advisory, motivo, escopo e validade — e o
-`audit-ci` aceita `expiry` no registro da allowlist justamente para isso.
+A `allowlist` não é para ser preenchida por convenience. Uma exceção precisa de
+advisory, motivo, escopo e validade — e `expiry` existe justamente para a
+validade não ser um número que ninguém reavisa.
+
+**O formato importa, e o padrão é o errado.** O audit-ci aceita, no seu exemplo
+mais visível, `{ "ghsa": ["GHSA-..."], "justification": "...", "expiry": "..." }`
+— e ignora esse registro **sem erro e sem efeito**: o gate continua reprovando pelo
+mesmo advisory que "consta" na lista, e o diff parece innocuous. O que o
+`schema.json` do audit-ci de fato define é `NSPRecord`: a chave é o advisory e o
+valor é `{ active, expiry, notes }`. Foi o que a allowlist deste repositório
+passou a usar, e `tests/unit/audit-ci-gate.test.ts` falha se a lista voltar ao
+formato ignorado.
+
+Hoje existe **uma** exceção, e ela é datada:
+
+| advisory | pacote | validade | por quê |
+| --- | --- | --- | --- |
+| `GHSA-vfj7-8cjw-p6xm` | `braces <=3.0.3` | 2027-01-01 | ReDoS por stack exhaustion. A faixa vulnerável **inclui a última versão publicada**, então não há versão corrigida a instalar. Todo caminho é de `devDependencies` (`jest`/`micromatch`, `lint-staged`/`micromatch`, `pm2`/`chokidar`) e o padrão compilado vem de globs do próprio repositório em tempo de teste/lint, não de entrada de requisição. |
+
+A exceção é por **advisory**, nunca por pacote: allowlist por nome de pacote
+esconderia advisory nova do mesmo pacote, inclusive uma que já tivesse correção.
+E o teste compara o conjunto `moderate+` da árvore com o conjunto allowlisted —
+nem mais, nem menos — então advisory nova reprova e exceção que o tempo já
+resolveu aparece como sobra a remover.
 
 `npm audit --audit-level=moderate` roda no mesmo job. Ele é mais fraco que o
-`audit-ci` (não tem allowlist), então é o `audit-ci` que decide; ele fica como
-relatório direto do registry.
+`audit-ci` (não tem mecanismo de exceção), então é o `audit-ci` que decide; ele
+fica como relatório direto do registry. Por isso ele ainda sai vermelho com
+`braces`, e isso é esperado: a única advisory `moderate+` da árvore é a que está
+na tabela acima.
 2. **tests**: unitários rápidos, integração e upload de cobertura para Codecov
 3. **build**: build e push da imagem multi-plataforma (amd64/arm64) para GHCR
 4. **security**: scan de vulnerabilidades com Trivy, na mesma referência de imagem que será implantada (o digest) — **reprova o pipeline** em HIGH/CRITICAL (`exit-code: '1'`, `ignore-unfixed: true`)

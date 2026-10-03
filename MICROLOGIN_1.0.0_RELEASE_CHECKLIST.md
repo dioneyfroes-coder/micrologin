@@ -453,26 +453,85 @@ Mutações, todas detectadas:
 | `skip-dev` → `skipDev` | 3 |
 | Dois thresholds (`moderate` + `high`) | 1 |
 | Baixar a política para `high` | 2 |
-| `allowlist` com entrada | 2 |
+| `allowlist` no formato ignorado pelo audit-ci | 3 |
+| `allowlist` sem `expiry` | 2 |
+| `allowlist` por pacote em vez de advisory | 2 |
 | README anunciando outro threshold | 1 |
 | Config alterada, README desatualizado | 2 |
 
-### Pendência conhecida — o gate agora reprova
+### Pendência resolvida em 2026-10-03 — verificada antes, não depois
 
-Com a política correta, `code-quality` fica **vermelho** até as advisories de
-severidade `high` em devDependencies serem resolvidas:
+A pendência era esta:
 
 ```text
 GHSA-c475-qrg2-pj4r  basic-ftp <=6.2.0
 pm2 > proxy-agent > pac-proxy-agent > get-uri > basic-ftp
 ```
 
-5 `high`, 0 `moderate`, 0 `critical`. É devDependencies (`pm2`), e `npm audit fix`
-só oferece `pm2@6.0.14` — downgrade com breaking change, recusado. **Não foi
-allowlisted**, porque a política deste item manda allowlist vazia até existir
-justificativa real. Caminhos: aguardar `proxy-agent` corrigir a dependência, ou
-`overrides` para `basic-ftp@^6.2.1` — que é major bump em `get-uri` e exige
-verificação antes, não depois. Fica registrado como pendência, não escondido.
+O caminho escolhido foi o que este item apontava como mais caro, e por isso foi
+verificado **antes** de ser aceito: `overrides` para `basic-ftp@^6.2.1`, ou seja,
+major bump dentro de uma dependência de terceiro (`get-uri@6.0.5` declara
+`basic-ftp: ^5.0.2`). O que a verificação encontrou:
+
+- `npm install` com o override **trocou** `GHSA-c475-qrg2-pj4r` por
+  `GHSA-2883-xcg3-v3hh` (`js-yaml >=4.0.0 <4.3.2`, CPU por `maxTotalMergeKeys`).
+  Não era acaso: o lockfile antigo **não honrava** o pin exato do `pm2`
+  (`js-yaml: 4.3.1`) e reaproveitava o `4.3.2` hoisted, que não é vulnerável. Ao
+  re-resolver a árvore, o npm passou a obedecer o pin e aninhou o `4.3.1` —
+  vulnerável. Gate trocado por gate: mesmo número de advisories, uma diferente.
+- Correção com override **aninhado e escopado**, para não arrastar o
+  consumidor 3.x do istanbul (`@istanbuljs/load-nyc-config` usa `safeLoad`,
+  removido no js-yaml 4):
+
+```json
+"overrides": {
+  "basic-ftp": "^6.2.1",
+  "pm2": { "js-yaml": "^4.3.2" }
+}
+```
+
+Árvore resultante: `pm2 > js-yaml@4.3.2` e `get-uri > basic-ftp@6.2.1`, ambos
+`overridden`, sem `invalid` no `npm ls`, e
+`@istanbuljs/load-nyc-config > js-yaml@3.15.2` intacto (3.x está fora da faixa
+vulnerável).
+
+Verificado depois do override, não presumido: `lint`, `typecheck`, 916 unit,
+`pm2 --version` (7.0.4) e `test:coverage:fast` (958 testes) verdes, com cobertura
+inalterada (87.5% / 83.76% / 89.92% / 87.49%).
+
+### Exceção restante — `braces`, por advisory e com validade
+
+Sobrou uma advisory, e ela **não tem correção possível**:
+
+```text
+GHSA-vfj7-8cjw-p6xm  braces <=3.0.3  (ReDoS por stack exhaustion)
+jest > micromatch > braces ; lint-staged > micromatch > braces ; pm2 > chokidar > braces
+```
+
+A faixa vulnerável inclui a última versão publicada (3.0.3), então não existe o
+que instalar — e a remoção é impossível sem largar `jest`/`pm2`/`lint-staged`.
+30 pacotes high, todos de `devDependencies`, uma única advisory.
+
+Decisão registrada em 2026-10-03, com validade até **2027-01-01**: exceção por
+advisory, com `notes` explicando o caminho alcançável (padrão compilado a partir
+de globs do próprio repositório, em tempo de teste/lint — não há entrada de
+requisição nesse caminho) e o gatilho de reavaliação (publicação de correção em
+`braces` ou `micromatch`).
+
+O formato usado é o `NSPRecord` do schema do audit-ci
+(`{ GHSA-…: { active, expiry, notes } }`) e **não** o `{ ghsa, justification,
+expiry }` dos exemplos do próprio audit-ci: este último é ignorado sem erro nem
+aviso, com o gate continuando vermelho pelo advisory que "consta" na lista —
+conferido empiricamente nos dois formatos. `tests/unit/audit-ci-gate.test.ts`
+falha se a lista voltar ao formato ignorado, se alguma exceção perder
+justificativa ou validade, ou se o conjunto `moderate+` da árvore deixar de ser
+exatamente o conjunto allowlisted.
+
+O teste que exigia allowlist vazia foi trocado por esses quatro. A mutação
+"allowlist com entrada" da tabela acima não é mais o que testa exceção indevida:
+agora testa **exceção malformada**, e o contraponto continua sendo a fixture com
+`basic-ftp@5.3.1`, que a política real reprova mesmo com a exceção de `braces` no
+arquivo.
 
 ### Fonte
 
@@ -1326,9 +1385,9 @@ Executar em ambiente limpo, com Docker disponível e sem depender de artefatos g
 
 [x] `npm run build`
 
-[ ] `npm audit --audit-level=high` — **vermelho, ver pendência**
+[x] `npm audit --audit-level=high`
 
-[ ] `npx audit-ci --config .audit-ci.json` — **vermelho, ver pendência**
+[x] `npx audit-ci --config .audit-ci.json`
 
 [x] `npm run test:secrets`
 
@@ -1339,43 +1398,27 @@ Executar em ambiente limpo, com Docker disponível e sem depender de artefatos g
 vazamento, nenhum arquivo de material (chave, certificado, ACL) versionado e
 nenhuma credencial real nos `.env*` versionados.
 
-### Pendência — o gate de dependências está vermelho, e agora por dois motivos
+### Gate de dependências — fechado em 2026-10-03
 
-O item 1.6 deixou uma pendência conhecida: `basic-ftp` via `pm2`. A verificação
-de 2026-10-03 encontrou **uma segunda** advisory, que não existia quando o item
-foi escrito:
+`npm audit --audit-level=high` sai vermelho, e **é o esperado**: o `npm audit`
+não tem mecanismo de exceção. A única advisory `moderate+` da árvore é a
+`GHSA-vfj7-8cjw-p6xm` (`braces`), que está na allowlist do `audit-ci` com
+validade até 2027-01-01 e justificativa registrada. `npm audit --json` confirma
+que não existe outra: `moderate: 0`, `critical: 0`, e as 30 entradas `high` são
+todas o mesmo advisory repetido na cadeia do jest/lint-staged/pm2.
+
+O gate que decide é o `audit-ci`, e ele está **verde**:
 
 ```text
-GHSA-c475-qrg2-pj4r  basic-ftp <=6.2.0
-pm2 > proxy-agent > pac-proxy-agent > get-uri > basic-ftp
-GHSA-vfj7-8cjw-p6xm  braces <=3.0.3   (ReDoS por stack exhaustion)
-jest > micromatch > braces ; lint-staged > micromatch > braces ; pm2 > chokidar > braces
+Found vulnerable allowlisted advisories: GHSA-vfj7-8cjw-p6xm.
+Passed npm security audit.
 ```
 
-`npm audit --audit-level=high` acusa 34 `high` — a esmagadora maioria é a mesma
-`braces` repetida em 20 pacotes da cadeia do jest, mais `lint-staged` e `pm2`.
-
-Fatos, não opinião:
-
-- **`basic-ftp` tem versão corrigida** (`6.2.1`), mas `get-uri@6.0.5` declara
-  `basic-ftp: ^5.0.2` — sair da faixa do autor é major bump dentro de uma
-  dependência de terceiro. É o caminho que o item 1.6 já apontava como
-  "exige verificação antes, não depois".
-- **`braces` não tem versão corrigida**: a faixa vulnerável é `<=3.0.3` e a
-  3.0.3 é a última publicada. Não existe o que instalar. O `npm audit` sugere
-  `lint-staged@17.6.0`, o que não corrige a cadeia do jest nem a do `chokidar`.
-
-Consequência para a política: com a política do item 1.6 (bloquear `moderate`+,
-allowlist vazia), o job `code-quality` **não fecha**. As duas cadeias são de
-`devDependencies` (`jest`, `lint-staged`, `pm2`) e o caminho alcançado
-(`braces` compila regex a partir de padrões glob de arquivos do próprio
-repositório; `basic-ftp` só é carregado por resolução de URI de proxy) não
-recebe entrada de requisição. Allowlist com justificativa e validade é o
-caminho que a política do próprio item prevê — mas isso é decisão de release, e a decisão
-precisa ser do responsável, não minha. Registrado, não escondido.
-
-
----
+Dois `high` que existiam em 2026-10-02 foram removidos por `overrides` no
+`package.json`, com verificação de gate completo depois (item 1.6): 
+`basic-ftp@^6.2.1` para `GHSA-c475-qrg2-pj4r`, e `pm2 > js-yaml@^4.3.2` para
+`GHSA-2883-xcg3-v3hh`, que só apareceu porque o lockfile antigo não honrava o
+pin exato do pm2.
 
 ## 3.2 Suíte funcional
 

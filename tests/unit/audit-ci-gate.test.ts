@@ -42,6 +42,22 @@ const config = (): AuditConfig =>
   JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) as AuditConfig;
 
 /**
+ * Formato da allowlist, conforme `https://github.com/IBM/audit-ci/raw/main/docs/schema.json`:
+ * os itens são `string` ou `NSPRecord`, e `NSPRecord` é um objeto cujas chaves
+ * são livres (o advisory) e cujos valores são
+ * `{ active: boolean, expiry: string|number, notes?: string }`
+ * (`additionalProperties: false` dentro de `NSPContent`).
+ */
+type NspContent = {
+  active: boolean;
+  expiry: string | number;
+  notes?: string;
+};
+
+const allowlist = (): Record<string, NspContent>[] =>
+  config().allowlist as Record<string, NspContent>[];
+
+/**
  * Propriedades aceitas pelo schema oficial do audit-ci, conferidas em 2026-10-02
  * contra `https://github.com/IBM/audit-ci/raw/main/docs/schema.json`.
  *
@@ -120,8 +136,45 @@ describe('audit-ci - a configuração declara uma política', () => {
     expect(documented?.[1]).toBe(enabled[0]);
   });
 
-  it('não esconde advisory: a allowlist começa vazia', () => {
-    expect(config().allowlist).toEqual([]);
+  it('a allowlist usa a forma que o audit-ci de fato honra', () => {
+    // A forma dos exemplos do audit-ci — `{ "ghsa": [...], "justification": "...",
+    // "expiry": "..." }` — é *ignorar tudo sem erro*. Conferido em 2026-10-03: com
+    // o advisory na lista nesse formato o gate continuou reprovando, e a única
+    // pista era o mesmo advisory na saída. Só o formato NSPRecord suprime.
+    //
+    // É a mesma classe de defeito que `skipDev`/`summary` representavam: não
+    // falha, não avisa, e o diff parece innocuous. Por isso o teste existe.
+    for (const entry of allowlist()) {
+      expect(Object.keys(entry)).not.toContain('ghsa');
+      expect(Object.keys(entry)).not.toContain('justification');
+    }
+  });
+
+  it('toda exceção é um advisory GHSA com justificativa e validade', () => {
+    for (const entry of allowlist()) {
+      for (const [advisory, content] of Object.entries(entry)) {
+        expect(advisory).toMatch(/^GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}$/);
+        expect(content.active).toBe(true);
+        // Exceção sem validade declarada é como advisory esquecido: ninguém
+        // reavisa quando o pacote ganha correção, e a lista vira permanente.
+        expect(content.expiry).toBeTruthy();
+        expect(new Date(String(content.expiry)).getTime()).toBeGreaterThan(Date.now());
+        // Justificativa mínima: sem texto, a exceção não é uma decisão
+        // registrada, é um número de advisory com-calma.
+        expect(String(content.notes ?? '').trim().length).toBeGreaterThanOrEqual(80);
+      }
+    }
+  });
+
+  it('a lista é curta e específica: nenhuma exceção em pacote inteiro', () => {
+    // Allowlist por nome de pacote ("braces") esconderia advisory nova do mesmo
+    // pacote, inclusive uma que já tivesse correção. A exceção é por advisory.
+    expect(allowlist().length).toBeLessThanOrEqual(3);
+    for (const entry of allowlist()) {
+      for (const advisory of Object.keys(entry)) {
+        expect(advisory.startsWith('GHSA-')).toBe(true);
+      }
+    }
   });
 
   it('mantém a varredura em devDependencies', () => {
@@ -215,7 +268,99 @@ describe('audit-ci - o threshold é real, não decorativo', () => {
       return;
     }
 
-    // A política real do arquivo, não uma reescrita para o teste.
+    // A política real do arquivo, não uma reescrita para o teste. A allowlist
+    // com GHSA de `braces` não podecribeduzir a reprovação de `basic-ftp`:
+    // exceção por advisory, não por severidade nem por 'é transitivo'.
     expect(runAuditCi(config())).not.toBe(0);
+  });
+});
+
+/**
+ * A suíte acima prova que o gate reprova. Esta prova que ele *fecha*: que a
+ * allowlist cobre exatamente o que existe hoje, nem mais (advisory esquecida
+ *continua reprovando) nem menos (exceção que já não é mais necessária).
+ *
+ * Ambos os lados são rede. Sem registry, pulam com aviso — igual à fixture.
+ */
+describe('audit-ci - a allowlist cobre exatamente o que existe', () => {
+  let auditReachable = false;
+  let moderatePlus: string[] = [];
+  let realAuditCiExit: number | null = null;
+
+  beforeAll(() => {
+    // `npm audit` sai com código 1 exatamente quando acha advisory — ou seja,
+    // quando está funcionando. Ler só o caminho de sucesso descartava a prova
+    // toda vez que ela valia, e o teste "passava" sem verificar nada.
+    const capture = (): string => {
+      try {
+        return execFileSync('npm', ['--prefix', process.cwd(), 'audit', '--json'], {
+          cwd: process.cwd(),
+          stdio: ['ignore', 'pipe', 'pipe'],
+          encoding: 'utf8'
+        });
+      } catch (error) {
+        const stdout = (error as { stdout?: string }).stdout;
+        if (!stdout) {
+          throw error;
+        }
+        return stdout;
+      }
+    };
+
+    try {
+      const parsed = JSON.parse(capture()) as {
+        vulnerabilities: Record<string, { via: ({ url?: string; severity?: string } | string)[] }>;
+      };
+      const blocked = new Set(['moderate', 'high', 'critical']);
+      const found = new Set<string>();
+      for (const pkg of Object.values(parsed.vulnerabilities)) {
+        for (const via of pkg.via) {
+          if (typeof via === 'string' || !via.url || !via.severity || !blocked.has(via.severity)) {
+            continue;
+          }
+          found.add(via.url.split('/').pop() ?? via.url);
+        }
+      }
+      moderatePlus = [...found].sort();
+      auditReachable = true;
+    } catch {
+      auditReachable = false;
+      return;
+    }
+
+    try {
+      execFileSync('npx', ['audit-ci', '--config', CONFIG_PATH], {
+        cwd: process.cwd(),
+        stdio: 'pipe',
+        encoding: 'utf8'
+      });
+      realAuditCiExit = 0;
+    } catch (error) {
+      realAuditCiExit = (error as { status: number | null }).status ?? 1;
+    }
+  }, 300_000);
+
+  it('o conjunto moderate+ da árvore é o conjunto allowlisted', () => {
+    if (!auditReachable) {
+      console.warn('[gate] registry npm inacessível: prova de cobertura da allowlist pulada');
+      return;
+    }
+
+    const allowlisted = allowlist()
+      .flatMap(entry => Object.keys(entry))
+      .sort();
+
+    // Não "está na allowlist" — é exatamente igual. Um advisory moderate+ novo
+    // reprova (a lista não é um wildcard), e uma exceção que o tempo já
+    // consertou aparece como sobra, para ser removida em vez de acumular.
+    expect(moderatePlus).toEqual(allowlisted);
+  });
+
+  it('a política real do repositório passa o audit-ci', () => {
+    if (!auditReachable) {
+      return;
+    }
+
+    expect(realAuditCiExit).toBe(0);
   });
 });

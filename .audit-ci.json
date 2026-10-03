@@ -2,7 +2,15 @@
   "$schema": "https://github.com/IBM/audit-ci/raw/main/docs/schema.json",
   "moderate": true,
   "report-type": "full",
-  "allowlist": [],
+  "allowlist": [
+    {
+      "GHSA-vfj7-8cjw-p6xm": {
+        "active": true,
+        "expiry": "2027-01-01",
+        "notes": "braces <=3.0.3 (ReDoS por stack exhaustion em glob profundamente aninhado). A faixa vulneravel inclui a ultima versao publicada, portanto nao ha versao corrigida a instalar. Todos os caminhos sao de devDependencies (jest/micromatch, lint-staged/micromatch, pm2/chokidar) e o padrao compilado vem de globs do proprio repositorio em tempo de teste/lint, nao de entrada de requisicao. Reavaliar quando micromatch ou braces publicarem correcao. Decisao registrada nos itens 1.6 e 3.1 de MICROLOGIN_1.0.0_RELEASE_CHECKLIST.md."
+      }
+    }
+  ],
   "skip-dev": false,
   "output-format": "text"
 }
