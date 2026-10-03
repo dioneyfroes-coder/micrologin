@@ -969,33 +969,134 @@ Mutações, todas detectadas:
 
 ## 2.2 — Mitigar enumeração por timing em login/registro
 
-**Arquivos prováveis:** serviço de autenticação + módulo de hash + testes de segurança.
+**Arquivos:** `src/domain/index.ts`, `src/infrastructure/adapters/index.ts`.
 
-[ ] Para usuário inexistente, executar comparação com hash Argon2id dummy de custo equivalente.
+[x] Para usuário inexistente, executar comparação com hash Argon2id dummy de custo equivalente.
 
-[ ] Fazer o caminho de usuário existente e inexistente ter custo aproximado semelhante.
+[x] Fazer o caminho de usuário existente e inexistente ter custo aproximado semelhante.
 
-[ ] Criar teste de regressão que impeça retorno imediato do caso inexistente.
+[x] Criar teste de regressão que impeça retorno imediato do caso inexistente.
 
-[ ] Medir p50/p95/p99 de ambos os caminhos e registrar a diferença observada.
+[x] Medir p50/p95/p99 de ambos os caminhos e registrar a diferença observada.
 
-> Não é necessário prometer “timing idêntico”; o objetivo é reduzir a diferença explorável.
+> Não é necessário promover “timing idêntico”; o objetivo é reduzir a diferença explorável.
+
+### O que era o oráculo
+
+O `/login` já respondia `Credenciais inválidas` para usuário inexistente e para
+senha errada — a mensagem não distinguia. O **tempo** distinguia, e era o único
+canal que sobrava: `authenticateUser` retornava logo depois de
+`findByUsername` responder `null`, sem argon2id para rodar. Uma senha errada
+custava um `verify` m=19456,t=2 (~27 ms medidos); username inexistente voltava em
+microssegundos. Uma requisição por username — sem errar senha nenhuma — bastava
+para mapear a base inteira.
+
+O `/register` tinha o mesmo furo na forma espelhada, e ele é o item que o título
+pede e que a leitura do checklist não destacava: `exists()` verdadeiro retornava
+antes de `hash()`, que é o que um registro novo paga. **No `/register` a
+mitigação não é decorativa**, porque o controller já responde 400 genérico tanto
+para conta nova quanto para username repetido: o tempo era o único oráculo
+restante, e estava aberto.
+
+### Implementação
+
+`CryptoService.compareDummy(plainText): Promise<false>` — novo método da porta,
+**obrigatório** (não `?`), para que o compilador obrigue qualquer implementação
+a ter. `PasswordHasher` mantém um hash descartável, gerado **uma vez por
+instância** e com os parâmetros que ele próprio usa:
+
+- por que o método existe na porta em vez de uma constante no domínio: uma
+  constante fixa passaria a divergir no dia que alguém mudasse `m=`, `t=` ou
+  `p=`, e a mitigação viraria decorativa;
+- `compareDummy` usa `compare` de verdade, não um atalho, porque é o custo
+  **dele** — pepper e `unwrap` inclusos — que precisa casar com o login real;
+- reuso: se cada requisição gerasse o seu descarte, o caminho “não existe” ficaria
+  **mais** lento que o de usuário real (o mesmo oráculo com o sinal invertido) e
+  viraria amplificador de carga para quem não tem conta;
+- rejeição é explícita e descarta a promessa guardada: cache permanente de falha
+  tornaria definitiva a devolução rápida do caminho “não existe” sem nada apontar
+  para o motivo.
+
+### Medição (2026-10-03, `m=16384,t=2,p=1`, n=15, 2 amostras descartadas)
+
+```text
+login  / usuário inexistente   p50 23.52ms  p95 25.88ms  p99 25.88ms
+login  / senha errada          p50 23.23ms  p95 24.22ms  p99 24.22ms
+razão p50 inexistente/errada = 1.012
+
+registro / username repetido   p50 23.68ms  p95 26.36ms  p99 26.36ms
+registro / conta nova          p50 24.30ms  p95 25.58ms  p99 25.58ms
+razão p50 repetido/novo = 0.974
+```
+
+Os números são do ambiente de teste com repositório em memória; o que a razão
+demonstra é a **paridade dos caminhos**, não a latência absoluta de produção. O
+que sustenta a afirmação “`verify` custa o mesmo que `hash` nos mesmos
+parâmetros”, medida à parte em 8192/t=1, 16384/t=2 e 19456/t=2: razão
+1.013, 0.974 e 0.978. É por isso que um `verify` é equalizador válido também no
+registro, cujo caminho real é um `hash()`.
+
+### Testes
+
+`tests/unit/timing-enumeration.test.ts` — 7 testes, com duas metades porque cada
+uma pega uma classe de erro diferente:
+
+- **contagem** (determinístico): quantas operações argon2 cada caminho faz e com
+  quais parâmetros. É o que reprova quando `compareDummy` sai do `AuthService`. Um
+  teste puramente temporal reprovaria só quando a máquina estivesse lenta — isso é
+  um teste que falha sozinho, não um teste que reprova a mutação;
+- **tempo** (p50/p95/p99 e razão entre os caminhos): pega a mitigação que existe e
+  não funciona — dummy mais barato, descarte regenerado a cada chamada.
+
+Mutações, todas revertidas:
+
+| Mutação | Reprovas |
+| --- | --- |
+| `compareDummy` fora do `authenticateUser` | 5 |
+| `compareDummy` fora do `registerUser` | 3 |
+| `compareDummy` existe mas vira no-op (`if (false)`) | 5 |
+| Descarte gerado com `m=1024,t=1` em vez de `m=16384,t=2` | 3 |
+| Descarte regenerado a cada chamada (sem cache) | 2 |
+
+### Ajuste de harness
+
+`tests/integration/auth-flow.test.ts` e dois doubles de
+`tests/security/credential-theft.scenarios.ts` não implementavam `compareDummy` e
+passaram `{}`/objetos parciais. Integrar passou a falhar com
+`Não foi possível registrar o usuário` — falha de harness com cara de regra de
+negócio, que é a pior forma de vermelho. Corrigido nos três.
+
+### Pendência residual — `updateUserProfile`
+
+`AuthService.updateUserProfile` tem a mesma forma (`exists()` → retorno
+imediato, sem argon2). **Não foi corrigido aqui**: o endpoint exige sessão válida
+— quem enumera já tem conta — e a decisão de projeto é que a atualização de
+perfil reporte conflito de username explicitamente. Corrigir o tempo sem mudar a
+resposta HTTP seria trabalho invisível; mudar a resposta é decisão de API.
+Registrado como pendência, não esquecido.
+
+### Gates após o item
+
+`typecheck` limpo, `lint` limpo, unit 884/884, integração 38/38,
+credential-theft (Map) 10/10.
 
 ---
 
 ## 2.3 — Corrigir Swagger/OpenAPI
 
-**Arquivo:** `src/interfaces/config/swagger.ts`
+**Arquivos:** `src/interfaces/config/swagger.ts` (novo `openapiSpec.ts`,
+novo `src/shared/utils/version.ts`), `src/application/routes/*.ts`,
+`src/shared/utils/healthCheck.ts`.
 
-[ ] Corrigir `apis: ['./src/routes/*.ts']` para o caminho real das rotas.
+[x] Corrigir `apis: ['./src/routes/*.ts']` para o caminho real das rotas.
 
-[ ] Verificar geração real do spec contra os arquivos em `src/application/routes/`.
+[x] Verificar geração real do spec contra os arquivos em `src/application/routes/`.
 
-[ ] Garantir que as schemas referenciadas existam.
+[x] Garantir que as schemas referenciadas existam.
 
-[ ] Validar o documento OpenAPI gerado.
+[x] Validar o documento OpenAPI gerado.
 
-[ ] Fazer pelo menos um teste automatizado da presença dos principais endpoints:
+[x] Fazer pelo menos um teste automatizado da presença dos principais endpoints:
 
 ```text
 POST /auth/register
@@ -1007,23 +1108,207 @@ PUT  /auth/password
 DELETE /auth/account
 ```
 
-[ ] Confirmar que `/api-docs` abre sem warnings de referência quebrada.
+[x] Confirmar que `/api-docs` abre sem warnings de referência quebrada.
 
-[ ] Fazer a versão exibida no Swagger derivar da mesma versão do pacote, evitando dois lugares manuais para `1.0.0`.
+[x] Fazer a versão exibida no Swagger derivar da mesma versão do pacote, evitando dois lugares manuais para `1.0.0`.
+
+### O bug
+
+`apis: ['./src/routes/*.ts']` aponta para um diretório que não existe. O
+`swagger-jsdoc` não reclama de glob sem resultado: devolve um documento vazio e o
+`/api-docs` abre bonito descrevendo zero rotas. Nenhum aviso, nenhum erro — o
+sintoma é "a documentação existe e não diz nada".
+
+### Discrepância de prefixo entre o checklist e o código
+
+O checklist deste item lista `/auth/*`. As rotas são montadas na **raiz**
+(`src/app.ts` monta `authRoutes` sem prefixo), e a documentação gerada usa os
+caminhos reais (`/login`, `/register`, ...). Não houve mudança de prefixo: mudar
+seria breaking change de API, e o item pede correção de documentação, não de
+contrato. A lista acima fica como está, com a nota de que os caminhos reais estão
+em `src/application/routes/authRoutes.ts` e são os que o spec publica.
+
+### Decisões
+
+- **Um único lugar gera o spec.** `swagger.ts` montava o documento inline; agora
+  `openapiSpec.ts` é a fonte única e `swagger.ts` só monta a UI. Isso é o que
+  permite testar o documento sem subir HTTP.
+- **`failOnErrors: true`.** Sem ele, um bloco `@swagger` com YAML inválido é
+  descartado em silêncio e a rota correspondente some do documento — a mesma
+  classe de bug do item, um nível abaixo. Configurar `failOnErrors` sozinho não
+  bastava: `swagger.ts` recebia o documento pronto e nunca via o erro.
+- **Falhar o arranque, não servir doc vazio.** `setupSwagger` valida o documento
+  (pelo menos um path, schemas referenciadas resolvidas) e, se algo estiver errado,
+  registra o erro e **não** monta `/api-docs`. Um serviço no ar sem documentação
+  é um sintoma visível; um serviço no ar com documentação mentirosa não é.
+- **Versão em um lugar só.** `version.ts` lê `package.json` e é usado pelo
+  `info.version` do spec e pelo `/health`. Antes eram duas cópias digitadas à mão.
+
+### Documentação que faltava ou estava quebrada
+
+- YAML inválido em `authRoutes.ts` (`auth:` com valor contendo `:`) e em
+  `observabilityRoutes.ts` (`path:` com o mesmo problema) — blocos inteiros
+  descartados pelo `swagger-jsdoc`.
+- `BearerAuth` declarado duas vezes em `authRoutes.ts`.
+- `/liveness` e `/readiness` sem nenhuma documentação.
+- As seis rotas `/security/*` (`stats`, `report`, `events`, `threats`, `test`,
+  `health`) sem nenhuma documentação e sem esquema de segurança.
+
+Documento gerado: **21 paths** e **9 schemas**
+(`TokenPair`, `User`, `LoginRequest`, `LoginResponse`, `RegisterRequest`,
+`UpdateRequest`, `ChangePasswordRequest`, `StandardResponse`, `ErrorResponse`),
+com `BearerAuth`, `metricToken` e `securityToken` declarados. Paridade
+conferida entre geração em fonte (`src/**/*.ts`) e em compilado
+(`dist/**/*.js`): 21 e 21, sem diferença.
+
+### Testes
+
+`tests/unit/openapi-spec.test.ts` — 16 testes:
+
+- geração sem erro de YAML no documento real e reprovação de bloco inválido;
+- presença dos endpoints principais, dos 9 schemas e de resposta em toda operação;
+- ausência de referência interna quebrada (`$ref` de schema e de security scheme);
+- `BearerAuth` realmente referenciado por rota protegida, e toda exigência de
+  segurança citando um esquema declarado;
+- versão do `package.json`, inclusive com o leitor mockado para provar que não há
+  cópia escrita à mão;
+- **drift de rotas**: toda rota registrada no Express precisa aparecer no
+  documento, lendo os arquivos de rota de verdade;
+- glob em código-fonte e em código compilado;
+- comentários `@swagger` presentes em `dist`;
+- `setupSwagger` montando `/api-docs` com o documento gerado.
+
+`tests/e2e/auth-http.e2e.test.ts` — prova pela fronteira HTTP: `/api-docs/`
+responde 200 e o `swagger-ui-init.js` traz o documento com os endpoints e a
+versão do pacote.
+
+Mutações, todas detectadas e revertidas:
+
+| Mutação | Reprovas |
+| --- | --- |
+| Volta o glob para `./src/routes/*.ts` | 5 (unit), 1 (e2e) |
+| `failOnErrors` desligado | 1 |
+| `info.version` escrito à mão (`'1.0.0'`) | 1 |
+| Glob de `.ts` também quando compilado | 1 |
+| `routeGlob()` fixo em "estou em fonte" | 1 (com `dist` presente) |
+| Rota nova registrada sem documentar | 1 |
+| Esquema `metricToken` renomeado | 1 |
+
+### Limitação declarada
+
+`routeGlob()` decide entre `src/*.ts` e `dist/*.js` lendo o próprio
+`import.meta.url`. Rodando por `tsx` o valor correto **é** `false`, então um
+`routeGlob()` fixo em "sou código-fonte" passa em toda a suíte de unidade e
+quebraria a documentação de produção. Por isso a lógica foi extraída para
+`routeGlobFor(runningCompiled, root)` — testável nos dois lados — e o
+caboamento é coberto por um teste que importa o módulo **compilado** e só roda
+quando existe `dist/`.
+
+Esse teste não roda numa instalação sem build, e o gate de build do CI roda em
+job separado do de testes. A lacuna fica registrada em vez de ser encoberta por
+um teste que finge cobrir: em qualquer máquina que rodou `npm run build` antes da
+suíte, ela é exercitada.
+
+### Gates após o item
+
+`typecheck` limpo, `lint` limpo, unit 900/900, integração 38/38, e2e 16/16.
 
 ---
 
 ## 2.4 — Revisar `TRUST_PROXY`
 
-**Arquivo:** `src/interfaces/config/appConfig.ts`
+**Arquivos:** `src/interfaces/config/appConfig.ts`, `src/app.ts`,
+`.env.prod.example`, `.env.example`, `docker-compose.prod.yml`, `nginx/nginx-prod.conf`.
 
-[ ] Confirmar valor de produção em `.env.prod.example`.
+[x] Confirmar valor de produção em `.env.prod.example`.
 
-[ ] Nunca usar `TRUST_PROXY=true` em produção sem proxy confiável explicitamente definido.
+[x] Nunca usar `TRUST_PROXY=true` em produção sem proxy confiável explicitamente definido.
 
-[ ] Testar spoofing de `X-Forwarded-For`.
+[x] Testar spoofing de `X-Forwarded-For`.
 
-[ ] Confirmar que o rate limiting por IP usa o endereço real somente quando a topologia justifica confiança no proxy.
+[x] Confirmar que o rate limiting por IP usa o endereço real somente quando a topologia justifica confiança no proxy.
+
+### O que já estava certo
+
+- `.env.prod.example` e `docker-compose.prod.yml` declaram `TRUST_PROXY=1`.
+- O nginx **sobrescreve** `X-Forwarded-For` com `$remote_addr` e não usa
+  `$proxy_add_x_forwarded_for`, ou seja, o cliente não escolhe o próprio IP.
+- O app não publica porta: só o proxy alcança a rede da aplicação.
+- `trust proxy` é setado antes de qualquer middleware que leia `req.ip`
+  (`src/app.ts:72`, no `setupSecurity`, antes do `setupMiddleware`).
+
+### O que faltava
+
+**1. `TRUST_PROXY=true` só emitia `logger.warn`.** O serviço subia com o rate
+limit por IP inútil — um `X-Forwarded-For` novo por requisição é um orçamento
+novo — e o aviso se perdia no ruído do arranque. Agora, em produção, a confiança
+irrestrita **recusa o arranque** (`validateConfiguration`), e quem realmente a
+quiser precisa declarar `TRUST_PROXY_ALLOW_UNRESTRICTED=true`.
+
+O opt-in é uma env separada, deliberadamente: se fosse o mesmo valor, um default
+que muda sozinho teria o poder de autorizar a si mesmo.
+
+A recusa acontece em produção porque é lá que a topologia é desconhecida. Em
+desenvolvimento `true` continua aceito com aviso — quem roda `tsx` na própria
+máquina não está protegendo nada de ninguém.
+
+**2. Não existia teste de spoofing.** O único teste de `X-Forwarded-For` no E2E
+enviava o cabeçalho forjado para `/liveness`, que é isenta de rate limit: ele
+prova que a rota responde, não que o forjador não ganha orçamento.
+
+### Testes
+
+`tests/integration/x-forwarded-for-trust.test.ts` — 4 testes, três topologias e o
+contorno, medindo pelo **orçamento consumido** e não por um header inventado:
+
+| `trust proxy` | 3 requisições com `X-Forwarded-For` diferente | Significado |
+| --- | --- | --- |
+| `false` (padrão) | `201, 201, 429` | o forjador não abre orçamento novo |
+| `['10.0.0.0/8', ...]` sem o peer na faixa | `201, 201, 429` | proxy declarado e ausente não é confiança |
+| `1` (produção) | `201, 201, 201` | cabeçalho reescrito pelo proxy vale |
+| `true` | `201, 201, 201` | mesmo efeito aqui — e é por isso que é proibido |
+
+O caminho é `/register` de propósito: ele consome só o orçamento de IP, sem a
+dimensão de conta que existe em `/login`. O que está em jogo é a chave de origem.
+
+`tests/unit/trust-proxy-config.test.ts` — 20 testes: o parsing (incluindo caixa
+alta e espaços), o default `false` e a nova regra de arranque. A asserção de
+aceite olha **a linha do `TRUST_PROXY`** dentro do erro e não a validade da
+configuração inteira: as outras regras de produção continuam valendo e não são o
+alvo.
+
+`tests/unit/production-proxy-config.test.ts` — amarra as três peças que precisam
+concordar entre si (`.env.prod.example`, `docker-compose.prod.yml`, `app.set`),
+mais a garantia de que o exemplo de produção não traz o opt-in ligado de fábrica
+e de que `.env.example` continua em `false`.
+
+Mutações, todas detectadas e revertidas:
+
+| Mutação | Reprovas |
+| --- | --- |
+| Regra de arranque removida | 3 |
+| Opt-in passa a aceitar qualquer valor truthy (`1` passa a autorizar) | 1 |
+| Regra vale fora de produção em vez de nela | 4 |
+| `TRUST_PROXY=true` em `.env.prod.example` | 1 |
+| `TRUST_PROXY=true` em `docker-compose.prod.yml` | 2 |
+| `app.set('trust proxy', true)` no lugar da configuração | 1 |
+| `app.set` movido para depois dos middlewares que leem `req.ip` | 1 |
+
+### Limitação declarada
+
+`src/app.ts` está fora do mapa de cobertura do Jest (`jest.config.js`), então o
+caboamento `config → app.set → Express` é prendido lendo o fonte, não executando
+o app. Um E2E não serviria aqui: com `TRUST_PROXY` desligado, "não configurado" e
+"configurado com proxy" produzem a mesma resposta 429 no mesmo orçamento, porque
+nos dois casos o `req.ip` é o socket. Um teste que não distingue as duas coisas
+passaria em ambas as falhas.
+
+A lacuna do *teste* é declarada em vez de encoberta por uma asserção que passa nos dois casos.
+
+### Gates após o item
+
+`typecheck` limpo, `lint` limpo, unit 916/916, integração 42/42, e2e 16/16,
+credential-theft (Map) 10/10, `npm run build` sem erro.
 
 ---
 
@@ -1224,7 +1509,9 @@ Não usar uma métrica comparada por caminhos de rede diferentes como “melhori
 
 [ ] README identifica claramente `v1.0.0` como versão estável.
 
-[ ] Swagger usa a mesma versão.
+[x] Swagger usa a mesma versão. (Item 2.3: `src/shared/utils/version.ts` é a
+fonte única, usada pelo `info.version` do spec e pelo `/health`; teste com o
+leitor mockado impede a volta da cópia digitada à mão.)
 
 [ ] Docker usa tags da versão.
 
