@@ -1466,13 +1466,33 @@ O teste `npm run test:redis:volume-loss` deve continuar documentando a limitaç�
 
 ## 3.5 Carga e capacidade
 
-[ ] `npm run test:ddos` — k6 ausente no host; pendente de instalação
+[x] `npm run test:ddos`
 
 [x] `npm run test:capacity`
 
 [x] `npm run bench:hash`
 
 [x] `npm run bench:login`
+
+### Evidência — `test:ddos`
+
+k6 v0.57.0 no host, stack `ddos` em loopback com TLS (`https://127.0.0.1:3203`):
+
+```json
+{ "result": "passed",
+  "baselineLivenessP95Ms": 4.5, "recoveryLivenessP95Ms": 5.2,
+  "rateLimited": 4017, "apiReplicasStarted": 3, "apiReplicasObserved": 3,
+  "livenessFailures": 0, "serverErrors": 0,
+  "payloadResults": { "malformed": 400, "oversized": 413 },
+  "slowlorisConnectionsClosed": 20,
+  "peakContainerMemoryMiB": 254.9, "containerRestarts": 0 }
+```
+
+4017 respostas barradas no limite de borda/rate limit durante o flood, **0
+falhas de liveness** e **0 5xx**: o serviço degradou no lugar certo. Payload
+malformado recusado com 400 e oversized com 413, 20 conexões slowloris fechadas
+pelo proxy, e nenhuma das 3 réplicas reiniciou. Liveness p95 de 4.5ms para
+5.2ms sob ataque.
 
 ### Evidência — `test:capacity`
 
