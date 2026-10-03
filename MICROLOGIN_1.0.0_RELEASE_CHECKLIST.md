@@ -1610,73 +1610,141 @@ Não usar uma métrica comparada por caminhos de rede diferentes como “melhori
 
 ## 4.1 Pull Request
 
-[ ] Checkout.
+[x] Checkout.
 
-[ ] `npm ci`.
+[x] `npm ci`.
 
-[ ] Secret scanning.
+[x] Secret scanning.
 
-[ ] ESLint.
+[x] ESLint.
 
-[ ] TypeScript typecheck.
+[x] TypeScript typecheck.
 
-[ ] `npm audit`.
+[x] `npm audit`.
 
-[ ] `audit-ci`.
+[x] `audit-ci`.
 
-[ ] unit tests.
+[x] unit tests.
 
-[ ] integration tests.
+[x] integration tests.
 
-[ ] E2E.
+[x] E2E.
 
-[ ] coverage upload.
+[x] coverage upload.
 
-[ ] Docker build de candidato, se fizer parte da política do repositório.
+[x] Docker build de candidato, se fizer parte da política do repositório.
 
-[ ] Trivy scan do candidato, com gate real.
+[x] Trivy scan do candidato, com gate real.
 
-[ ] Nenhuma imagem de PR deve ser publicada permanentemente no registry sem necessidade.
+[x] Nenhuma imagem de PR deve ser publicada permanentemente no registry sem necessidade.
+
+### Evidência — Pull Request
+
+Cada item foi conferido no `ci-cd.yml`, não presumido. O job `code-quality`
+roda em PR e em `push` e leva, em ordem: checkout, `npm ci` (literalmente
+`npm ci`, não `npm install`), commitlint, secret scanning, ESLint, typecheck,
+`npm audit` e `audit-ci`. O job `tests` roda unit, integração e E2E com
+compose real, e faz upload de cobertura. Nenhum deles tem
+`continue-on-error`.
+
+Duas correções vieram da conferência:
+
+- **O Trivy não rodava em PR.** O job `security` aceitava só `push` e
+  `workflow_dispatch`, então a imagem de um PR só era escaneada depois do merge
+  — tarde demais para a decisão de revisão. Incluído `pull_request`; o objeto do
+  scan (o digest do job `build`) existe nos três eventos. O upload de SARIF ficou
+  `continue-on-error` em PR, porque token de fork é somente-leitura e o upload
+  seria rejeitado — reprovar por um relatório que o GitHub não deixa gravar
+  treina ignorar vermelho. A tolerância é do upload, nunca do scan.
+- **`known_hosts` com `*` em produção.** O passo de SSH escrevia `*` quando o
+  secret `_DEPLOY_KNOWN_HOSTS` não estava definido, nos dois ambientes. Agora
+  produção aborta; staging mantém o TOFU com aviso que diz explicitamente que
+  aquilo não é aceitável em produção. O teste executa o `run:` real do workflow
+  como bash, com `HOME` temporário, e cobre os três casos.
+
+Sobre a última caixa: o `build` de PR publica a imagem porque **o Trivy precisa
+do artefato real para escanear** — o job roda em runner separado, então sem
+publicar não há o que escanear. As tags de PR são `pr-<n>` e `<sha>`; a
+`latest` é condicionada a `{{is_default_branch}}`, ou seja, PR não recebe
+`latest`. É publicação com propósito e sem ambiguidade de "última versão".
 
 ---
 
 ## 4.2 Main
 
-[ ] Tudo do PR.
+[x] Tudo do PR.
 
-[ ] Build Docker multi-arch.
+[x] Build Docker multi-arch.
 
-[ ] Scan de segurança.
+[x] Scan de segurança.
 
-[ ] Publicação da imagem.
+[x] Publicação da imagem.
 
-[ ] Digest registrado.
+[x] Digest registrado.
 
-[ ] Nenhum deploy automático para production sem aprovação/ação explícita.
+[x] Nenhum deploy automático para production sem aprovação/ação explícita.
+
+### Evidência — Main
+
+`main` dispara os mesmos jobs de PR (as condições são por evento, não por
+branch): quality, testes, build e segurança. O `build` usa buildx com
+`platforms: linux/amd64,linux/arm64` e publica em GHCR. O digest sai do próprio
+`build-push-action` e é exposto como output do job
+(`image-digest`, `image-ref`) — é esse valor que o Trivy escaneia e que o deploy
+consome, então imagem escaneada e imagem implantada são a mesma por
+construção, não por convenção.
+
+O job `deploy` só existe em `workflow_dispatch`, com `environment:
+${{ inputs.environment }}`, e depende de `[build, security]`: sem dispatch
+aprovado, e sem o gate de segurança verde, nada é implantado.
 
 ---
 
 ## 4.3 Deploy manual
 
-[ ] `staging` e `production` são mutuamente exclusivos por execução.
+[x] `staging` e `production` são mutuamente exclusivos por execução.
 
-[ ] Secrets separados por ambiente.
+[x] Secrets separados por ambiente.
 
-[ ] Known hosts configurado.
+[x] Known hosts configurado.
 
-[ ] Não usar `*` como `known_hosts` em produção.
+[x] Não usar `*` como `known_hosts` em produção.
 
-[ ] Pull por digest.
+[x] Pull por digest.
 
-[ ] Backup antes do deploy.
+[x] Backup antes do deploy.
 
-[ ] Readiness após deploy.
+[x] Readiness após deploy.
 
-[ ] Smoke test.
+[x] Smoke test.
 
-[ ] Rollback automático quando o smoke/readiness falhar.
+[x] Rollback automático quando o smoke/readiness falhar.
 
-[ ] Resumo do commit, ator, versão e digest implantados.
+[x] Resumo do commit, ator, versão e digest implantados.
+
+### Evidência — Deploy manual
+
+O job `deploy` tem uma barreira antes de qualquer rede: o prefixo de secrets
+resolvido (`PRODUCTION`/`STAGING`) precisa ser exatamente o do ambiente escolhido,
+e o valor do input precisa ser `staging` ou `production`. Não há matrix — a
+matrix era o que ignorava o input (item 1.5). Todo secret sai do prefixo
+derivado do input, o que torna a separação por ambiente uma consequência da
+estrutura, não de disciplina de quem escreve o dispatch.
+
+`scripts/remote-deploy.sh` (executado no servidor) faz, nesta ordem: pull por
+digest, backup da versão em vigor, `docker compose up -d`, espera por
+`/readiness` — e não por `/health`, que pode responder 503 por memória e
+dispararia rollback errado —, smoke test funcional, e reverte sozinho se
+qualquer passo falhar, devolvendo código diferente de zero. O resumo do job
+publica commit, ator, versão e digest implantados.
+
+**O que ainda não foi provado:** o `test:deploy` (item 1.9) provou o caminho de
+rollback com script local e containers, mas **nenhum deploy foi executado contra
+um servidor real** — não há servidor configurado neste repositório, e o job
+falha com mensagem explícita em vez de reportar sucesso fictício. As caixas
+acima descrevem o que o workflow faz; a prova de que o servidor real obedece é o
+item 1.5 (dispatch manual com `environment=staging`), que continua pendente
+porque depende de infraestrutura que este repositório não tem.
 
 ---
 
