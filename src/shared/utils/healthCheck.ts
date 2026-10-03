@@ -6,6 +6,7 @@
 import { readFileSync } from 'node:fs';
 import mongoose from 'mongoose';
 import { getRedisClient, performHealthCheck as performRedisHealthCheck } from '../../infrastructure/cache/connection.js';
+import { displayVersion } from './version.js';
 
 interface CheckResult {
   status: 'healthy' | 'unhealthy' | 'degraded' | 'warning';
@@ -265,7 +266,11 @@ export const performHealthCheck = async(): Promise<HealthCheckReport> => {
       status: overallStatus,
       timestamp: new Date().toISOString(),
       responseTime: `${Date.now() - startTime}ms`,
-      version: process.env.npm_package_version || '1.0.0',
+      // Do `package.json`, e não de `npm_package_version`: essa variável só
+      // existe dentro de scripts `npm run`, e o container executa
+      // `node dist/app.js` direto — em produção o health respondia o fallback
+      // hard-coded, que é justamente o número que ninguém atualiza.
+      version: displayVersion(),
       environment: process.env.NODE_ENV || 'development',
       services: {
         mongodb,

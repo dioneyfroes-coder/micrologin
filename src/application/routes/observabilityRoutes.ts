@@ -19,7 +19,11 @@ const router = Router();
  * /observability:
  *   get:
  *     summary: Snapshot de observabilidade (próprio, por logs)
- *     description: Manifesto JSON consolidado do serviço: agregados da janela de logs de requisição (volumes, P50/P95/P99, taxas de erro), health das dependências, estatísticas de segurança e configuração de logging. Protegido por x-metrics-token quando METRICS_TOKEN está configurado.
+ *     description: >
+ *       Manifesto JSON consolidado do serviço: agregados da janela de logs de
+ *       requisição (volumes, P50/P95/P99, taxas de erro), health das
+ *       dependências, estatísticas de segurança e configuração de logging.
+ *       Protegido por x-metrics-token quando METRICS_TOKEN está configurado.
  *     tags: [Sistema]
  *     security:
  *       - metricToken: []

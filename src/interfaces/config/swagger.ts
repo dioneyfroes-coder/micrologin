@@ -1,103 +1,80 @@
 import swaggerUi from 'swagger-ui-express';
-import swaggerJSDoc from 'swagger-jsdoc';
 import type { Express } from 'express';
+import { logger } from '../../shared/utils/logger.js';
+import {
+  buildOpenApiSpec,
+  routeGlob,
+  routeGlobMatches,
+  type OpenApiDocument
+} from './openapiSpec.js';
 
 /**
- * Configura a documentação Swagger
- * @param app - Instância do Express
+ * Documento OpenAPI montado na hora em que a documentação é montada.
+ *
+ * A geração é feita uma vez, no arranque, e não a cada visita ao `/api-docs`:
+ * `swagger-jsdoc` faz glob e parse de YAML dos comentários das rotas, e isso a
+ * cada request seria trabalho de servidor por um HTML estático.
+ */
+export const openApiSpec = (): OpenApiDocument | null => {
+  const glob = routeGlob();
+
+  if (!routeGlobMatches()) {
+    // Não há erro visível para quem abriu a página se isto devolver um
+    // documento vazio: a UI sobe, o título aparece e a lista de endpoints fica
+    // em branco. Um log de erro e um `/api-docs` que responde 404 dizem o que
+    // está acontecendo; um documento vazio não diz nada.
+    logger.error('Documento OpenAPI não gerado: nenhum arquivo de rota encontrado', {
+      glob,
+      cwd: process.cwd()
+    });
+    return null;
+  }
+
+  let spec: OpenApiDocument;
+  try {
+    spec = buildOpenApiSpec();
+  } catch (error) {
+    // `failOnErrors` transforma bloco `@swagger` malformado em exceção. Sem o
+    // `try`, um `:` a mais numa descrição derrubaria o arranque do serviço por
+    // causa da documentação — e a versão publicada não teria página nenhuma,
+    // que é o pior dos dois mundos. O relatório vai inteiro para o log porque
+    // ele diz qual arquivo e qual linha.
+    logger.error('Documento OpenAPI não gerado: erro de YAML nos comentários das rotas', {
+      glob,
+      report: (error as Error).message
+    });
+    return null;
+  }
+
+  const documented = Object.keys(spec.paths ?? {}).length;
+
+  if (documented === 0) {
+    logger.error('Documento OpenAPI gerado sem nenhum endpoint documentado', {
+      glob,
+      paths: documented
+    });
+    return null;
+  }
+
+  logger.info('Documentação OpenAPI gerada', { glob, endpoints: documented });
+
+  return spec;
+};
+
+/**
+ * Configura a documentação Swagger.
+ *
+ * `@param app` - Instância do Express
  */
 export const setupSwagger = (app: Express): void => {
-  const options = {
-    definition: {
-      openapi: '3.0.0',
-      info: {
-        title: 'API de Autenticação',
-        version: '1.0.0',
-        description: `
-          ## Microserviço de Autenticação
-          
-          Esta API fornece endpoints para autenticação e gerenciamento de usuários usando JWT tokens.
-          
-          ### Funcionalidades:
-          - ✅ Login e registro de usuários
-          - ✅ Autenticação via JWT tokens
-          - ✅ Gerenciamento de perfil de usuário
-          - ✅ Health check e manifesto de observabilidade
-          - ✅ Rate limiting avançado
-          
-          ### Autenticação:
-          Para endpoints protegidos, inclua o header:
-          \`Authorization: Bearer <seu_jwt_token>\`
-        `,
-        contact: {
-          name: 'Suporte',
-          email: 'suporte@exemplo.com'
-        }
-      },
-      servers: [
-        {
-          url: 'https://localhost:3000',
-          description: 'Servidor de desenvolvimento'
-        }
-      ],
-      tags: [
-        {
-          name: 'Autenticação',
-          description: 'Endpoints para login e registro de usuários'
-        },
-        {
-          name: 'Perfil',
-          description: 'Operações de gerenciamento de perfil do usuário'
-        },
-        {
-          name: 'Sistema',
-          description: 'Endpoints de monitoramento e saúde do sistema'
-        },
-        {
-          name: 'Debug',
-          description: 'Ferramentas de debug (apenas em desenvolvimento)'
-        }
-      ],
-      components: {
-        schemas: {
-          TokenPair: {
-            type: 'object',
-            required: ['accessToken', 'refreshToken', 'tokenType', 'expiresIn'],
-            properties: {
-              accessToken: {
-                type: 'string',
-                description: 'Token de curta duração usado no header Authorization'
-              },
-              refreshToken: {
-                type: 'string',
-                description: 'Token de longa duração usado para renovar o access token'
-              },
-              tokenType: {
-                type: 'string',
-                example: 'Bearer'
-              },
-              expiresIn: {
-                type: 'integer',
-                format: 'int64',
-                description: 'Tempo de validade do access token em milissegundos'
-              }
-            }
-          }
-        },
-        securitySchemes: {
-          BearerAuth: {
-            type: 'http',
-            scheme: 'bearer',
-            bearerFormat: 'JWT',
-            description: 'Access token JWT obtido no endpoint de login'
-          }
-        }
-      }
-    },
-    apis: ['./src/routes/*.ts'] // Busca comentários nos arquivos de rotas
-  };
+  const swaggerSpec = openApiSpec();
 
-  const swaggerSpec = swaggerJSDoc(options);
+  if (!swaggerSpec) {
+    // Sem documento não há `/api-docs`: responder 404 é um sintoma visível,
+    // enquanto um documento vazio é um sintoma que só aparece quando alguém tenta
+    // usar a API a partir da documentação.
+    return;
+  }
 
   // Configurações personalizadas do Swagger UI
   const swaggerUiOptions = {

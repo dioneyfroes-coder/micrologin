@@ -1,6 +1,9 @@
 /**
  * @fileoverview Rotas para dashboard de segurança
  * Fornece endpoints para monitoramento e métricas de segurança
+ *
+ * Todas exigem `x-security-token` quando `SECURITY_TOKEN` está configurado
+ * (`requireSecurityToken`), e são montadas sob `/security`.
  */
 
 // ML-A31C
@@ -14,6 +17,40 @@ import { HttpError } from '../../shared/utils/errorHandler.js';
 const router = Router();
 
 router.use(requireSecurityToken);
+
+/**
+ * @swagger
+ * /security/stats:
+ *   get:
+ *     summary: Estatísticas de segurança e estado do rate limit
+ *     tags: [Sistema]
+ *     security:
+ *       - securityToken: []
+ *     responses:
+ *       200:
+ *         description: Estatísticas do serviço de auditoria e do rate limiter
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 timestamp:
+ *                   type: string
+ *                   format: date-time
+ *                 status:
+ *                   type: string
+ *                   example: operational
+ *                 security:
+ *                   type: object
+ *                 rateLimit:
+ *                   type: object
+ *       401:
+ *         description: Token de segurança ausente ou inválido
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ */
 
 /**
  * GET /security/stats
@@ -36,6 +73,44 @@ router.get('/stats', (req: Request, res: Response, next: NextFunction) => {
 });
 
 /**
+ * @swagger
+ * /security/report:
+ *   get:
+ *     summary: Relatório completo de segurança
+ *     tags: [Sistema]
+ *     security:
+ *       - securityToken: []
+ *     responses:
+ *       200:
+ *         description: Relatório gerado pelo auditor de segurança
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 stats:
+ *                   type: object
+ *                 topAttackTypes:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                 topAttackIPs:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                 recommendations:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *       401:
+ *         description: Token de segurança ausente ou inválido
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ */
+
+/**
  * GET /security/report
  * Gera relatório completo de segurança
  */
@@ -51,6 +126,54 @@ router.get('/report', (req: Request, res: Response, next: NextFunction) => {
     next(new HttpError(500, 'SECURITY_REPORT_FAILED', 'Erro ao gerar relatório de segurança'));
   }
 });
+
+/**
+ * @swagger
+ * /security/events:
+ *   get:
+ *     summary: Eventos de segurança recentes
+ *     tags: [Sistema]
+ *     security:
+ *       - securityToken: []
+ *     parameters:
+ *       - in: query
+ *         name: timeWindow
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           default: 300000
+ *         description: Janela em milissegundos (padrão 5 minutos)
+ *       - in: query
+ *         name: severity
+ *         required: false
+ *         schema:
+ *           type: string
+ *         description: Filtra os eventos por severidade
+ *     responses:
+ *       200:
+ *         description: Eventos no período
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 timeWindow:
+ *                   type: integer
+ *                 severity:
+ *                   type: string
+ *                 count:
+ *                   type: integer
+ *                 events:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *       401:
+ *         description: Token de segurança ausente ou inválido
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ */
 
 /**
  * GET /security/events
@@ -80,6 +203,49 @@ router.get('/events', (req: Request, res: Response, next: NextFunction) => {
 });
 
 /**
+ * @swagger
+ * /security/threats:
+ *   get:
+ *     summary: Análise de ameaças
+ *     tags: [Sistema]
+ *     security:
+ *       - securityToken: []
+ *     responses:
+ *       200:
+ *         description: Nível de risco, ameaças ativas e recomendações
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 timestamp:
+ *                   type: string
+ *                   format: date-time
+ *                 riskLevel:
+ *                   type: string
+ *                 activeThreats:
+ *                   type: integer
+ *                 topAttackTypes:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                 topAttackIPs:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                 recommendations:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *       401:
+ *         description: Token de segurança ausente ou inválido
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ */
+
+/**
  * GET /security/threats
  * Retorna análise de ameaças
  */
@@ -99,6 +265,62 @@ router.get('/threats', (req: Request, res: Response, next: NextFunction) => {
     next(new HttpError(500, 'SECURITY_THREATS_FAILED', 'Erro ao analisar ameaças'));
   }
 });
+
+/**
+ * @swagger
+ * /security/test:
+ *   post:
+ *     summary: Simula detecção de ameaças
+ *     description: >
+ *       Executa um cenário de teste do auditor de segurança. Responde 403 em
+ *       produção: o endpoint existe em todas asenvironments e se recusa lá.
+ *     tags: [Debug]
+ *     security:
+ *       - securityToken: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - testType
+ *             properties:
+ *               testType:
+ *                 type: string
+ *                 enum: [rate_limit, suspicious_activity, security_attack]
+ *     responses:
+ *       200:
+ *         description: Cenário executado
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                 timestamp:
+ *                   type: string
+ *                   format: date-time
+ *       400:
+ *         description: Tipo de teste inválido
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ *       403:
+ *         description: Endpoint indisponível em produção
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ *       401:
+ *         description: Token de segurança ausente ou inválido
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ */
 
 /**
  * POST /security/test
@@ -163,6 +385,51 @@ router.post('/test', (req: Request, res: Response, next: NextFunction) => {
     next(new HttpError(500, 'SECURITY_TEST_FAILED', 'Erro no teste de segurança'));
   }
 });
+
+/**
+ * @swagger
+ * /security/health:
+ *   get:
+ *     summary: Health check do subsistema de segurança
+ *     tags: [Sistema]
+ *     security:
+ *       - securityToken: []
+ *     responses:
+ *       200:
+ *         description: Nível de risco diferente de HIGH
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                   enum: [healthy, unhealthy]
+ *                 riskLevel:
+ *                   type: string
+ *                 activeThreats:
+ *                   type: integer
+ *                 timestamp:
+ *                   type: string
+ *                   format: date-time
+ *       503:
+ *         description: Nível de risco HIGH
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                 riskLevel:
+ *                   type: string
+ *       401:
+ *         description: Token de segurança ausente ou inválido
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ */
 
 /**
  * GET /security/health

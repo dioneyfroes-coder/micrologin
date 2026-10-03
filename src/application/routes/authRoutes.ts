@@ -104,12 +104,16 @@ import type { AuthWebMiddleware } from '../middleware/AuthMiddleware.js';
  *         currentPassword:
  *           type: string
  *           maxLength: 72
- *           description: Senha atual (exigida: step-up, um access token sozinho não troca a senha)
+ *           description: >
+ *             Senha atual (exigida por step-up: um access token sozinho não
+ *             troca a senha)
  *         newPassword:
  *           type: string
  *           minLength: 12
  *           maxLength: 72
- *           description: Nova senha (política de senha forte; não pode constar no histórico)
+ *           description: >
+ *             Nova senha (política de senha forte; não pode constar no
+ *             histórico)
  *     StandardResponse:
  *       type: object
  *       properties:
@@ -130,11 +134,6 @@ import type { AuthWebMiddleware } from '../middleware/AuthMiddleware.js';
  *           type: array
  *           items:
  *             type: object
- *   securitySchemes:
- *     BearerAuth:
- *       type: http
- *       scheme: bearer
- *       bearerFormat: JWT
  */
 
 /**
@@ -486,6 +485,33 @@ export function createAuthRoutes() {
    *                   type: string
    */
   /**
+   * @swagger
+   * /liveness:
+   *   get:
+   *     summary: Liveness probe
+   *     description: >
+   *       Responde 200 enquanto o processo estiver vivo. Não consulta Mongo nem
+   *       Redis, para que a queda de uma dependência não provoque restart em
+   *       cascata.
+   *     tags: [Sistema]
+   *     responses:
+   *       200:
+   *         description: Processo vivo
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               properties:
+   *                 status:
+   *                   type: string
+   *                   example: alive
+   *                 timestamp:
+   *                   type: string
+   *                   format: date-time
+   *                 uptime:
+   *                   type: string
+   */
+  /**
    * Liveness: só responde se o processo está vivo. Não consulta Mongo nem Redis,
    * para que uma queda de dependência não provoque restart em cascata.
    */
@@ -493,6 +519,38 @@ export function createAuthRoutes() {
     res.status(200).json(performLivenessCheck());
   });
 
+  /**
+   * @swagger
+   * /readiness:
+   *   get:
+   *     summary: Readiness probe
+   *     description: >
+   *       Responde 200 somente quando o serviço consegue atender tráfego de
+   *       negócio. Cache de revogação indisponível não tira o serviço de
+   *       prontidão, porque a política de sessão é fail-open fora de produção.
+   *     tags: [Sistema]
+   *     responses:
+   *       200:
+   *         description: Pronto para tráfego
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               properties:
+   *                 ready:
+   *                   type: boolean
+   *                 timestamp:
+   *                   type: string
+   *                   format: date-time
+   *                 checks:
+   *                   type: object
+   *       503:
+   *         description: Não pronto para tráfego
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   */
   /**
    * Readiness: 200 só quando o serviço pode atender tráfego de negócio.
    * Cache indisponível não tira o serviço de prontidão, porque a política de

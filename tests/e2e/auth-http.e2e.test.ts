@@ -13,7 +13,7 @@
 import { afterAll, beforeAll, describe, expect, it } from '@jest/globals';
 import type { Server } from 'http';
 import { generateKeyPairSync } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -68,6 +68,51 @@ const postJson = async(
   headers: { 'Content-Type': 'application/json', ...headers },
   body: JSON.stringify(body)
 });
+
+/**
+ * Extrai um objeto JSON a partir de `start`, contando chaves e ignorando
+ * chaves e barras que estejam dentro de strings.
+ */
+const extractJsonObject = (source: string, start: number): string => {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = start; index < source.length; index++) {
+    const char = source[index];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (inString) {
+      if (char === '\\') {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (char === '{' || char === '[') {
+      depth++;
+    } else if (char === '}' || char === ']') {
+      depth--;
+      if (depth === 0) {
+        return source.slice(start, index + 1);
+      }
+    }
+  }
+
+  throw new Error('swagger-ui-init.js não contém um objeto JSON balanceado');
+};
 
 const getJson = async(path: string, headers: Record<string, string> = {}): Promise<Response> =>
   fetch(`${BASE_URL}${path}`, { headers });
@@ -366,6 +411,38 @@ describe('E2E HTTP - fluxo completo contra infra real (compose)', () => {
   it('sem token, profile responde 401', async() => {
     const res = await getJson('/profile');
     expect(res.status).toBe(401);
+  });
+
+  it('/api-docs serve um documento com os endpoints reais', async() => {
+    // Prova pela fronteira HTTP, e não por unidade: o bug do item 2.3 era o
+    // documento vazio, que abria bonito e não descrevia nada. Aqui a UI é
+    // servida de verdade e o `swagger-ui-init.js` — onde o `swagger-ui-express`
+    // coloca o documento — é lido do outro lado do socket.
+    const page = await fetch(`${BASE_URL}/api-docs/`);
+    expect(page.status).toBe(200);
+
+    const init = await fetch(`${BASE_URL}/api-docs/swagger-ui-init.js`);
+    expect(init.status).toBe(200);
+    const source = await init.text();
+
+    // O `swagger-ui-init.js` é JavaScript com o documento embutido em
+    // `swaggerDoc`. O corte é feito por contagem de chaves ciente de strings em
+    // vez de por `indexOf('}')`: o documento tem mais de mil linhas e contain
+    // texto livre (descrições com `}`), então um casamento ingênuo traria
+    // metade do objeto — que é justamente o tipo de falha que um teste de
+    // fumaça passaria adiante.
+    const start = source.indexOf('"swaggerDoc":') + '"swaggerDoc":'.length;
+    const document = JSON.parse(extractJsonObject(source, start)) as {
+      info: { version: string };
+      paths: Record<string, unknown>;
+    };
+
+    for (const endpoint of ['/login', '/register', '/refresh', '/logout', '/profile', '/password', '/delete']) {
+      expect(Object.keys(document.paths)).toContain(endpoint);
+    }
+    // A versão vem do `package.json` pelo mesmo caminho do `/health`.
+    const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as { version: string };
+    expect(document.info.version).toBe(pkg.version);
   });
 
   it('troca de senha: exige a atual, recusa reuso e encerra as sessões', async() => {
