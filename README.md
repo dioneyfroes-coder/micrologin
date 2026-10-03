@@ -2,6 +2,13 @@
 
 Projeto de portfólio em Node.js para demonstrar uma API de autenticação com arquitetura hexagonal, JWT (access + refresh), validação de senha, rate limiting com Redis, revogação de tokens e integração com MongoDB/Redis.
 
+**Versão:** `1.0.0` — primeira versão estável do serviço. O que fecha uma versão
+estável aqui está registrado em
+[`MICROLOGIN_1.0.0_RELEASE_CHECKLIST.md`](MICROLOGIN_1.0.0_RELEASE_CHECKLIST.md):
+significa suíte de release verde e limitações conhecidas declaradas — em
+particular o [limite D20 da revogação](docs/SEGURANCA.md#d20--revogação-em-nó-único-o-limite-aceito-e-o-que-fecha-a-lacuna).
+Não significa "pronto para SaaS em escala ilimitada".
+
 > Este repositório é uma demonstração de arquitetura e organização de código. Não representa uma solução de autenticação pronta para produção sem revisão adicional e ajustes específicos do ambiente.
 
 ## O que o projeto inclui

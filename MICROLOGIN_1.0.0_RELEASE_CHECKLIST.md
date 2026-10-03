@@ -1688,55 +1688,102 @@ Não usar uma métrica comparada por caminhos de rede diferentes como “melhori
 
 > Para a 1.0.0, não é obrigatório mudar o nome do pacote se isso gerar churn de lockfile e documentação. O importante é documentar a decisão.
 
-[ ] `package.json.version = 1.0.0`.
+[x] `package.json.version = 1.0.0`.
 
-[ ] README identifica claramente `v1.0.0` como versão estável.
+[x] README identifica claramente `v1.0.0` como versão estável. (O README passou
+a declarar a versão no topo, com o link para o D20 e a frase explícita de que
+"estável" significa suíte de release verde e limitações declaradas, não
+prontidão para SaaS. Antes, `1.0.0` aparecia uma única vez no arquivo, e era
+numa frase sobre um job do CI.)
 
 [x] Swagger usa a mesma versão. (Item 2.3: `src/shared/utils/version.ts` é a
 fonte única, usada pelo `info.version` do spec e pelo `/health`; teste com o
 leitor mockado impede a volta da cópia digitada à mão.)
 
-[ ] Docker usa tags da versão.
+[x] Docker usa tags da versão. (`release.yml` resolve a versão de
+`package.json`, exige semver, e publica a imagem com três tags: `1.0.0`, `v1.0.0`
+e o SHA do commit. `docker-compose.prod.yml` consome `IMAGE_REF` por digest, com
+a tag como fallback.)
 
-[ ] Release GitHub usa `v1.0.0`.
+[ ] Release GitHub usa `v1.0.0`. (Depende do freeze e da decisão de tag —
+ver "Achados durante a execução".)
 
 ---
 
 ## 5.2 Dependências
 
-[ ] `npm ci` reproduz exatamente o lockfile.
+[x] `npm ci` reproduz exatamente o lockfile.
 
-[ ] `package-lock.json` está commitado.
+[x] `package-lock.json` está commitado.
 
-[ ] Nenhum pacote desnecessário permanece em `dependencies`.
+[x] Nenhum pacote desnecessário permanece em `dependencies`.
 
-[ ] Dependências de runtime e `devDependencies` estão separadas corretamente.
+[x] Dependências de runtime e `devDependencies` estão separadas corretamente.
 
-[ ] Nenhum pacote de produção é usado apenas por testes.
+[x] Nenhum pacote de produção é usado apenas por testes.
 
-[ ] `npm audit` e `audit-ci` estão verdes.
+[x] `npm audit` e `audit-ci` estão verdes.
 
-[ ] Actions do GitHub estão em versões suportadas.
+[x] Actions do GitHub estão em versões suportadas.
 
 [ ] Dependências não são atualizadas no meio do processo de release; congelar o lockfile antes da tag.
+
+### Evidência
+
+Classificação feita por varredura de imports, não por leitura do `package.json`:
+cada dependência declarada foi procurada em `src/` e em `tests/`.
+
+- **Todas as 15 `dependencies` são importadas por `src/`** — nenhuma órfã. A
+  única que não aparece em `src/` nem em `tests/` é o `pm2`, e ele é usado de
+  verdade: `package.json` tem `build:pm2`, `stop`, `restart`, `logs`, `status`
+  apontando para `ecosystem.config.cjs`, e `docs/DASHBOARD_SEGURANCA_GUIA.md`
+  documenta `pm2 status`/`pm2 logs`. É dependência de operação, não lixo.
+- **`src/` não importa nada que exista apenas em `devDependencies`** (varredura
+  de todos os imports por pacote, incluindo escopo `@`). Portanto não há
+  dependência de produção usada só por teste, nem dependência de teste
+  necessária em produção.
+- `npm ci` rodou do lockfile final sem divergência, e `npm ls` não reporta
+  `invalid` mesmo com os dois `overrides` (item 1.6).
+- Gate de dependências: `audit-ci` verde com a exceção datada de `braces`;
+  `npm audit` vermelho apenas pelo mesmo advisory, por não ter mecanismo de
+  exceção. Detalhamento em 3.1 e 1.6.
+- Actions: item 1.8, todas em versões suportadas e sem a action arquivada.
+
+O item do congelamento do lockfile só fecha no freeze (seção 8).
 
 ---
 
 ## 5.3 Secrets e arquivos sensíveis
 
-[ ] `.env` não está versionado.
+[x] `.env` não está versionado.
 
-[ ] `.env.prod` não está versionado.
+[x] `.env.prod` não está versionado.
 
-[ ] arquivos PEM reais não estão versionados.
+[x] arquivos PEM reais não estão versionados.
 
-[ ] logs de teste não contêm secrets.
+[x] logs de teste não contêm secrets.
 
-[ ] dumps de banco não estão no Git.
+[x] dumps de banco não estão no Git.
 
-[ ] Gitleaks passa.
+[x] Gitleaks passa.
 
-[ ] exemplos/documentação não contêm credenciais reutilizáveis.
+[x] exemplos/documentação não contêm credenciais reutilizáveis.
+
+### Evidência
+
+`git ls-files` com filtro para `.env`, `.pem`, `.key`, `.p12`, `.crt`, `.dump`,
+`.bson` e `.gz` devolve **apenas** `.env.example` e `.env.prod.example`. O
+`.gitignore` cobre `.env`, `.env.test`, `.env.prod`, `.env.docker`, `secrets/`,
+`.cfg-secrets/` e `*.pem`.
+
+Nos exemplos versionados, os campos de segredo são placeholders
+(`JWT_SECRET=your-super-secret-jwt-key-with-at-least-32-chars-for-security`,
+`JWT_SECRET=troque-por-uma-chave-aleatoria-de-pelo-menos-48-bytes`), não valores
+que alguém possa reutilizar.
+
+Gitleaks (`npm run test:secrets`) varreu 96 commits e 4.52 MB sem achado, e
+inclui os testes que garatem que nenhum `.env*` versionado carregue segredo
+real.
 
 ---
 
