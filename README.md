@@ -238,7 +238,7 @@ Principais campos:
 - `SESSION_FAIL_OPEN` (política de revogação sem Redis; padrão `false` em produção)
 - `ALLOWED_ORIGINS`
 - `METRICS_TOKEN` (em produção, configure um token: protege o manifesto de `/observability`)
-- `TRUST_PROXY` (padrão `false`: não confiar em `X-Forwarded-For`; atrás de proxy, use o número de saltos ou a faixa CIDR do proxy)
+- `TRUST_PROXY` (padrão `false`: não confiar em `X-Forwarded-For`; atrás de proxy, use o número de saltos ou a faixa CIDR do proxy). `true` em produção **recusa o arranque**: a confiança em toda a cadeia só é segura com um proxy reverso que reescreva o cabeçalho, e `TRUST_PROXY_ALLOW_UNRESTRICTED=true` é o opt-in explícito para quem assume essa responsabilidade
 - `PROXY_TLS_CERT_DIR` (Compose de produção: diretório externo com `fullchain.pem`/`privkey.pem` para nginx; HTTPS publicado em 443)
 - `INSTANCE_ID` (opcional; identifica uma réplica em `/observability`; por default usa hostname do container)
 - `HTTP_HEADERS_TIMEOUT`, `HTTP_REQUEST_TIMEOUT`, `HTTP_KEEP_ALIVE_TIMEOUT`, `HTTP_CONNECTIONS_CHECKING_INTERVAL`, `HTTP_LISTEN_BACKLOG`, `HTTP_MAX_REQUESTS_PER_SOCKET`, `HTTP_MAX_HEADERS_COUNT` (limites de headers, recebimento e reutilização de conexões Node; defaults no `.env.prod.example`)

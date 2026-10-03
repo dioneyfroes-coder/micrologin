@@ -782,6 +782,30 @@ export function validateConfiguration(): boolean {
     errors.push('CLUSTER_WORKERS não pode ser maior que CLUSTER_MAX_WORKERS');
   }
 
+  // --- Confiança em cabeçalhos de proxy ---------------------------------------
+  // `TRUST_PROXY=true` faz o Express aceitar `X-Forwarded-For` de qualquer
+  // origem. Só é seguro quando existe um proxy reverso que **reescreve** o
+  // cabeçalho com o IP real — e essa é uma propriedade da topologia, não do
+  // processo: nada dentro do app consegue verificá-la. Um `logger.warn` some no
+  // ruído do arranque e o serviço segue no ar com o rate limit por IP inútil
+  // (um `X-Forwarded-For` novo por requisição = um orçamento novo).
+  //
+  // Por isso em produção a confiança irrestrita é recusada, e quem realmente a
+  // quiser precisa dizer que a topologia sustenta a afirmação. O opt-in é
+  // separado do valor de propósito: um deploy com `true` já configurado não
+  // pode ser justificado por um default que muda sozinho.
+  if (environmentConfig.isProduction && serverConfig.proxy.trustProxy === true) {
+    const allowUnrestricted = (process.env.TRUST_PROXY_ALLOW_UNRESTRICTED ?? '').trim().toLowerCase() === 'true';
+
+    if (!allowUnrestricted) {
+      errors.push(
+        'TRUST_PROXY=true é recusado em produção: use o número de saltos (TRUST_PROXY=1) ou a faixa CIDR do proxy. ' +
+        'Só com um proxy reverso que reescreva X-Forwarded-For e nenhum outro caminho até o app, ' +
+        'defina TRUST_PROXY_ALLOW_UNRESTRICTED=true para assumir essa responsabilidade.'
+      );
+    }
+  }
+
   // Validações de SSL em produção
   if (environmentConfig.isProduction && !serverConfig.ssl.enabled) {
     logger.warn('⚠️ SSL não está habilitado em produção');

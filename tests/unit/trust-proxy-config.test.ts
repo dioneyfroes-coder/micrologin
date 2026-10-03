@@ -55,4 +55,86 @@ describe('TRUST_PROXY - confiança em cabeçalhos de proxy', () => {
     expect(serverConfig.proxy.trustProxy).toBe(true);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('TRUST_PROXY'));
   });
+
+  it('aceita caixa alta e espaços em volta', async() => {
+    process.env.TRUST_PROXY = '  TRUE  ';
+
+    const { serverConfig } = await loadConfig();
+
+    expect(serverConfig.proxy.trustProxy).toBe(true);
+  });
+});
+
+describe('TRUST_PROXY - confiança irrestrita é recusada no arranque de produção', () => {
+  const productionEnv = (trustProxy: string): void => {
+    process.env.NODE_ENV = 'production';
+    process.env.TRUST_PROXY = trustProxy;
+    // As outras regras de produção continuam valendo e não são o alvo aqui:
+    // `SERVER_ROLE`/`SECURITY_DASHBOARD_TOKEN` e as de TLS. O que está sob
+    // teste é se a regra do `TRUST_PROXY` recusa, então a asserção olha a
+    // linha dela e não a validity da configuração inteira.
+    process.env.JWT_ALGORITHM = 'HS256';
+    process.env.JWT_SECRET = 'a'.repeat(32);
+    process.env.JWT_REFRESH_SECRET = 'b'.repeat(32);
+    process.env.URI_MONGODB = 'mongodb://user:senha-com-32-chars@localhost:27017/auth';
+    process.env.REDIS_URL = 'redis://user:senha-com-32-chars@localhost:6379';
+  };
+
+  const trustProxyErrors = async(): Promise<string[]> => {
+    const { validateConfiguration } = await loadConfig();
+
+    try {
+      validateConfiguration();
+      return [];
+    } catch (error) {
+      return String((error as Error).message).split('\n')
+        .map(line => line.trim())
+        .filter(line => line.includes('TRUST_PROXY'));
+    }
+  };
+
+  it('recusa TRUST_PROXY=true', async() => {
+    productionEnv('true');
+
+    const errors = await trustProxyErrors();
+
+    expect(errors).toHaveLength(1);
+    // A recusa precisa dizer o que fazer: uma parede sem caminho é só um
+    //服务 outage com texto melhor.
+    expect(errors[0]).toMatch(/TRUST_PROXY=1/);
+    expect(errors[0]).toMatch(/TRUST_PROXY_ALLOW_UNRESTRICTED=true/);
+  });
+
+  it('recusa o sinonimo "all"', async() => {
+    productionEnv('all');
+
+    expect(await trustProxyErrors()).toHaveLength(1);
+  });
+
+  it('recusa mesmo com o opt-in em valor diferente de true', async() => {
+    productionEnv('true');
+    process.env.TRUST_PROXY_ALLOW_UNRESTRICTED = '1';
+
+    expect(await trustProxyErrors()).toHaveLength(1);
+  });
+
+  it('aceita quando a topologia e declarada no opt-in', async() => {
+    productionEnv('true');
+    process.env.TRUST_PROXY_ALLOW_UNRESTRICTED = 'true';
+
+    expect(await trustProxyErrors()).toEqual([]);
+  });
+
+  it.each(['1', '2', 'false', 'loopback', '10.0.0.0/8'])('aceita %s sem opt-in', async value => {
+    productionEnv(value);
+
+    expect(await trustProxyErrors()).toEqual([]);
+  });
+
+  it('em desenvolvimento o aviso continua sendo só aviso', async() => {
+    process.env.NODE_ENV = 'development';
+    process.env.TRUST_PROXY = 'true';
+
+    expect(await trustProxyErrors()).toEqual([]);
+  });
 });

@@ -102,3 +102,66 @@ describe('production reverse proxy configuration', () => {
     expect(resilienceScript).not.toContain('micrologin-resilience-app');
   });
 });
+
+/**
+ * A confiança em `X-Forwarded-For` é uma afirmação sobre a topologia, e a
+ * topologia é feita de arquivos. Estes testes amarram as três peças que precisam
+ * concordar entre si: o exemplo de env de produção, o Compose de produção e o
+ * `app.set` que entrega o valor ao Express.
+ *
+ * Sem a amarração, cada peça pode estar certa sozinha e o conjunto errado — por
+ * exemplo, `TRUST_PROXY=1` no exemplo de env (parece correto) com o app
+ * ignorando a configuração. O rate limit por IP passaria a usar o IP do
+ * container, e nenhuma falha apareceria: só a proteção sumiria.
+ */
+describe('X-Forwarded-For: as três peças da confiança em proxy', () => {
+  const prodEnvExample = readFileSync(resolve(ROOT, '.env.prod.example'), 'utf8');
+  const appSource = readFileSync(resolve(ROOT, 'src/app.ts'), 'utf8');
+
+  const envValue = (source: string, key: string): string | undefined => {
+    const match = source.match(new RegExp(`^${key}=(.*)$`, 'm'));
+
+    return match?.[1].trim();
+  };
+
+  it.each([
+    ['.env.prod.example', () => envValue(prodEnvExample, 'TRUST_PROXY')],
+    ['docker-compose.prod.yml', () => compose.services['auth-service'].environment?.TRUST_PROXY]
+  ])('%s declara um salto, nunca a cadeia inteira', (_file, read) => {
+    const value = read();
+
+    expect(value).toBe('1');
+    // `true` passaria no teste acima se alguém mudasse os dois arquivos juntos,
+    // e é justamente o valor que a regra de arranque recusa em produção.
+    expect(value).not.toBe('true');
+  });
+
+  it('o exemplo de produção não traz o opt-in de confiança irrestrita', () => {
+    // Se o exemplo já trouxesse `TRUST_PROXY_ALLOW_UNRESTRICTED=true`, a
+    // capacidade de recusar `true` na produção viria desligada de fábrica.
+    expect(envValue(prodEnvExample, 'TRUST_PROXY_ALLOW_UNRESTRICTED')).toBeUndefined();
+  });
+
+  it('o exemplo de desenvolvimento não confia em cabeçalho de cliente', () => {
+    const devEnv = readFileSync(resolve(ROOT, '.env.example'), 'utf8');
+
+    expect(envValue(devEnv, 'TRUST_PROXY')).toBe('false');
+  });
+
+  it('o app entrega a configuração ao Express, sem literal no meio do caminho', () => {
+    // `src/app.ts` está fora do mapa de cobertura do Jest (ver `jest.config.js`),
+    // então o único jeito de prender o caboamento é ler o fonte. A alternativa
+    // seria um e2e com orçamento de IP Observe, que não distingue "configurou" de
+    // "não configurou" porque as duas respostas dão 429.
+    expect(appSource).toMatch(/this\.app\.set\('trust proxy',\s*serverConfig\.proxy\.trustProxy\)/);
+    expect(appSource).not.toMatch(/set\('trust proxy',\s*(true|'1'|1)\s*\)/);
+    // O `set` precisa vir antes de qualquer middleware que leia `req.ip`: um
+    // `trust proxy` configurado depois do `requestLogger` já teria registrado o
+    // IP errado na primeira requisição.
+    const trustProxyAt = appSource.indexOf('set(\'trust proxy\'');
+    const rateLimitAt = appSource.indexOf('advancedRateLimit.checkLimits');
+
+    expect(trustProxyAt).toBeGreaterThan(-1);
+    expect(trustProxyAt).toBeLessThan(rateLimitAt);
+  });
+});

@@ -52,8 +52,16 @@ nenhum hash.
 | 4 | serviço → Redis | é a fronteira mais crítica: **é ela que decide revogação** |
 
 O serviço **confia** em `X-Forwarded-For` somente atrás de proxy com
-`trust proxy` configurado; sem isso, um cliente forja o IP e evade do rate limit
-por IP. O `liveness` foi feito para não depender disso (ver README).
+`trust proxy` configurado — e `TRUST_PROXY=true` (confiar em toda a cadeia) faz o
+app **recusar o arranque em produção**, porque a segurança desse valor depende de
+um proxy que reescreva o cabeçalho, o que é propriedade da topologia e não
+verificável de dentro do processo. O caminho declarado é o número de saltos
+(`TRUST_PROXY=1`, o nginx sobrescrevendo o cabeçalho) ou a faixa CIDR do proxy;
+`TRUST_PROXY_ALLOW_UNRESTRICTED=true` é o opt-in explícito para assumir essa
+responsabilidade quando a topologia sustenta a afirmação.
+Sem proxy declarado, o cabeçalho é do cliente e o forjador **não** ganha: ele
+fica preso ao IP do socket, que é o que o rate limit por IP protege. O `liveness`
+foi feito para não depender disso (ver README).
 
 ---
 
