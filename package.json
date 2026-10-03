@@ -1,5 +1,5 @@
 {
-  "name": "autentication",
+  "name": "micrologin",
   "version": "1.0.0",
   "description": "API de autenticação em Node.js para estudo de arquitetura, segurança e organização de código",
   "main": "dist/app.js",

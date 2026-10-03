@@ -47,7 +47,7 @@ pm2 start ecosystem.config.cjs
 ```cmd
 # No Prompt de Comando:
 pm2 status
-pm2 logs autentication
+pm2 logs autenticacao
 ```
 
 #### **Solução 4: Instalar/Reiniciar PM2**
@@ -69,7 +69,7 @@ pm2 update
 pm2 status
 
 # Verificar logs em tempo real
-pm2 logs autentication --lines 50
+pm2 logs autenticacao --lines 50
 
 # Verificar se o servidor está respondendo
 curl -k https://localhost:3000/health
@@ -344,16 +344,16 @@ fi
 ### **📋 Logs Estruturados**
 ```bash
 # Ver logs de segurança em tempo real
-pm2 logs autentication | grep "SECURITY"
+pm2 logs autenticacao | grep "SECURITY"
 
 # Filtrar por tipo de evento
-pm2 logs autentication | grep "FAILED_LOGIN"
-pm2 logs autentication | grep "BLOCKED_IP"
-pm2 logs autentication | grep "SUSPICIOUS_ACTIVITY"
+pm2 logs autenticacao | grep "FAILED_LOGIN"
+pm2 logs autenticacao | grep "BLOCKED_IP"
+pm2 logs autenticacao | grep "SUSPICIOUS_ACTIVITY"
 
 # Analisar padrões específicos
-pm2 logs autentication | grep "SQL injection"
-pm2 logs autentication | grep "XSS attempt"
+pm2 logs autenticacao | grep "SQL injection"
+pm2 logs autenticacao | grep "XSS attempt"
 ```
 
 ### **📊 Análise com PowerShell**
@@ -402,7 +402,7 @@ $env:PATH += ";C:\Windows\System32\wbem"
 // No ecosystem.config.cjs, adicionar:
 module.exports = {
   apps: [{
-    name: 'autentication',
+    name: 'autenticacao',
     script: 'src/app.js',
     instances: 4,
     exec_mode: 'cluster',
@@ -434,13 +434,13 @@ curl -k -H "X-Security-Token: $SECURITY_DASHBOARD_TOKEN" https://localhost:3000/
 curl -k -H "X-Security-Token: $SECURITY_DASHBOARD_TOKEN" https://localhost:3000/security/health
 
 # 📋 Logs
-pm2 logs autentication --lines 100
-pm2 logs autentication | grep "SECURITY"
+pm2 logs autenticacao --lines 100
+pm2 logs autenticacao | grep "SECURITY"
 
 # 🔧 Gerenciamento PM2
 pm2 status
-pm2 restart autentication
-pm2 reload autentication
+pm2 restart autenticacao
+pm2 reload autenticacao
 ```
 
 ---

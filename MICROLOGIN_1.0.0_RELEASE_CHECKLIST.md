@@ -1752,9 +1752,26 @@ porque depende de infraestrutura que este repositório não tem.
 
 ## 5.1 Versões e identidade do projeto
 
-[ ] Decidir se o nome oficial continuará `autentication` ou será corrigido para `micrologin`/`authentication`.
+[x] Decidir se o nome oficial continuará `autentication` ou será corrigido para `micrologin`/`authentication`.
 
 > Para a 1.0.0, não é obrigatório mudar o nome do pacote se isso gerar churn de lockfile e documentação. O importante é documentar a decisão.
+
+**Decisão (2026-10-03): `micrologin`.** O `package.json` passa a se chamar
+`micrologin`, alinhado ao nome do repositório e ao nome da imagem publicada
+(`IMAGE_NAME: ${{ github.repository }}` já produzia `ghcr.io/dioneyfroes-coder/micrologin`).
+
+O escopo foi deliberado, e vale registrar o que ficou de fora **e por quê**:
+
+- **Renomeado:** `package.json.name`, e as 13 citações de `pm2 autentication` no
+  `docs/DASHBOARD_SEGURANCA_GUIA.md` — que eram um bug de documentação: o
+  processo pm2 chama-se `autenticacao` (`ecosystem.config.cjs`), e o guia mandava
+  o operador rodar um comando que nunca encontraria o processo.
+- **Mantido:** o nome do serviço no Compose (`auth-service`), o usuário ACL do
+  Redis e o nome do processo pm2 (`autenticacao`). São identificadores de
+  operação, referenciados em compose, backup, deploy e no drill de capacidade já
+  verde; renomeá-los no mesmo dia do freeze trocaria nomes de container e
+  usuário de banco sem nenhum ganho no artefato publicado, que já se chama
+  `micrologin`.
 
 [x] `package.json.version = 1.0.0`.
 
