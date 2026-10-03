@@ -28,6 +28,7 @@ type Step = {
   name?: string;
   uses?: string;
   if?: string;
+  'continue-on-error'?: string;
   with?: Record<string, string | boolean>;
 };
 
@@ -62,7 +63,8 @@ const stepNamed = (job: string, needle: string): Step => {
   const text = collected.join('\n');
 
   const uses = text.match(/uses:\s*(\S+)/)?.[1];
-  const ifExpr = text.match(/if:\s*(.+)$/m)?.[1].trim();
+  const ifExpr = text.match(/^\s*if:\s*(.+)$/m)?.[1].trim();
+  const continueOnError = text.match(/^\s*continue-on-error:\s*(.+)$/m)?.[1].trim();
   const withBlock = text.match(/with:\n((?:\s{6,}.*\n?)+)/)?.[1] ?? '';
 
   const withValues: Record<string, string | boolean> = {};
@@ -74,7 +76,7 @@ const stepNamed = (job: string, needle: string): Step => {
     }
   }
 
-  return { name: needle, uses, if: ifExpr, with: withValues };
+  return { name: needle, uses, if: ifExpr, 'continue-on-error': continueOnError, with: withValues };
 };
 
 const jobBlock = (job: string): string => {
@@ -246,5 +248,33 @@ describe('o workflow continua sendo YAML válido com o gate no lugar', () => {
 
   it('nenhum outro job continua em tag flutuante de segurança', () => {
     expect(WORKFLOW).not.toMatch(/aquasecurity\/trivy-action@(master|main|latest)/);
+  });
+
+  it('o gate roda em pull_request, não só depois do merge', () => {
+    // Sem isto, um PR com dependência ou imagem vulnerável era aprovado pelo
+    // pipeline e só aparecia no `push` seguinte. A única proteção era tarde.
+    const condition = jobBlock('security').match(/^ {4}if: (.+)$/m)?.[1] ?? '';
+
+    expect(condition).toContain('github.event_name == \'pull_request\'');
+    // E o objeto do scan precisa existir no PR: o digest vem do job `build`,
+    // que roda nos três eventos.
+    expect(jobBlock('build')).not.toMatch(/^ {4}if:.*push_request/);
+    expect(trivy().with?.['image-ref']).toContain(
+      'needs.build.outputs.image-ref'
+    );
+  });
+
+  it('o upload de SARIF não reprova o job em PR de fork', () => {
+    // Token de fork é somente-leitura: `security-events: write` é rebaixado e o
+    // upload é rejeitado. Reprovar por isso seria reprovar por um relatório que
+    // o GitHub não deixa gravar — e ensinar a ignorar vermelho.
+    const upload = sarifUpload();
+
+    expect(upload.if).toBe('always()');
+    expect(upload).toHaveProperty('continue-on-error');
+    expect(String(upload['continue-on-error'])).toContain('github.event_name == \'pull_request\'');
+    // O `continue-on-error` é do upload, não do scan: o gate não pode herdar
+    // tolerância por causa de um relatório.
+    expect(trivy()['continue-on-error']).toBeUndefined();
   });
 });

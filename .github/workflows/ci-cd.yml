@@ -203,7 +203,12 @@ jobs:
     name: 🛡️ Security Scanning
     runs-on: ubuntu-latest
     needs: build
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    # Roda também em `pull_request`. Sem isto o gate só existia depois do merge:
+    # um PR que adicionasse dependência ou imagem vulnerável era aprovado pelo
+    # pipeline e só era reprovado no `push` seguinte — ou seja, tarde demais para
+    # a decisão de revisão. O objeto do scan é o digest que o `build` acabou de
+    # publicar, que existe nos três eventos.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'
     permissions:
       contents: read
       # Upload de SARIF em evento `push` é rejeitado sem esta permissão.
@@ -254,6 +259,13 @@ jobs:
         # `always()` é o que faz o relatório ser publicado justamente quando o
         # gate reprova. Sem isto, um gate vermelho custaria também a evidência.
         if: always()
+        # PR de fork roda com token somente-leitura: `security-events: write`
+        # é rebaixado e o upload é rejeitado. Deixar isso reprovar o job seria
+        # reprovar por um relatório que o GitHub não deixa gravar, não por
+        # vulnerabilidade — e treinar quem mantém o projeto a esperar por um
+        # PR vermelho "sem motivo" é treinar a ignorar o vermelho. O gate (o
+        # scan) continua valendo em todo evento; só a evidência é opcional.
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
         with:
           sarif_file: 'trivy-results.sarif'
 
@@ -359,8 +371,16 @@ jobs:
             # Chave do host conferida: o deploy não aceita falar com um host
             # que não esteja registrado.
             printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          elif [ "${{ inputs.environment }}" = "production" ]; then
+            # Em produção, TOFU não é degrade aceitável: aceitar a chave de
+            # qualquer host na primeira conexão é aceitar que alguém se
+            # apresente como o servidor de produção. Sem a chave registrada,
+            # o deploy para — e um deploy que não acontece é recuperável; um
+            # deploy para o host errado, não.
+            echo "::error::${{ env.DEPLOY_SECRET_PREFIX }}_DEPLOY_KNOWN_HOSTS não definido: em produção a chave do host precisa ser conferida, e o passo se recusa a escrever '*'."
+            exit 1
           else
-            echo "::warning::${{ env.DEPLOY_SECRET_PREFIX }}_DEPLOY_KNOWN_HOSTS não definido: a chave do host será aceita na primeira conexão (TOFU)."
+            echo "::warning::${{ env.DEPLOY_SECRET_PREFIX }}_DEPLOY_KNOWN_HOSTS não definido: a chave do host será aceita na primeira conexão (TOFU). Aceitável em ${{ inputs.environment }}, não em produção."
             printf '%s\n' '*' > ~/.ssh/known_hosts
           fi
 

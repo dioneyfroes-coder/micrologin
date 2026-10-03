@@ -1,7 +1,8 @@
 import { describe, it, expect } from '@jest/globals';
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 
 /**
  * O bug que este arquivo existe para impedir
@@ -121,6 +122,116 @@ describe('CI/CD - o input de ambiente decide o deploy', () => {
     expect(guardAt).toBeGreaterThan(-1);
     expect(sshAt).toBeGreaterThan(guardAt);
     expect(registryAt).toBeGreaterThan(guardAt);
+  });
+});
+
+/**
+ * A chave do host em produção
+ * ==========================
+ *
+ * O passo de SSH escrevia `*` em `known_hosts` quando o secret
+ * `_DEPLOY_KNOWN_HOSTS` não estivesse definido — nos dois ambientes, produção
+ * inclusive. TOFU é aceitável em staging, onde o risco é de um ambiente de
+ * teste; em produção significa aceitar a chave de qualquer host na primeira
+ * conexão, ou seja, aceitar que alguém se apresente como o servidor de produção.
+ *
+ * O teste executa o `run:` real do workflow, com `HOME` apontando para um
+ * diretório temporário: o script escreve `~/.ssh/known_hosts`, e rodar isso
+ * contra o HOME de quem está testando destruiria o known_hosts da máquina.
+ */
+describe('CI/CD - a chave do host não é opcional em produção', () => {
+  const sshScript = (): string => {
+    const job = deployJob();
+    const stepAt = job.indexOf('      - name: 🔑 Configurar chave SSH');
+    expect(stepAt).toBeGreaterThan(-1);
+
+    const runAt = job.indexOf('        run: |', stepAt);
+    expect(runAt).toBeGreaterThan(-1);
+
+    const bodyStart = job.indexOf('\n', runAt) + 1;
+    const lines: string[] = [];
+    let cursor = bodyStart;
+    while (cursor < job.length) {
+      const lineEnd = job.indexOf('\n', cursor);
+      const line = job.slice(cursor, lineEnd === -1 ? job.length : lineEnd);
+      if (line.trim() !== '' && !/^ {10}/.test(line)) {
+        break;
+      }
+      lines.push(line);
+      if (lineEnd === -1) {
+        break;
+      }
+      cursor = lineEnd + 1;
+    }
+
+    // As expressões do GitHub viram variáveis de ambiente, para que o script
+    // executado seja o mesmo que o runner executa.
+    return lines
+      .join('\n')
+      .replace(/^ {10}/gm, '')
+      .replaceAll('${{ inputs.environment }}', '"$INPUT_ENVIRONMENT"')
+      .replaceAll('${{ env.DEPLOY_SECRET_PREFIX }}', '"$PREFIX"');
+  };
+
+  const runSshStep = (
+    inputEnvironment: string,
+    knownHosts: string
+  ): { exit: number; knownHosts: string | null; output: string } => {
+    const home = mkdtempSync(join(tmpdir(), 'deploy-ssh-'));
+    try {
+      const output = execFileSync('bash', ['-c', sshScript()], {
+        env: {
+          PATH: process.env.PATH,
+          HOME: home,
+          INPUT_ENVIRONMENT: inputEnvironment,
+          PREFIX: inputEnvironment.toUpperCase(),
+          SSH_PRIVATE_KEY: 'chave-ficticia-de-teste',
+          SSH_KNOWN_HOSTS: knownHosts
+        },
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+      const file = join(home, '.ssh', 'known_hosts');
+      return {
+        exit: 0,
+        knownHosts: existsSync(file) ? readFileSync(file, 'utf8') : null,
+        output
+      };
+    } catch (error) {
+      const err = error as { status: number | null; stdout: string };
+      const file = join(home, '.ssh', 'known_hosts');
+      return {
+        exit: err.status ?? 1,
+        knownHosts: existsSync(file) ? readFileSync(file, 'utf8') : null,
+        output: err.stdout ?? ''
+      };
+    }
+  };
+
+  it('com a chave registrada, o passo usa a chave e segue', () => {
+    const result = runSshStep('production', 'servidor.example ssh-ed25519 AAAA');
+
+    expect(result.exit).toBe(0);
+    expect(result.knownHosts?.trim()).toBe('servidor.example ssh-ed25519 AAAA');
+  });
+
+  it('em produção, sem a chave registrada, o passo aborta e não escreve "*"', () => {
+    const result = runSshStep('production', '');
+
+    // O ponto é o `known_hosts`: um passo que aborta deixando `*` escrito
+    //QUANDO ABORTA não protege nada.
+    expect(result.exit).not.toBe(0);
+    expect(result.knownHosts ?? '').not.toContain('*');
+    expect(result.output).toContain('::error::');
+  });
+
+  it('em staging, sem a chave registrada, o TOFU continua disponível e avisado', () => {
+    const result = runSshStep('staging', '');
+
+    expect(result.exit).toBe(0);
+    expect(result.knownHosts?.trim()).toBe('*');
+    // O aviso é o que diferencia degrade assumido de degrade silencioso.
+    expect(result.output).toContain('::warning::');
   });
 });
 
