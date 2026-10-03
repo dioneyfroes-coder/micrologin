@@ -1318,33 +1318,76 @@ Executar em ambiente limpo, com Docker disponível e sem depender de artefatos g
 
 ## 3.1 Gates locais básicos
 
-[ ] `npm ci`
+[x] `npm ci`
 
-[ ] `npm run lint`
+[x] `npm run lint`
 
-[ ] `npm run typecheck`
+[x] `npm run typecheck`
 
-[ ] `npm run build`
+[x] `npm run build`
 
-[ ] `npm audit --audit-level=high`
+[ ] `npm audit --audit-level=high` — **vermelho, ver pendência**
 
-[ ] `npx audit-ci --config .audit-ci.json`
+[ ] `npx audit-ci --config .audit-ci.json` — **vermelho, ver pendência**
 
-[ ] `npm run test:secrets`
+[x] `npm run test:secrets`
+
+### Evidência
+
+`npm ci` instalou a partir do lockfile sem divergência. `lint`, `typecheck` e
+`build` limpos. `test:secrets`: gitleaks varrendo 96 commits e 4.52 MB sem
+vazamento, nenhum arquivo de material (chave, certificado, ACL) versionado e
+nenhuma credencial real nos `.env*` versionados.
+
+### Pendência — o gate de dependências está vermelho, e agora por dois motivos
+
+O item 1.6 deixou uma pendência conhecida: `basic-ftp` via `pm2`. A verificação
+de 2026-10-03 encontrou **uma segunda** advisory, que não existia quando o item
+foi escrito:
+
+```text
+GHSA-c475-qrg2-pj4r  basic-ftp <=6.2.0
+pm2 > proxy-agent > pac-proxy-agent > get-uri > basic-ftp
+GHSA-vfj7-8cjw-p6xm  braces <=3.0.3   (ReDoS por stack exhaustion)
+jest > micromatch > braces ; lint-staged > micromatch > braces ; pm2 > chokidar > braces
+```
+
+`npm audit --audit-level=high` acusa 34 `high` — a esmagadora maioria é a mesma
+`braces` repetida em 20 pacotes da cadeia do jest, mais `lint-staged` e `pm2`.
+
+Fatos, não opinião:
+
+- **`basic-ftp` tem versão corrigida** (`6.2.1`), mas `get-uri@6.0.5` declara
+  `basic-ftp: ^5.0.2` — sair da faixa do autor é major bump dentro de uma
+  dependência de terceiro. É o caminho que o item 1.6 já apontava como
+  "exige verificação antes, não depois".
+- **`braces` não tem versão corrigida**: a faixa vulnerável é `<=3.0.3` e a
+  3.0.3 é a última publicada. Não existe o que instalar. O `npm audit` sugere
+  `lint-staged@17.6.0`, o que não corrige a cadeia do jest nem a do `chokidar`.
+
+Consequência para a política: com a política do item 1.6 (bloquear `moderate`+,
+allowlist vazia), o job `code-quality` **não fecha**. As duas cadeias são de
+`devDependencies` (`jest`, `lint-staged`, `pm2`) e o caminho alcançado
+(`braces` compila regex a partir de padrões glob de arquivos do próprio
+repositório; `basic-ftp` só é carregado por resolução de URI de proxy) não
+recebe entrada de requisição. Allowlist com justificativa e validade é o
+caminho que a política do próprio item prevê — mas isso é decisão de release, e a decisão
+precisa ser do responsável, não minha. Registrado, não escondido.
+
 
 ---
 
 ## 3.2 Suíte funcional
 
-[ ] `npm run test:unit`
+[x] `npm run test:unit`
 
-[ ] `npm run test:integration`
+[x] `npm run test:integration`
 
-[ ] `npm run test:e2e`
+[x] `npm run test:e2e`
 
-[ ] `npm run test:e2e:down`
+[x] `npm run test:e2e:down`
 
-[ ] `npm run test:coverage:fast`
+[x] `npm run test:coverage:fast`
 
 ### Critério mínimo
 
@@ -1354,41 +1397,66 @@ Nenhum teste vermelho. Não aceitar “falha conhecida” na suíte que será us
 
 ## 3.3 Suíte de segurança
 
-[ ] `npm run test:credential-theft:unit`
+[x] `npm run test:credential-theft:unit`
 
-[ ] `npm run test:credential-theft:real-redis`
+[x] `npm run test:credential-theft:real-redis`
 
-[ ] `npm run test:credential-theft`
+[x] `npm run test:credential-theft`
 
-[ ] Teste de rotação de refresh token.
+[x] Teste de rotação de refresh token.
 
-[ ] Teste de reuso de refresh token.
+[x] Teste de reuso de refresh token.
 
-[ ] Teste de revogação de usuário.
+[x] Teste de revogação de usuário.
 
-[ ] Teste de troca de senha com sessões antigas.
+[x] Teste de troca de senha com sessões antigas.
 
-[ ] Teste de refresh após exclusão do usuário.
+[x] Teste de refresh após exclusão do usuário.
 
-[ ] Teste de JWT `token_type`.
+[x] Teste de JWT `token_type`.
+
+### Evidência
+
+`credential-theft:unit` 10/10 (Map em memória) e `credential-theft:real-redis`
+14/14 contra Redis real, incluindo os casos que chamam o app por HTTP: reuso de
+refresh derruba a sessão e barra `/profile` com 401, e a troca de senha barra o
+`/profile` do atacante. `test:e2e` 16/16 (inclui o `/api-docs` servido de
+verdade). Rotação, reuso, revogação, troca de senha, exclusão e `token_type` têm
+suite própria nos itens 1.3 e 2.1.
 
 ---
 
 ## 3.4 Suíte de infraestrutura/resiliência
 
-[ ] `npm run test:infra`
+[x] `npm run test:infra`
 
-[ ] `npm run test:redis`
+[x] `npm run test:redis`
 
-[ ] `npm run test:redis:volume-loss`
+[x] `npm run test:redis:volume-loss`
 
-[ ] `npm run test:backup`
+[x] `npm run test:backup`
 
-[ ] `npm run test:config-backup`
+[x] `npm run test:config-backup`
 
-[ ] `npm run test:deploy`
+[x] `npm run test:deploy`
 
-[ ] `npm run test:replica-session`
+[x] `npm run test:replica-session`
+
+### Evidência
+
+| Dril | Resultado medido |
+| --- | --- |
+| `test:infra` (13/13) | Redis parado com o app no ar: `503 REVOCATION_UNAVAILABLE`, **sem 429 e sem fail-open**; Redis volta e a autenticação se restaura sozinha, sem restart; container reiniciado **1s** mesmo com o Redis fora; anônimo e senha errada recusados nos dois serviços; rotação do Redis com janela e do Mongo sem janela, login preservado nas duas |
+| `test:redis` | Redis de volta em **0.6s**; token revogado continua 401 depois do restart do processo; `user_session_version` relida do volume |
+| `test:redis:volume-loss` | Limite da D20 medido: access revogado volta a valer por até o TTL (**~15.0 min** medido na resposta); refresh já consumido volta a valer e renova access tokens; **0 erros** no log do app |
+| `test:backup` | Dump cifrado (gpg AES-256) + `--check` dentro da janela RPO; restore após apagar o banco; **RTO 1s** (`restore.sh` → login 200) |
+| `test:config-backup` | Rollback por metadata restaurou **imagem e env** que estavam rodando (`VERSION=cfg-v1-...`), não a config editada no disco |
+| `test:deploy` | v1 → v2 → v3 com Mongo na porta errada: abortou no health check, rollback devolveu imagem, digest e env da v2 |
+| `test:replica-session` | **3 réplicas** endereçadas diretamente; chave de assinatura compartilhada antes da revogação; logout e troca de senha revogaram em todas as réplicas; sessão nova aceita em todas; **refresh roubado após logout → 401** |
+
+O `test:infra` também serve de prova de produção do item 2.3: o container real
+registra `Documentação OpenAPI gerada` e sobe com `/api-docs` montado — o spec
+não nasce vazio em `dist`.
 
 ### D20
 
@@ -1398,13 +1466,65 @@ O teste `npm run test:redis:volume-loss` deve continuar documentando a limitaç�
 
 ## 3.5 Carga e capacidade
 
-[ ] `npm run test:ddos`
+[ ] `npm run test:ddos` — k6 ausente no host; pendente de instalação
 
-[ ] `npm run test:capacity`
+[x] `npm run test:capacity`
 
-[ ] `npm run bench:hash`
+[x] `npm run bench:hash`
 
-[ ] `npm run bench:login`
+[x] `npm run bench:login`
+
+### Evidência — `test:capacity`
+
+Matriz completa (1 worker, teto in-flight 1024, 100/200/400 VUs, 85s por
+corrida), dados crus em `artifacts/capacity/summary.md`:
+
+| endpoint | VUs | rps | p50 | p95 | p99 | 429 | 4xx | 5xx | 503 | falha % | RSS pico |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `/health` | 100 | ~690 | 135ms | 182ms | 217ms | 0 | 0 | 0 | 0 | 0 | 141 MB |
+| `/health` | 200 | ~680 | 274ms | 362ms | 415ms | 0 | 0 | 0 | 0 | 0 | 145 MB |
+| `/health` | 400 | ~670 | 557ms | 710ms | 770ms | 0 | 0 | 0 | 0 | 0 | 151 MB |
+| `/login` | 100 | 23–29 | 3.4–4.5s | 3.6–4.8s | 3.8–4.8s | 0 | 0 | 0 | 0 | 0 | 385 MB |
+| `/login` | 200 | 23–30 | 6.7–8.3s | 7.4–9.0s | 7.6–9.3s | 0 | 0 | 0 | 0 | 0 | 354 MB |
+| `/login` | 400 | 23–30 | 13.3–16.9s | 13.8–17.5s | 14.0–17.7s | 0 | 0 | 0 | 0 | 0 | 387 MB |
+| `/refresh` | 400 | 484–527 | 626–635ms | 846–870ms | 1.1–3.3s | 0 | 0 | 0 | 0 | 0 | 340 MB |
+| `/register` | 400 | ~12 | — | — | — | 0 | 0 | 0 | 0 | 0 | — |
+
+Leitura: `/login` é limitado por CPU de argon2 (23–30 rps por processo, caindo
+de 688 rps de `/health` para menos de 5% disso), e o p95 sobe linearmente com a
+concorrência porque o argon2 serializa no thread pool. **0 5xx e 0 falhas** em
+todas as corridas; o limite de in-flight (1024) não foi atingido. Nenhum 429
+observado porque a corrida de medição usa o override de limite
+(`CAPACITY_RL_POINTS`), o mesmo motivo pelo qual estes números não são
+comparáveis com a política de produção (5 logins/900s) sem registrar a diferença.
+
+### Evidência — `bench:hash` e `bench:login`
+
+`bench:hash` (argon2id, p50 por concorrência):
+
+| candidato | c=1 | c=2 | c=4 |
+| --- | --- | --- | --- |
+| OWASP forte | 65.7ms | 61.8ms | 49.8ms |
+| OWASP mínimo | 46.9ms | 38.9ms | 29.9ms |
+| OWASP mínimo + pepper | — | 44.3ms | 33.2ms |
+| OWASP econômico | — | 28.1ms | 23.2ms |
+| 64MiB (roadmap) | 273.2ms | 160.0ms | 131.7ms |
+
+Logins por segundo na configuração em uso (OWASP mínimo): 51 (c=2), 132 (c=4).
+
+`bench:login` contra o serviço no ar, com credencial válida, 20 requests por
+nível após aquecimento, **0 falhas**:
+
+| concorrência | p50 | p95 | max | logins/s |
+| --- | --- | --- | --- | --- |
+| 1 | 51.2ms | 62.6ms | 76.1ms | 18.9 |
+| 4 | 159.6ms | 197.7ms | 249.6ms | 23.9 |
+| 8 | 335.3ms | 544.8ms | 630.3ms | 20.4 |
+
+Diferenças de topologia a registrar antes de comparar qualquer número: esta
+medição roda **dentro do container** (sem o salto do nginx e sem o hop de rede)
+e com o **override de rate limit** da matriz de capacidade. O caminho de rede e
+o orçamento de limite não são os de produção.
 
 ### Registrar no release report
 
