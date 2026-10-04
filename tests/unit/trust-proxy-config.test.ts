@@ -100,7 +100,7 @@ describe('TRUST_PROXY - confiança irrestrita é recusada no arranque de produç
 
     expect(errors).toHaveLength(1);
     // A recusa precisa dizer o que fazer: uma parede sem caminho é só um
-    //服务 outage com texto melhor.
+    // outage com texto melhor.
     expect(errors[0]).toMatch(/TRUST_PROXY=1/);
     expect(errors[0]).toMatch(/TRUST_PROXY_ALLOW_UNRESTRICTED=true/);
   });

@@ -60,7 +60,7 @@ deploy e agende, na cadência do RPO:
 0 4 * * *  /opt/micrologin/backup-config.sh --check --backups-dir /var/lib/micrologin/config-backups --max-age 24
 ```
 
-Um backup crondiário já é capturado em cima do que está no ar; o valor a mais
+Um backup cron diário já é capturado em cima do que está no ar; o valor a mais
 do deploy é que ele acopla a config à versão da imagem — o alvo do rollback.
 
 ## Restauração pontual (recovery path)

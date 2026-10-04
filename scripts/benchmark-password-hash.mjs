@@ -6,8 +6,8 @@
  * importa é quanto o hash custa *aqui*, no caminho de login, e quanto custa
  * *dentro do limite do container* (2.0 CPU / 512 MB em
  * `docker-compose.prod.yml`). Um parâmetro que a OWASP recomenda e que cabe
- * folgado numa VM de 8核 pode derrubar o serviço no orçamento que este serviço
- * tem.
+ * folgado numa VM de 8 núcleos pode derrubar o serviço no orçamento que este
+ * serviço tem.
  *
  * Por isso o script mede três coisas que tabelas não dão:
  *

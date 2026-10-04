@@ -20,7 +20,7 @@ Não significa "pronto para SaaS em escala ilimitada".
 - política única de username: 3 a 30 caracteres, apenas letras, números, `_` e `-` (fonte única em `shared/utils/usernamePolicy.ts`)
 - hash de senha em **argon2id** (m=64MiB, t=1, p=1), único algoritmo do projeto, com reescrita silenciosa quando os parâmetros mudam — 3.4x a memória por tentativa do atacante em relação aos mínimos da OWASP, com a mesma latência de login ([D16](docs/SEGURANCA.md))
 - parâmetros do hash validados contra o `mem_limit` do container no arranque, e alerta de memória do `/health` como fração desse mesmo teto
-- como o serviço se comportaria em hardware grande (120 núcleos / 120 GB): extrapolação a partir de medição real, em [`ARQUITETURA.md`](docs/ARQUITETURA.md#9-projeção-em-hardware-grande-120-núcleos--120-gb)
+- como o serviço se comportaria em hardware grande (120 núcleos / 120 GB): extrapolação a partir de medição real, em [`ARQUITETURA.md`](docs/ARQUITETURA.md#11-projeção-em-hardware-grande-120-núcleos--120-gb)
 - política de senha forte em fonte única (12+ caracteres, máximo de 72 bytes, composição, lista de senhas comuns) e troca de senha com step-up, histórico de 5 hashes e encerramento das sessões
 - rate limiting por IP e por login, com backend Redis e fallback em memória quando o Redis está indisponível
 - monitoramento auxiliar de segurança com limites de memória (auditoria e anomalias sem crescimento ilimitado)
@@ -53,7 +53,15 @@ Não significa "pronto para SaaS em escala ilimitada".
 | [`docs/REDIS.md`](docs/REDIS.md) | o que o Redis guarda e o que se perde sem ele (Fase 2.2): persistência da revogação, RPO/RTO medidos, por que não há backup de Redis |
 | [`docs/CONFIG.md`](docs/CONFIG.md) | backup/restauração da configuração EM EXECUÇÃO (Fase 2.3): container é a fonte da verdade, dono dos segredos, rollback de imagem+config e o drill |
 | [`docs/DASHBOARD_SEGURANCA_GUIA.md`](docs/DASHBOARD_SEGURANCA_GUIA.md) | como usar `GET /security/*` e o dashboard |
-| [`MICROLOGIN_ANALISE_E_ROADMAP.md`](MICROLOGIN_ANALISE_E_ROADMAP.md) | análise e plano de fases executado |
+| [`MICROLOGIN_1.0.0_RELEASE_CHECKLIST.md`](MICROLOGIN_1.0.0_RELEASE_CHECKLIST.md) | o que fecha a 1.0.0, item a item, com evidência: o que foi provado, por teste, e o que continua declarado como limite |
+| [`CHANGELOG.md`](CHANGELOG.md) | o que mudou em cada versão |
+
+> O `MICROLOGIN_ANALISE_E_ROADMAP.md` — análise e plano de fases que orientou a
+> construção — foi removido do repositório quando o checklist de release o
+> substituiu. Ele não era histórico de auditoria que valesse preservar: cada item
+> do plano que ainda vale está no checklist com evidência, e cada item que virou
+> decisão está no log de decisões de
+> [`docs/SEGURANCA.md`](docs/SEGURANCA.md).
 
 ---
 
@@ -97,9 +105,34 @@ As rotas são montadas na raiz da aplicação:
 
 Rotas de segurança (auditoria/monitoramento) ficam em `src/application/routes/securityRoutes.ts` (montadas em `/security/*`) e exigem o header `X-Security-Token`. Um guia prático de uso do dashboard de segurança está em [`docs/DASHBOARD_SEGURANCA_GUIA.md`](docs/DASHBOARD_SEGURANCA_GUIA.md), com exemplos em [`examples/`](examples).
 
-Falhas de login retornam `401 AUTHENTICATION_FAILED` com a mensagem `Credenciais inválidas`; falhas de registro retornam `400 REGISTRATION_FAILED` com a mensagem `Não foi possível criar a conta`, sem revelar se a conta existe. A única exceção é a recusa por **indisponibilidade de revogação** (Redis fora, fail-closed): login devolve `503 REVOCATION_UNAVAILABLE` — o corpo continua genérico, mas o status diz "a culpa é nossa, tente de novo", em vez de "a senha está errada".
+Falhas de login retornam `401 AUTHENTICATION_FAILED` com a mensagem `Credenciais inválidas`; falhas de registro retornam `400 REGISTRATION_FAILED` com a mensagem `Não foi possível criar a conta`, sem revelar se a conta existe.
 
 O username é a identidade da conta e é normalizado para minúsculas em todas as entradas (registro, login, atualização e consulta ao banco): `Alice`, `alice` e `  ALICE  ` são a mesma conta. A senha é um valor opaco e nunca é transformada (sem escaping, sem "sanitização"): o que o cliente envia é exatamente o que é validado e hasheado.
+
+### Códigos que significam "a culpa é da infraestrutura"
+
+Existe uma classe de resposta que não é `4xx` do cliente, e ela é `503`. A
+distinção é o contrato: **`401`/`400` diz ao usuário que ele errou; `503` diz que
+o serviço não conseguiu. Cliente trata os dois de maneiras opostas — corrigir a
+entrada e desistir, ou repetir mais tarde.
+
+| código | quando | o que aconteceu |
+| --- | --- | --- |
+| `REVOCATION_UNAVAILABLE` | Redis indisponível e `SESSION_FAIL_OPEN=false` | nada foi aceito sem poder checar revogação; em troca de senha e exclusão, **nada foi alterado** |
+| `ARGON2_OVERLOADED` | fila do semáforo de hash cheia | capacidade, não credencial — a senha não foi comparada |
+| `PASSWORD_CHANGE_NOT_PERSISTED` | revogação ok, gravação da senha falhou | sessões **já** encerradas; senha antiga ainda vale, é preciso refazer a troca |
+| `PASSWORD_HISTORY_UNAVAILABLE` | não foi possível consultar o histórico de senhas | troca recusada em vez de aceitar sem checar |
+| `USER_DELETE_NOT_PERSISTED` | revogação ok, exclusão falhou | sessões encerradas, conta **continua existindo** |
+
+Todos são classificados como `unavailable` no vocabulário de `AUTH_OUTCOMES`, ao
+lado das credenciais inválidas — o que impede que uma queda de Redis apareça
+como pico de senha errada no alerta de força bruta.
+
+`Retry-After: 1` acompanha os dois primeiros, os que o cliente pode repetir
+imediatamente. Os três últimos descrevem uma operação cujo estado **mudou** (algo
+foi encerrado ou recusado no meio), e viram `503` sem `Retry-After`: repetir às
+cegas não é a resposta, e a mensagem diz o que fazer. Ver
+[`docs/SEGURANCA.md`](docs/SEGURANCA.md) (D30, D31).
 
 ## Política de revogação quando o Redis está indisponível
 
@@ -120,6 +153,29 @@ O rate limiting tem decisão própria: cai para o armazenamento em memória **po
 - **Validade da entrada:** o TTL da blacklist é o menor entre o solicitado e o tempo de vida restante do token, ou seja, a entrada morre com o token.
 - **Rotação de refresh com consumo único:** `POST /refresh` grava o marcador `rotated` com `SET NX` **antes** de emitir o novo par. Duas requisições simultâneas com o mesmo refresh token resultam em uma `200` e uma `401` (`REFRESH_TOKEN_REUSED`); detectar reuso revoga todas as sessões do usuário, inclusive o par recém-emitido na disputa, e exige novo login. Se o token já havia sido revogado por logout, a resposta é `REFRESH_TOKEN_INVALID`. `AUTO_REVOKE_ON_REUSE=false` mantém a rejeição e o evento de segurança, mas desativa a revogação automática.
 - **Revogação por usuário (versão de sessão):** o token carrega a claim `sv` e o Redis guarda `user_session_version:<userId>`, incrementado a cada revogação em massa. Token com versão anterior à atual é rejeitado. Contador, não relógio: comparação por timestamp rejeitaria tokens emitidos no mesmo segundo da revogação — que é justamente o caso de quem acabou de trocar a senha. Tokens emitidos antes dessa versão (sem `sv`) ainda usam a regra por timestamp em `user_tokens_revoked:<userId>`, que expira sozinha.
+- **Separação entre access e refresh:** pela claim `token_type`, conferida em qualquer algoritmo — inclusive HS256. A separação não depende de os segredos serem diferentes: com `JWT_REFRESH_SECRET` ausente o construtor cai para `JWT_SECRET`, e um refresh de 7 dias servindo como Bearer em rota de access é justamente o que isso permitiria. Ver [`docs/SEGURANCA.md`](docs/SEGURANCA.md) (D33).
+
+### Política de logout: encerra **todas** as sessões, não só a atual
+
+`POST /logout` não é "desconectar este dispositivo". Ele encerra a sessão inteira
+daquele usuário, em todos os dispositivos:
+
+1. o par de tokens enviado é revogado (`jti` na blacklist);
+2. `user_session_version:<userId>` é incrementado, o que invalida **todo** token
+   emitido antes — inclusive o de um celular que nunca viu esta requisição;
+3. a resposta é `200` mesmo sem token nenhum, porque diferenciar revelaria
+   se o par existia.
+
+A consequência é deliberada: quem roubar um refresh token e o dono fazer logout
+perde o token roubado também, porque ele dependia do mesmo `sv`. O inverso — um
+logout que só afeta o dispositivo que o pediu — exigiria uma lista de sessões
+com identificadores persistidos e uma rota para revogar uma delas, e é
+funcionalidade que este serviço não tem. A escolha é de projeto e está
+registrada como tal, não como omissão.
+
+Ver também [`docs/SEGURANCA.md`](docs/SEGURANCA.md) (D25), que trata o caso
+mais delicado: reuso de refresh detected revoga a sessão inteira inclusive em
+corrida.
 
 ## Política de senha e troca de senha
 
@@ -242,6 +298,9 @@ Principais campos:
 - `REDIS_USERNAME`, `REDIS_PASSWORD_PATH`, `REDIS_TLS` — usuário de ACL e senha por arquivo
 - `DEPENDENCY_NETWORK_ISOLATED` (`true` declara rede dedicada sem porta publicada como transporte; no lugar de `MONGODB_TLS`/`REDIS_TLS`)
 - `JWT_SECRET`, `JWT_REFRESH_SECRET` (obrigatório e **diferente** de `JWT_SECRET` em produção; sem fallback silencioso), `JWT_EXPIRES`, `JWT_REFRESH_EXPIRES`
+- `JWT_ALGORITHM` (em produção, só `ES256` — HS256 é recusado na validação; o default fora de produção é `HS256`), `JWT_ES256_PRIVATE_KEY_PATH`, `JWT_ES256_PUBLIC_KEY_PATH`, `JWT_ES256_KID`
+- `ARGON2_MEMORY_COST`, `ARGON2_TIME_COST`, `ARGON2_PARALLELISM`, `PASSWORD_PEPPER`/`PASSWORD_PEPPER_VERSION` e o par anterior `PASSWORD_PEPPER_PREVIOUS`/`PASSWORD_PEPPER_PREVIOUS_VERSION`
+- `ARGON2_MAX_CONCURRENCY` (hashes argon2id **simultâneos** por processo, default 8) e `ARGON2_MAX_QUEUE` (fila de espera, default 64). É o mesmo número que a validação de memória do arranque usa como multiplicador — o orçamento de memória e o limite aplicado não podem ser dois números diferentes
 - `SESSION_FAIL_OPEN` (política de revogação sem Redis; padrão `false` em produção)
 - `ALLOWED_ORIGINS`
 - `METRICS_TOKEN` (em produção, configure um token: protege o manifesto de `/observability`)
@@ -254,6 +313,55 @@ Principais campos:
 - `RATE_LIMIT_*_POINTS` (pontos por janela)
 
 Nenhuma credencial real fica versionada: apenas exemplos (`.env.example` e `.env.prod.example`) são commitados; `.env` e `.env.prod` ficam no `.gitignore`. Os segredos das dependências são gerados por `scripts/generate-dependency-secrets.sh <dir> --for-container` (Mongo/Redis) e `scripts/generate-jwt-keys.sh <dir> <kid> --for-container` (ES256), e nunca entram no repositório. A rotação é `scripts/rotate-dependency-secrets.sh <dir> --for-container` (Redis com janela, Mongo com `--mongo-only`), e a ordem de cada troca está em [`docs/ROTACAO.md`](docs/ROTACAO.md). O backup do Mongo é cifrado com a passphrase em `--passphrase-file` e nunca em linha de comando — ver [`docs/BACKUP.md`](docs/BACKUP.md).
+
+### Como gerar as chaves JWT
+
+Em produção o algoritmo é **ES256** (ECDSA P-256) e **HS256 é recusado na
+validação de arranque** — não há como começar o serviço em produção com o
+algoritmo simétrico. A razão é a separação de papéis: quem assina tem a chave
+privada, quem verifica só a pública, e nenhuma das duas está no mesmo lugar.
+
+```bash
+# gera o par e ajusta o dono para o usuário que roda o app no container
+scripts/generate-jwt-keys.sh /run/secrets 2026-q3 --for-container
+
+# resultado
+#   /run/secrets/jwt-es256-private.pem   modo 600, NUNCA versionar
+#   /run/secrets/jwt-es256-public.pem    pode ser distribuída
+```
+
+Depois, no ambiente:
+
+```bash
+JWT_ALGORITHM=ES256
+JWT_ES256_KID=2026-q3
+JWT_ES256_PRIVATE_KEY_PATH=/run/secrets/jwt-es256-private.pem
+JWT_ES256_PUBLIC_KEY_PATH=/run/secrets/jwt-es256-public.pem
+```
+
+Três coisas que costumam dar errado e estão documentadas por existirem:
+
+- **O `kid` precisa viajar com a chave.** `JWT_ES256_KID` identifica a chave no
+  header do token; um token assinado com um par e verificado com outro de mesmo
+  material e `kid` diferente não verifica.
+- **A chave privada tem que chegar como arquivo, não como variável.** PEM tem
+  quebras de linha e variável de ambiente não; o caminho `_PATH` existe para o
+  material não viajar como texto de configuração (secret do Docker, volume, saída
+  de KMS).
+- **O dono do arquivo importa em bind mount.** O container enxerga o uid do
+  host, e um par em modo 600 de quem provisionou vira ilegível lá dentro — o app
+  então recusa arrancar dizendo que a chave "é obrigatória", quando na verdade
+  ela está ali e ele não tem permissão de lê-la. `--for-container` ajusta o dono
+  para o uid 1001 do `nodeuser`. Em KMS ou secret manager o problema não aparece,
+  porque o material chega já no dono certo.
+
+Para desenvolvimento, HS256 com `JWT_SECRET` e `JWT_REFRESH_SECRET` basta. O que
+**não** basta é confiar que os dois segredos distintos são o que separa access de
+refresh: isso é consequência de como o HS256 funciona, não propriedade do token —
+com `JWT_REFRESH_SECRET` ausente o construtor cai para `JWT_SECRET` e os dois
+signers assinam com o mesmo material. A claim `token_type` é conferida em ambos os
+algoritmos justamente por isso (D33). A rotação de chave está em
+[`docs/ROTACAO.md`](docs/ROTACAO.md).
 
 ## Testes
 
@@ -550,6 +658,49 @@ scripts/remote-deploy.sh --image <imagem> --env-file .env.prod \
   --compose-file docker-compose.prod.yml --base-url http://localhost:3000
 ```
 
+### Como fazer rollback
+
+O rollback é automático e também é um caminho manual — as duas coisas usam o
+mesmo script.
+
+**Automático.** Se `/readiness` não vier em `DEPLOY_READY_TIMEOUT` (default 120s)
+ou o smoke test funcional falhar, `remote-deploy.sh` volta sozinho para a versão
+anterior e **refaz o smoke nela** antes de dizer que voltou. O job do CI sai
+vermelho; o servidor fica na versão boa. Um `429` do rate limit é tratado como
+inconclusivo de propósito: reverter um deploy bom por limite de capacidade
+trocaria um problema de taxa por uma indisponibilidade.
+
+**Manual.** Rodar o script com o digest anterior devolve o mesmo caminho:
+
+```bash
+# 1. qual versão está no ar agora
+cat /var/lib/micrologin/deployed-version
+
+# 2. reexecutar o deploy com o digest anterior
+~/.deploy/remote-deploy.sh \
+  --image ghcr.io/dioneyfroes-coder/micrologin@sha256:<digest-anterior> \
+  --env-file /opt/micrologin/.env.prod \
+  --compose-file /opt/micrologin/docker-compose.prod.yml \
+  --base-url https://api.exemplo.com
+```
+
+Dois detalhes que fazem o rollback ser de verdade, e não a subida da imagem
+errada com a configuração nova:
+
+- **A imagem anterior é tagueada antes do `compose up`** (`*-backup-<timestamp>`),
+  então ela existe localmente e o retorno não depende de o registry ainda ter o
+  digest.
+- **A configuração é restaurada antes do compose subir.** Uma versão que precisa
+  de env diferente volta com o env dela; sem isso, "rollback" seria subir a
+  imagem antiga com a configuração da nova. O caminho é o mesmo que o
+  `test:deploy` exercita, e o metadata da config é lido do **container em
+  execução** — o disco pode divergir do que está rodando (ver
+  [`docs/CONFIG.md`](docs/CONFIG.md)).
+
+O `npm run test:deploy` prova esse caminho inteiro localmente: v1 → v2 → v3 com
+o Mongo na porta errada, o script aborta no health check e o rollback devolve
+imagem, digest e env da v2.
+
 ### Política de branches (main-only)
 
 - apenas a branch `main` existe; **sem** `develop` ou `feature/*`
@@ -567,6 +718,52 @@ scripts/remote-deploy.sh --image <imagem> --env-file .env.prod \
 
 O preflight DDoS no CI só verifica que o alvo default é loopback e que hosts
 externos são recusados; não dispara carga nem contata serviços.
+
+## Limitações conhecidas
+
+O que está aqui é limitação **assumida e medida**, não bug escondido. Onde há
+saída conhecida e não escolhida, ela está escrita junto.
+
+### O limite que dá nome ao projeto: revogação em nó único (D20)
+
+A blacklist e a versão de sessão vivem **só no Redis**. A persistência cobre
+*restart* (AOF `everysec`), mas **não** cobre a perda do volume — disco, `docker
+volume rm`, VM restaurada de snapshot antigo. Nesse caso o serviço volta sem
+histórico de revogação e opera em **fail-open de fato**: um token já revogado
+volta a valer até o próprio expirar, e nada no sistema consegue provar que o
+logout aconteceu. Não há sinal: **0 erros no log** e resposta `200` idêntica à
+de antes. O buraco fica exatamente onde o resto do sistema parece fechado — o
+serviço é fail-closed quando o Redis está *indisponível* (503, nunca 401).
+
+A janela é a do TTL do refresh, não a do access: quem guardou o par renova o
+access a cada ~15 min durante **7 dias** (`JWT_REFRESH_EXPIRES=7d`). Medido em
+`npm run test:redis:volume-loss`: **~15,0 min** para o access revogado voltar a
+valer, com refresh consumido voltando a renovar tokens, e 0 erros no log.
+
+*Saídas conhecidas, nenhuma escolhida:* segundo Redis com réplica e `promote`
+manual, ou gravar o carimbo de revogação também no Mongo. Ambas mudam o modelo
+de operação — a primeira custa um nó e um procedimento com janela de divergência;
+a segunda custa escrita no Mongo por logout e uma política de divergência entre os
+dois. São decisão de quem opera.
+
+### Outras limitações
+
+| limitação | por quê |
+| --- | --- |
+| MongoDB single-node | escala da API não transforma o banco em HA; o nó continua SPOF, com RPO 24h pelo backup cifrado (D28) |
+| Rate limit em memória quando o Redis cai | vira **por processo**: com PM2 em cluster, N workers dão N vezes o limite. Proteção de borda, não controle distribuído |
+| Auditoria e observabilidade em memória | cap de 1000 eventos; perdem no restart e são N históricos em cluster. Sinalização, não registro de conformidade |
+| `/security/*` com token compartilhado | sem identidade por trás; em ambiente com mais de um operador isso não serve |
+| `METRICS_TOKEN` sem rotação nem escopo | protege um único manifesto; nome legado, mantido por compatibilidade |
+| Sem verificação de e-mail | `ana@x.com` e `ana@y.com` são duas contas. Quem precisa do contrário deve usar um provedor de identidade |
+| Sem MFA | senha roubada é sessão roubada. Escopo aceito |
+| Rate limit por IP é o primeiro limite a ceder | cede de propósito, e a ordem é o contrato: orçamento de IP, depois o de login por conta, depois disponibilidade (D29) |
+| SYN flood e amplificação não são contidos aqui | contidos no kernel, no backlog e na rede do provedor, **antes** de existir requisição para o rate limit agir. O k6 fala HTTP e não prova isso (D29) |
+| Tempo de `PUT /update` ainda distingue username repetido | a resposta é explícita por decisão de API e o endpoint exige sessão; corrigir o tempo sem mudar o contrato seria invisível (D34) |
+| Nenhum deploy real foi executado | este repositório não tem servidor de staging nem de produção. O que está provado é o caminho, por teste estrutural; o contato com servidor real continua pendente |
+
+O detalhamento completo, com o porquê de cada uma e o que foi recusado, está em
+[`docs/SEGURANCA.md`](docs/SEGURANCA.md).
 
 ## Observações importantes
 

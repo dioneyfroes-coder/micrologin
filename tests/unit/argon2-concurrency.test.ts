@@ -103,7 +103,7 @@ describe('Limite real de concorrência do argon2id', () => {
 
     // Metade grava, metade verifica: são operações de argon2id idênticas em
     // custo de memória. Se `verify` não passasse pelo mesmo mecanismo, o teto
-    // seria紙 e a mistura passaria de LIMIT com folga.
+    // seria inútil e a mistura passaria de LIMIT com folga.
     const work: Array<Promise<unknown>> = [];
     for (let index = 1; index <= 47; index++) {
       work.push(service.hash(strongPassword(index)));

@@ -599,7 +599,7 @@ evidência. Era o comportamento anterior e foi preservado de propósito.
 
 `tests/unit/trivy-security-gate.test.ts` — 19 testes. As asserções de versão
 comparam contra os defaults lidos do `action.yaml` da tag em 2026-10-02, não contra
-o que este autor流逝 lembra.
+o que este autor lembra.
 
 [x] `exit-code` presente e igual a `'1'`.
 [x] `deploy` depende de `security`; upload do SARIF com `if: always()`.
@@ -1793,6 +1793,10 @@ a tag como fallback.)
 [ ] Release GitHub usa `v1.0.0`. (Depende do freeze e da decisão de tag —
 ver "Achados durante a execução".)
 
+> **Decisão da tag tomada em 2026-10-04: mover a tag `v1.0.0` para o commit de
+> freeze**, descartando `v1.0.1`. O item continua `[ ]` porque a release ainda
+> não foi publicada — o que falta é a execução, não a decisão.
+
 ---
 
 ## 5.2 Dependências
@@ -1832,6 +1836,14 @@ cada dependência declarada foi procurada em `src/` e em `tests/`.
 - Gate de dependências: `audit-ci` verde com a exceção datada de `braces`;
   `npm audit` vermelho apenas pelo mesmo advisory, por não ter mecanismo de
   exceção. Detalhamento em 3.1 e 1.6.
+  **Medido em 2026-10-04:** `npm audit --audit-level=high` → 30 high, todos do
+  advisory `GHSA-vfj7-8cjw-p6xm` (`braces`), alcançado por três caminhos —
+  `jest/micromatch` e `lint-staged/micromatch` (dev) e `pm2/chokidar`. Com
+  `--omit=dev` são **3 high**, porque `pm2` é dependência de **produção**. A nota
+  do `.audit-ci.json` afirmava que todos os caminhos eram de `devDependencies`;
+  estava errada e foi corrigida. Nenhuma entrada de requisição HTTP alcança o
+  código afetado, e não existe versão corrigida de `braces` para instalar — o
+  motivo de ser exceção datada (`2027-01-01`) em vez de correção.
 - Actions: item 1.8, todas em versões suportadas e sem a action arquivada.
 
 O item do congelamento do lockfile só fecha no freeze (seção 8).
@@ -1876,55 +1888,105 @@ real.
 
 Antes de criar a tag final, revisar estes arquivos:
 
-[ ] `README.md`
+[x] `README.md`
 
-[ ] `docs/ARQUITETURA.md`
+[x] `docs/ARQUITETURA.md`
 
-[ ] `docs/SEGURANCA.md`
+[x] `docs/SEGURANCA.md`
 
-[ ] `docs/REDIS.md`
+[x] `docs/REDIS.md`
 
-[ ] `docs/ROTACAO.md`
+[x] `docs/ROTACAO.md`
 
-[ ] `docs/BACKUP.md`
+[x] `docs/BACKUP.md`
 
-[ ] `docs/CONFIG.md`
+[x] `docs/CONFIG.md`
 
-[ ] `docs/metricas.md`
+[x] `docs/metricas.md`
 
-[ ] `MICROLOGIN_ANALISE_E_ROADMAP.md`
+[x] `MICROLOGIN_ANALISE_E_ROADMAP.md` — **removido**, não movido (ver "Depois da
+1.0.0" abaixo).
+
+### O que foi corrigido nesta revisão de documentação
+
+Cada item abaixo era uma divergência entre o que a documentação afirmava e o que o
+código faz, ou um arquivo corrompido. Nada aqui éRODUCTION feature:
+
+| Arquivo | Defeito | Correção |
+|---|---|---|
+| `README.md`, `docs/ARQUITETURA.md`, `docs/metricas.md`, checklist, `src/domain/index.ts`, 2 testes | caracteres CJK corrompidos no meio de frases | reescritos; varredura CJK agora limpa no repositório inteiro |
+| `README.md` | link para `MICROLOGIN_ANALISE_E_ROADMAP.md`, arquivo removido no `9c879bc` | link retirado, com nota do que o substituiu |
+| `README.md`, `docs/SEGURANCA.md` | âncora `#10-projeção-…` apontava para o heading `## 11. Projeção…` | corrigida para `#11-`; varredura de todas as âncoras internas: **0 quebradas** |
+| `docs/REDIS.md` | "o logout happened" e "8 asserções" (o arquivo tem 9 casos) | corrigido |
+| `docs/CONFIG.md` | "crondiário" | corrigido |
+| `docs/ARQUITETURA.md` | refresh sem a verificação de existência prévia; ordem de troca, exclusão e concorrência ausentes | reescrito contra `src/domain/index.ts` |
+| `docs/metricas.md` | referenciava `MAX_CONCURRENT_LOGINS`, que não existe | substituído pelo semáforo real e por `ARGON2_MAX_CONCURRENCY`/`ARGON2_MAX_QUEUE` |
+| `docs/SEGURANCA.md` | D17 citava 2 das 4 variáveis de pepper | as quatro nomeadas, com link para `ROTACAO.md` §2 |
+| `.env.prod.example` | nenhuma das 4 variáveis de pepper, embora `ROTACAO.md` §2 as peça em produção | bloco comentado adicionado, no estilo das variáveis opcionais do arquivo |
+| `.audit-ci.json` | a nota afirmava que "todos os caminhos são de `devDependencies`, incluindo `pm2/chokidar`" — **falso**: `pm2` é dependência de produção | nota reescrita: 3 dos 30 high estão na árvore de produção, com o motivo de não haver correção disponível |
+| `scripts/benchmark-password-hash.mjs` | "8" seguido de um caractere CJK no lugar de "núcleos" | corrigido |
+
+Os oito runbooks (`REDIS`, `ROTACAO`, `BACKUP`, `CONFIG`) foram conferidos contra
+o código e contra o `.env.prod.example`: nomes de variável, flags de script,
+números de RPO/RTO e caminhos citados existem. `ROTACAO.md` §1 usa
+`JWT_ES256_PREVIOUS_PUBLIC_KEY_PATH`, que **parece** não bater com o código — e
+bate: `readPem` (`appConfig.ts:327`) cai para `<NOME>_PATH` quando a variável sem
+sufixo não está definida.
 
 ### O README deve deixar claro
 
-[ ] O que o serviço faz.
+[x] O que o serviço faz. — "O que o projeto inclui" + "Endpoints principais"
 
-[ ] Stack utilizada.
+[x] Stack utilizada. — "Stack"
 
-[ ] Como subir localmente.
+[x] Como subir localmente. — "Como rodar localmente"
 
-[ ] Como executar testes.
+[x] Como executar testes. — "Testes"
 
-[ ] Como gerar chaves JWT.
+[x] Como gerar chaves JWT. — "Como gerar as chaves JWT", com
+`scripts/generate-jwt-keys.sh --for-container` e o aviso de dono de arquivo
 
-[ ] Como configurar Redis/Mongo.
+[x] Como configurar Redis/Mongo. — "Variáveis de ambiente", com as portas e
+`URI_MONGODB`/`REDIS_URL`
 
-[ ] Como fazer deploy.
+[x] Como fazer deploy. — "Deployment" + "Como o ambiente é escolhido"
 
-[ ] Como fazer rollback.
+[x] Como fazer rollback. — "Como fazer rollback", por digest
 
-[ ] Limitações conhecidas.
+[x] Limitações conhecidas. — "Limitações conhecidas"
 
-[ ] Política de logout: encerra todas as sessões.
+[x] Política de logout: encerra todas as sessões. — seção própria, com o motivo de
+o logout exigir o refresh token
 
-[ ] Limite D20 do Redis.
+[x] Limite D20 do Redis. — "O limite que dá nome ao projeto", com o custo medido
 
-[ ] O que é demonstração de portfólio e o que não é promessa de SaaS de escala ilimitada.
+[x] O que é demonstração de portfólio e o que não é promessa de SaaS de escala
+ilimitada. — primeira linha ("Projeto de portfólio"), a nota de versão no topo
+("Não significa pronto para SaaS em escala ilimitada") e "Observações importantes"
 
 ### Depois da 1.0.0
 
-[ ] Mover/renomear roadmap histórico para uma seção de histórico ou manter claramente como documento de auditoria anterior.
+[x] Mover/renomear roadmap histórico para uma seção de histórico ou manter
+claramente como documento de auditoria anterior.
 
-[ ] Não deixar no README uma lista de “TODOs” que pareça bloquear a versão estável quando forem apenas melhorias futuras.
+> **Resolvido por remoção, não por renomeação.** O `MICROLOGIN_ANALISE_E_ROADMAP.md`
+> foi deletado no commit `9c879bc` (`docs(roadmap): substitui as fases por
+> defeitos e provas faltantes`), que reescreveu o plano como este checklist. O
+> conteúdo que ainda valia foi absorvido por aqui e por `docs/SEGURANCA.md`. O
+> README tem uma nota dizendo isso explicitamente, com o link para o substituto.
+> **Não restaurar o arquivo**: ele descrevia fases como plano aberto, o que
+> contradiz uma `1.0.0` com suíte verde. O que o item pedia — não deixar um
+> roadmap histórico parecendo auditoria vigente — está feito; o meio foi remover
+> em vez de arquivar, e isso está dito aqui para não parecer mais fiel ao item do
+> que é.
+
+[x] Não deixar no README uma lista de "TODOs" que pareça bloquear a versão
+estável quando forem apenas melhorias futuras.
+
+> O README não tem seção de TODO. As limitações estão declaradas como
+> **limitações**, com o custo medido e a decisão que as justifica (D20, D21,
+> D23), não como trabalho pendente. O que ainda está por fazer e é bloqueio real
+> está no checklist, não no README.
 
 ---
 
@@ -2180,18 +2242,30 @@ Use esta sequência para não ficar corrigindo uma coisa e quebrando outra:
 
 Marque somente depois de todas as etapas acima:
 
-- [ ] Todos os P0 concluídos.
-- [ ] Todos os testes críticos verdes.
-- [ ] CI verde no último commit da `main`.
-- [ ] Release workflow corrigido e validado.
-- [ ] Docker release real, não apenas simulado por `echo`.
-- [ ] Documentação atualizada.
-- [ ] `RELEASE_1.0.0_REPORT.md` criado.
-- [ ] `v1.0.0` criado em commit correto.
+- [x] Todos os P0 concluídos. (Itens 1.1–1.9, 2.1–2.4 e 5.1–5.3 verificados um a
+  um, cada um com a mutação que o reprovaria.)
+- [x] Todos os testes críticos verdes. (18 comandos, todos com exit 0 em
+  2026-10-04: lint, typecheck, 925 unit, 42 integration, 16 e2e, 14 credential
+  theft, 13/13 infra, redis, redis volume-loss, backup, config-backup, deploy,
+  replica-session, ddos, capacity, audit-ci, secrets, coverage 967. Tabela
+  completa em `RELEASE_1.0.0_REPORT.md`.)
+- [ ] CI verde no último commit da `main`. (As alterações desta revisão ainda
+  **não foram commitadas**, então não há CI para elas.)
+- [x] Release workflow corrigido e validado. (Item 1.9, com testes contra um
+  repositório git real.)
+- [ ] Docker release real, não apenas simulado por `echo`. (O passo de Docker foi
+  reescrito para `buildx build --push` real e o comando é verificado por teste de
+  política, mas **não foi executado**: exige registry e tag publicada.)
+- [x] Documentação atualizada. (Seção 6 fechada item a item, com o defeito
+  corrigido de cada arquivo.)
+- [x] `RELEASE_1.0.0_REPORT.md` criado.
+- [ ] `v1.0.0` criado em commit correto. (Depende do freeze; a tag atual ainda
+  aponta para `e29032f`.)
 - [ ] GitHub Release publicada.
 - [ ] Imagem Docker versionada publicada.
 - [ ] Smoke pós-release verde.
-- [ ] Nenhum TODO restante classificado como blocker.
+- [x] Nenhum TODO restante classificado como blocker. (O que resta aberta está
+  listado em "O que falta, em ordem" abaixo, e cada item tem o motivo.)
 
 ## Achados durante a execução
 
@@ -2213,17 +2287,63 @@ causados pelos itens em si.
 
 ### Tag `v1.0.0` já publicada
 
-- `v1.0.0` existe local e no remote apontando para `e29032f`, 69 commits atrás
-  de `main`. A estratégia de versionamento precisa ser decidida antes do
-  freeze — ver item 5.1 e a seção de Git.
+- **Estado:** `v1.0.0` existe local e no remote apontando para `e29032f`, 91 commits
+  atrás de `main` no momento da decisão. A tag nunca teve release, imagem nem
+  digest: é uma tag plantada antes de o projeto existir como produto.
+- **Decisão (2026-10-04): mover a tag `v1.0.0` para o commit de freeze.** A
+  alternativa — publicar `v1.0.1` — foi descartada porque o checklist inteiro, o
+  `package.json`, o `/health` e o README já declaram `1.0.0`, e `release.yml`
+  exige que a tag e o `package.json` concordem. Duas tags apontando para versões
+  diferentes do mesmo código é pior que reescrever uma tag que nunca foi publicada.
+- **O que isso custa:** `e29032f` deixa de ser recuperável por tag. O commit não
+  some — continua no histórico, alcançável pelo SHA —, mas `git pull v1.0.0` passa
+  a devolver o freeze. O `--force` no push da tag é o passo destrutivo, e é
+  intencional.
+- **Efeito colateral no changelog do pipeline:** `release.yml` resolve a tag
+  anterior com `git describe --tags --abbrev=0 "${TAG}^"` (linha 120). Depois do
+  movimento, não sobra nenhuma outra tag no repositório, então essa resolução
+  devolve vazio e o corpo da release assume o ramo `else` de
+  `Generate changelog` (linha 366): "Primeira versão publicada a partir deste
+  repositório". Isso é **exato** — depois do movimento, é a primeira. O
+  `CHANGELOG.md` versionado no repositório é outro arquivo, com o histórico
+  completo, e não é sobrescrito pelo pipeline (que só o usa como `body_path`).
+- **Comando do freeze**, no lugar de `git tag -a v1.0.0`:
+
+```bash
+git tag -f -a v1.0.0 -m "Release v1.0.0"
+git push origin main
+git push --force origin v1.0.0
+```
 
 ## Estado final
 
 ```text
-[ ] NÃO PRONTO
+[x] NÃO PRONTO            <- estado em 2026-10-04, ver abaixo
 [ ] CANDIDATO A RELEASE
 [ ] 1.0.0 LANÇADA
 ```
+
+**Por que ainda não é candidato a release, em uma linha:** falta o freeze
+(commit + CI + tag) e falta qualquer prova em servidor real — não existe staging
+nem produção configurados. Nenhum item de código, teste ou documentação está
+pendente.
+
+### O que falta, em ordem
+
+1. **Commit** das alterações desta revisão (working tree suja agora: 13 arquivos
+   modificados e 2 novos).
+2. **CI verde** nesse commit.
+3. **Congelar o lockfile** (`npm ci` no commit final) — item 5.2.
+4. **Mover a tag** `v1.0.0` para esse commit e fazer push forçado da tag.
+5. **Release real**: `buildx build --push`, digest, SARIF, GitHub Release.
+6. **Smoke pós-release** contra a imagem publicada.
+7. **Provas de staging/produção** (`workflow_dispatch` com `environment=staging`),
+   que dependem de `STAGING_DEPLOY_HOST`/`PRODUCTION_DEPLOY_HOST` e secrets
+   externos. Não são bloqueantes para a release, mas **são** para afirmar que o
+   deploy foi exercitado em produção.
+
+Os itens 5 e 6 não podem ser feitos nesta máquina: exigem registry e tag
+publicada.
 
 ---
 

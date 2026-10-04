@@ -278,10 +278,16 @@ atacante sem custo de latência.
 da amostra, e um outlier de fila vira "p95" sem significar nada.
 
 O `c=8` piora (409 ms) porque 8 logins de 64 MiB somam 512 MiB e o container
-tem 1 GiB: o pico cabe, mas a alocação compete com o resto do processo. É o
-teto de `MAX_CONCURRENT_LOGINS` fazendo o que foi feito para fazer, e a latência
-de 8 logins simultâneos é o preço honesto de segurar 512 MiB de hash ao mesmo
-tempo.
+tem 1 GiB: o pico cabe, mas a alocação compete com o resto do processo. É o teto
+de concorrência fazendo o que foi feito para fazer, e a latência de 8 logins
+simultâneos é o preço honesto de segurar 512 MiB de hash ao mesmo tempo.
+
+Esse teto deixou de ser só um número: desde a 1.0.0 ele é o limite que
+`src/shared/utils/argon2Limiter.ts` **impõe** em tempo de execução
+(`ARGON2_MAX_CONCURRENCY`, default 8), e é o mesmo multiplicador da conta de
+memória do arranque. Antes ele existia só na conta — nenhum código o aplicava, e
+um burst de login passava inteiro por ele. Ver
+[`SEGURANCA.md`](SEGURANCA.md) (D30).
 
 ### Remediação no teto de 1 GiB (m=19MiB, antes desta mudança)
 
@@ -581,6 +587,39 @@ Os itens 1 e 3 são decisões de configuração; o 4 é o único código novo de
 rodada, e ele existe mais pela Fase 6 (DDoS) do que pela Fase 3. Dizer isso é
 melhor do que apresentar o limitador como a proteção de memória que a medição
 mostrou que ele não é.
+
+### O que mudou depois: o limite passou a existir onde a memória está
+
+A tabela acima mediu a constatação e a medição é a mesma: **requisições em
+andamento não são memória em andamento**. Quem consome memória é o argon2id — 64
+MiB por hash, alocados fora do heap do JS e liberados só no fim da operação — e a
+§3 mostra que o `/login` a 400 VUs segura ~512 MiB em oito hashes concorrentes.
+
+O que faltava era o controle do lado certo. O disjuntor de 1024 conta requisições
+abertas; uma requisição parada esperando vaga custa quase nada, e um burst de
+logins passa inteiro por 1024 sem encontrar o limite. Ou seja: o orçamento de
+memória do arranque (`m × 8 = 512 MiB` contra 768 MiB de teto) e o limite
+efetivamente aplicado eram **dois números diferentes**, e só o primeiro existia.
+
+Desde a 1.0.0 existe um semáforo próprio de operações argon2id
+(`src/shared/utils/argon2Limiter.ts`), aplicado em tempo de execução:
+
+| | limite | onde |
+| --- | --- | --- |
+| requisições simultâneas | 1024 (`inFlightLimit`) | rajada de tráfego, qualquer rota |
+| hashes argon2id simultâneos | **8** (`ARGON2_MAX_CONCURRENCY`) | a unidade que aloca 64 MiB por operação |
+
+São defesas diferentes e nenhuma substitui a outra: `/profile` ocupa uma vaga do
+disjuntor e zero do semáforo, e 200 logins podem passar pelo disjuntor inteiro e
+ser 200 hashes se nada os serializar. A fila é FIFO com profundidade limitada
+(`ARGON2_MAX_QUEUE`, default 64) e devolve `503` com `Retry-After: 1` só quando
+está cheia — fila sem fundo converte sobrecarga em latência que ninguém consegue
+explicar depois.
+
+O ponto que fecha a conta: a validação de arranque agora usa **o mesmo número que
+o semáforo impõe**, então o orçamento de memória deixou de ser uma estimativa
+optimista. Antes ele era verde com a máquina estourando o container; agora ele
+descreve o que pode acontecer. Ver [`SEGURANCA.md`](SEGURANCA.md) (D30).
 
 ## 6. Contenção na borda sob flood (Fase 6.2)
 

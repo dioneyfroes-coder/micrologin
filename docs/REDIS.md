@@ -12,7 +12,7 @@ persistência, por decisão consciente: o comentário no compose dizia que "cach
 blacklist são reconstruíveis".
 
 A blacklist não é reconstruível. Ela é o registro do que **não** pode mais entrar
-no serviço, e esse registro não se reconstrói sozinho: o logout happened, o
+no serviço, e esse registro não se reconstrói sozinho: o logout aconteceu, o
 usador foi avisado, e nada no sistema pode provar que aquilo aconteceu de novo.
 
 O efeito é silencioso. Um restart de container apaga a blacklist, a versão de
@@ -196,6 +196,6 @@ seria ambíguo — daria para o fail-closed estar barrando tudo por
 indisponibilidade e o teste passaria por acidente.
 
 O portão de CI sobre a configuração é
-`tests/unit/redis-persistence-config.test.ts` (8 asserções, sem docker): ele
+`tests/unit/redis-persistence-config.test.ts` (9 casos, sem docker): ele
 lê o YAML dos três composes e falha se a persistência do prod for desligada, se
 o drill divergir do prod, ou se o stack de resiliência passar a persistir.

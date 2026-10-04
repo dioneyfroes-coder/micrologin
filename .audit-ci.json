@@ -7,7 +7,7 @@
       "GHSA-vfj7-8cjw-p6xm": {
         "active": true,
         "expiry": "2027-01-01",
-        "notes": "braces <=3.0.3 (ReDoS por stack exhaustion em glob profundamente aninhado). A faixa vulneravel inclui a ultima versao publicada, portanto nao ha versao corrigida a instalar. Todos os caminhos sao de devDependencies (jest/micromatch, lint-staged/micromatch, pm2/chokidar) e o padrao compilado vem de globs do proprio repositorio em tempo de teste/lint, nao de entrada de requisicao. Reavaliar quando micromatch ou braces publicarem correcao. Decisao registrada nos itens 1.6 e 3.1 de MICROLOGIN_1.0.0_RELEASE_CHECKLIST.md."
+        "notes": "braces <=3.0.3 (ReDoS por stack exhaustion em glob profundamente aninhado). A faixa vulneravel inclui a ultima versao publicada, portanto nao ha versao corrigida a instalar. Tres caminhos de chegada: jest/micromatch e lint-staged/micromatch (devDependencies) e pm2/chokidar, onde pm2 e dependencia de PRODUCAO — `npm audit --omit=dev --audit-level=high` reporta as 3 high dessa arvore, e as demais 27 do total de 30 sao devDependencies. O padrao compilado vem de globs do proprio repositorio em tempo de teste/lint e, no caso do pm2, do arquivo de ecosystem e dos arquivos de processo monitorados no host: nenhuma entrada de requisicao HTTP alcanca esse codigo. Reavaliar quando micromatch ou braces publicarem correcao. Decisao registrada nos itens 1.6 e 3.1 de MICROLOGIN_1.0.0_RELEASE_CHECKLIST.md."
       }
     }
   ],

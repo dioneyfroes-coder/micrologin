@@ -70,7 +70,7 @@ foi feito para não depender disso (ver README).
 | # | Ameaça | Mitigação | Onde |
 | --- | --- | --- | --- |
 | T1 | Credential stuffing / força bruta | rate limit por IP **e** por conta; login responde genérico | `advancedRateLimit.ts` |
-| T2 | Enumeração de contas | `/login` não distingue usuário inexistente de senha errada; username normalizado | `AuthService`, `usernamePolicy.ts` |
+| T2 | Enumeração de contas | `/login` não distingue usuário inexistente de senha errada; username normalizado; **tempo** dos dois caminhos equalizado com `compareDummy` (D34) | `AuthService`, `usernamePolicy.ts` |
 | T3 | Roubo de refresh token | rotação `SET NX`; reuso publica `TOKEN_REUSE_DETECTED` (gravidade alta), revoga todas as sessões e responde 401 | `jwtTokenService.ts:refreshTokens`, `AuthService.refreshUserTokens` |
 | T4 | Token revogado ainda aceito | blacklist por `jti` + `sv` de sessão; logout revoga o par inteiro | `AuthService.endSession` |
 | T5 | Redis fora do ar | `SESSION_FAIL_OPEN=false` (padrão em produção) → `503`, nunca aceitar sem revogação | `isRevocationStoreReady` |
@@ -81,6 +81,10 @@ foi feito para não depender disso (ver README).
 | T10 | Payload grande / DoS de parsing | limite de 100kb no `express.json`; rate limit antes do trabalho caro | `app.ts` |
 | T11 | Clique em log de auditoria | usuário mascarado no console; refresh token nunca vai para o log de evento | `logToConsole` |
 | T12 | Cliente forja identidade via proxy | `X-Request-Id` externo é recusado se não for UUID; IP confiável exige `trust proxy` | `requestLogger.ts` |
+| T13 | Burst de login estoura a memória do container | semáforo de operações argon2id com fila limitada; `hash` e `verify` passam pelo mesmo mecanismo; fila cheia → 503 (D30) | `argon2Limiter.ts` |
+| T14 | Senha trocada com sessões antigas vivas | revogação **antes** de persistir, com o retorno conferido; falha de revogação → 503 sem alterar a senha (D31) | `AuthService.changePassword` |
+| T15 | Token de conta apagada continua renovando | existência do usuário conferida antes de rotacionar; token órfão é revogado (D31) | `AuthService.refreshUserTokens` |
+| T16 | Refresh token de 7 dias usado como access | claim `token_type` conferida em qualquer algoritmo, inclusive HS256 (D33) | `jwtTokenService.ts` |
 
 ---
 
@@ -107,6 +111,11 @@ Escrito para que ninguém descubra reviewing o código:
    identidade por trás. Em ambiente com mais de um operador, isso não serve.
 7. **`METRICS_TOKEN` sem rotação nem escopo.** Protege um único manifesto. Nome
    legado, mantido por compatibilidade de configuração já implantada.
+8. **O tempo de `PUT /update` ainda distingue username repetido de username
+   livre.** A resposta HTTP é explícita por decisão de API, então quem chega ao
+   endpoint já tem sessão válida — quem enumera já tem conta. Corrigir o tempo sem
+   mudar o contrato seria trabalho invisível; mudar o contrato é decisão de API,
+   não correção de segurança. Ver D34.
 
 ---
 
@@ -360,7 +369,7 @@ servidor compartilhado, **quem decide é o número do endpoint, não o do benchm
 isolado** — e ele dizia que o teto de memória nunca foi o limite do login.
 
 **Os parâmetros não sobem porque a máquina ficou maior.** A extrapolação para
-hardware grande está em [`ARQUITETURA.md`](ARQUITETURA.md#9-projeção-em-hardware-grande-120-núcleos--120-gb):
+hardware grande está em [`ARQUITETURA.md`](ARQUITETURA.md#11-projeção-em-hardware-grande-120-núcleos--120-gb):
 120 núcleos e 120 GB não mudam o `m=64MiB, t=1`, porque o atacante paga a mesma
 tabela de custo que o servidor e RAM ociosa não vira CPU. O que a RAM extra
 permite é `m` maior, e isso é política de segurança, não throughput — precisa de
@@ -375,8 +384,12 @@ concorrentes com `m=64MiB` podem pedir. Um número absoluto erra nas duas
 direções: alerta cedo demais num container grande, e nunca num pequeno.
 ### D17 — Pepper: mecanismo pronto, desligado por padrão
 O pepper (HMAC-SHA256 antes do hash) foi **medido** e **implementado**, mas
-**não vem ligado**. A decisão está no código — `PASSWORD_PEPPER` e
-`PASSWORD_PEPPER_PREVIOUS_VERSION` — e o padrão é desligado.
+**não vem ligado**. A decisão está no código, e as quatro variáveis que a
+expressam são `PASSWORD_PEPPER`, `PASSWORD_PEPPER_VERSION`,
+`PASSWORD_PEPPER_PREVIOUS` e `PASSWORD_PEPPER_PREVIOUS_VERSION` — as duas
+primeiras ligam o mecanismo, as duas últimas só existem durante a rotação. O
+padrão é desligado. O procedimento está em
+[`ROTACAO.md`](ROTACAO.md), seção 2.
 
 *Por que desligar, se não custa nada:* a medição confirma que o pepper não tem
 custo mensurável (26.2 ms contra 27.8 ms, diferença menor que a variação entre
@@ -907,3 +920,211 @@ réplica vem de `service.instance_id` do `/observability`, e o parser do
 `--summary-export` do k6 lê `metrics.X.count`, não `metrics.X.values.count`.
 Ambas as correções estão em `scripts/ddos-survival-test.mjs` com guarda de
 mutação em `tests/unit/ddos-survival-driver.test.ts`.
+
+### D30 — O teto de concorrência de argon2 é um semáforo aplicado, não uma conta
+
+O serviço sempre teve um número para "quantos hashes de senha simultâneos cabem":
+`m × 8` = 512 MiB contra 768 MiB de teto do container. Esse número entrava na
+validação de arranque e **não em mais nada**. Nenhum código o aplicava em tempo
+de execução — o orçamento dizia 8 e a máquina fazia o que a fila de requisições
+deixasse, que no pior caso eram 48 operações observadas com o teto declarado em 4.
+
+A divergência não era decorativa. A §5 de [`metricas.md`](metricas.md#5-calibrando-o-limite-de-requisições-em-andamento)
+mediu exatamente isso e concluiu que **requisição em andamento não é memória em
+andamento**: o disjuntor de 1024 conta requisições abertas, uma requisição
+esperando vaga custa quase nada, e um burst de 200 logins atravessa 1024 sem
+encontrar o limite enquanto cada hash aloca 64 MiB fora do heap do JS.
+
+A decisão é um semáforo próprio de operações argon2id
+(`src/shared/utils/argon2Limiter.ts`), aplicado em `PasswordHasher.hash()` **e**
+`.compare()`, com configuração `securityConfig.passwordHash.concurrency = { limit,
+maxQueue }` (`ARGON2_MAX_CONCURRENCY` default 8, `ARGON2_MAX_QUEUE` default 64),
+validada no arranque e publicada em `getConfigSummary()`.
+
+*Recusado:* usar o `inFlight` como se cobrisse o caso. Ele é proteção de HTTP e
+precisa continuar sendo: `/profile` ocupa uma vaga dele e zero do semáforo. Trocar
+uma proteção pela outra deixaria as duas faltando.
+
+*Recusado:* o limite como recusa imediata. Um hash argon2 é trabalho legítimo de
+um usuário legítimo; recusá-lo porque chegou atrás de outros oito só troca memória
+por erro. A política é **fila FIFO com profundidade limitada** — FIFO porque
+LIFO faria um burst empurrar as operações mais antigas, que é o pior caso de
+latência e o mais fácil de não perceber. Só fila cheia recusa, e a recusa é
+`503 ARGON2_OVERLOADED` com `Retry-After: 1`.
+
+*Recusado:* `401` ou `400` na saturação. Erro de capacidade não é erro de
+credencial, e dizer 401 ao cliente affirmaria que a senha dele está errada. O
+código é classificado como `unavailable` em `AUTH_OUTCOMES`, ao lado de
+`REVOCATION_UNAVAILABLE`, pelo mesmo motivo.
+
+O ponto que fecha a conta: a validação de memória do arranque passou a usar **o
+mesmo número que o semáforo impõe**. Antes ela era verde com a máquina estourando
+o container; agora ela descreve o que pode acontecer de fato.
+
+### D31 — Revogar é anterior a persistir, e o fracasso não é do usuário
+
+Duas operações gravam ou apagam a identidade do usuário depois de dependerem da
+revogação, e as duas faziam o inverso: persistiam primeiro e revogavam depois.
+`revokeUserTokens()` devolvia `boolean` e ninguém checava.
+
+O estado que isso permite não tem volta:
+
+```text
+senha nova gravada  ->  sucesso
+revogação de sessão ->  falha silenciosa
+```
+
+O usuário acredita que trocou a senha, todas as sessões antigas seguem válidas
+até expirarem, e nada no sistema registra que houve problema. Na exclusão de
+usuário a consequência é pior: o token sobrevive à conta que o emitiu.
+
+A ordem é invertida nos dois casos, e o valor de `revokeUserTokens` é conferido
+explicitamente:
+
+| operação | ordem | revogação não confirmada | revogação ok, escrita falha |
+| --- | --- | --- | --- |
+| `changePassword` | hash novo → revoga → grava | `REVOCATION_UNAVAILABLE` / `503`, **senha intacta** | `PASSWORD_CHANGE_NOT_PERSISTED` / `503`, sessões encerradas e senha antiga ainda valendo |
+| `deleteUser` | revoga → apaga | `REVOCATION_UNAVAILABLE` / `503`, **usuário permanece** | `USER_DELETE_NOT_PERSISTED` / `503`, sessões encerradas e conta de pé |
+
+O estado da coluna da direita é seguro e é registrado em log: as sessões já foram
+encerradas, o que resta é a senha antiga valendo — o estado normal de uma troca
+que não chegou a acontecer, com o contorno de refazer a operação. O estado
+inverso não tem contorno nenhum. O caminho opcional de histórico de senha que
+falha (`PASSWORD_HISTORY_UNAVAILABLE`) segue o mesmo padrão: pergunta de
+segurança sem resposta é fail-open, e fail-open aí significa histórico de senha
+que deixa de valer.
+
+*Recusado:* tratar falha de revogação como erro de credencial (401/400). A senha
+não é o problema e a infraestrutura é; devolver 400 faria o cliente culpar o
+usuário por uma queda de Redis.
+
+`refreshUserTokens` fecha o mesmo conjunto pela outra ponta: a existência do
+usuário é conferida **antes** de rotacionar, não depois. Um refresh token
+assinado não é prova de que a conta existe, e girar o token de um usuário apagado
+gastaria a única credencial de renovação que ele tinha para então recusar a
+emissão. O token órfão é revogado e a resposta é `USER_NOT_FOUND`. "Ativo" não é
+verificável — `models/User.ts` não tem conceito de conta desativada, e
+introduzi-lo seria funcionalidade nova, não correção de segurança.
+
+### D32 — `uncaughtException` derruba o processo, sem exceção por palavra
+
+O handler de `uncaughtException` carregava uma isenção: erros cuja mensagem
+contivesse `forEach` eram registrados e o processo seguia no ar. A justificativa
+era "não derrubar o serviço por uma exceção de biblioteca de métricas".
+
+A isenção nunca teve o efeito pretendido, e a descoberta vale mais que a remoção:
+`forEach` aparece na mensagem de **qualquer** `TypeError` de domínio. A mesma
+falha com uma palavra a mais ou a menos decidia se o processo sobrevivia — o que
+significa que a regra nunca foi sobre métricas, e sim sobre coincidência de
+texto.
+
+*Recusado:* manter a isenção "só para biblioteca de métricas". Não há como
+distinguir a origem pela mensagem, e um `uncaughtException` significa que uma
+exceção escapou do fluxo normal: o processo pode estar em estado inconsistente, e
+seguir answering requisições é o pior desfecho possível.
+
+Hoje `uncaughtException` e `unhandledRejection` registram o erro e entram em
+graceful shutdown, e o supervisor reinicia. `gracefulShutdown` tem trava de
+idempotência: sem ela, um SIGTERM seguido de um `uncaughtException` abria duas
+rotinas — dois `server.close()`, dois `mongoose.close()`, dois timers de
+force-close — e o segundo `close()` numa conexão já fechada lançava, caía no
+`catch` e chamava `exit(1)` no meio do encerramento limpo.
+
+O código de saída distingue crash de encerramento pedido: `SIGTERM`/`SIGINT` saem
+com **0**, `uncaughtException`/`unhandledRejection` saem com **1**. A
+justificativa não é "garantir o reinício" — Docker `restart: unless-stopped` e
+PM2 com `autorestart` no default reiniciam em qualquer código de saída, então o
+`1` não é o que mantém o processo no ar aqui. Ele evita que uma queda por estado
+inconsistente seja reportada como parada bem-sucedida por alertas baseados no
+código de saída, e é o que impediria a sobrevivência em supervisors que
+distinguem sucesso de falha (systemd `Restart=on-failure`, Kubernetes).
+
+### D33 — `token_type` é a separação entre access e refresh, em qualquer algoritmo
+
+A separação entre access e refresh descansava **inteiramente** no fato de os
+segredos HS256 serem diferentes. Isso não é propriedade do token: é consequência
+de como o HS256 funciona — e o construtor cai para `JWT_SECRET` quando
+`JWT_REFRESH_SECRET` não vem, com warning e não com erro.
+
+Nesse estado os dois signers assinavam com o mesmo material e a verificação de
+tipo era ignorada, porque o `early return` que existia só conferia a claim em
+ES256. Reproduzido antes da correção, com `JWT_REFRESH_SECRET` ausente:
+
+```text
+refresh entregue como access  ->  ACEITOU. id=u1 token_type=refresh exp=+7d
+access entregue como refresh  ->  ACEITOU. token_type=access
+```
+
+Um refresh de 7 dias servindo como Bearer em rota de access, e um access de 15
+minutos servindo onde refresh é exigido — sem comprometimento de chave, só com o
+token que o próprio dono recebeu.
+
+A claim `token_type` passou a ser conferida **sempre**, em `verifyAccessToken` e
+`verifyRefreshToken`, nos dois algoritmos. A propriedade `reliesOnTokenType` foi
+removida de `TokenSigner`: ela descrevia o comportamento antigo e, deixada no
+lugar, seria armadilha para quem a lidasse.
+
+*Recusado:* aceitar token sem a claim por compatibilidade com "tokens legados".
+O comentário antigo dizia que tokens legados sem a claim continuavam válidos, o
+que é aceitar exatamente o estado que a separação por segredo deixou passar. Não
+há token legado a preservar na 1.0.0.
+
+O que a separação por segredo continua sendo é uma **defesa em profundidade**: com
+segredos distintos a recusa vem da assinatura, e a claim nem chega a ser
+consultada. A diferença importa porque os testes não podem afirmar a mesma coisa
+nos dois HS256 — com segredo compartilhado a assinatura passa (os dois tokens têm
+a mesma assinatura válida sob o mesmo segredo) e a claim é a única barreira.
+
+### D34 — Login e registro pagam o mesmo custo nos dois caminhos
+
+O `/login` já respondia `Credenciais inválidas` tanto para usuário inexistente
+quanto para senha errada: a mensagem não distinguia. O **tempo** distinguia, e era
+o único canal que sobrava. `authenticateUser` retornava logo depois de
+`findByUsername` responder `null`, sem argon2id para rodar — uma senha errada
+custava um `verify` de ~27 ms medidos e username inexistente voltava em
+microssegundos. Uma requisição por username, sem errar senha nenhuma, bastava
+para mapear a base inteira.
+
+O `/register` tinha o mesmo furo na forma espelhada: `exists()` verdadeiro
+retornava antes de `hash()`. E ali a mitigação **não é decorativa**, porque o
+controller já responde 400 genérico tanto para conta nova quanto para username
+repetido: o tempo era o único oráculo restante, e estava aberto.
+
+A porta `CryptoService` ganhou `compareDummy(plainText): Promise<false>` —
+obrigatório, não `?`, para que o compilador obrigue qualquer implementação a
+ter. `PasswordHasher` mantém um hash descartável gerado **uma vez por instância**
+e com os parâmetros que ele próprio usa.
+
+*Recusado:* constante fixa de hash no domínio. Passaria a divergir no dia em que
+alguém mudasse `m`, `t` ou `p`, e a mitigação viraria decorativa.
+
+*Recusado:* descarte regenerado a cada requisição. O caminho "não existe" ficaria
+**mais** lento que o de usuário real — o mesmo oráculo com o sinal invertido — e
+viraria amplificador de carga para quem não tem conta. O descarte é rejeitado
+explicitamente e a promessa guardada é descartada: cache permanente de falha
+tornaria definitiva a devolução rápida do caminho "não existe" sem nada apontar
+para o motivo.
+
+Medição com `m=16384,t=2,p=1`, n=15, duas amostras descartadas:
+
+```text
+login  / usuário inexistente   p50 23.52ms  p95 25.88ms  p99 25.88ms
+login  / senha errada          p50 23.23ms  p95 24.22ms  p99 24.22ms
+razão p50 inexistente/errada = 1.012
+
+registro / username repetido   p50 23.68ms  p95 26.36ms  p99 26.36ms
+registro / conta nova          p50 24.30ms  p95 25.58ms  p99 25.58ms
+razão p50 repetido/novo = 0.974
+```
+
+O objetivo declarado nunca foi "timing idêntico", e sim reduzir a diferença
+explorável. O número que sustenta o uso de um `verify` como equalizador no
+registro — cujo caminho real é um `hash()` — é a razão entre `verify` e `hash` nos
+mesmos parâmetros: 1.013 em 8192/t=1, 0.974 em 16384/t=2 e 0.978 em 19456/t=2.
+
+**Pendência declarada:** `AuthService.updateUserProfile` tem a mesma forma
+(`exists()` → retorno imediato, sem argon2) e **não** foi corrigido. O endpoint
+exige sessão válida — quem enumera já tem conta — e a decisão de projeto é que a
+atualização de perfil reporte conflito de username explicitamente. Corrigir o
+tempo sem mudar a resposta HTTP seria trabalho invisível; mudar a resposta é
+decisão de API. Registrado como pendência, não esquecido.

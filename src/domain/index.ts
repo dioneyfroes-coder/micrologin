@@ -813,7 +813,7 @@ export class AuthService {
    * ele continuaria sendo aceito por 7 dias.
    *
    * "Existe" é a única condição verificável aqui: o modelo de usuário não tem
-   * conceito de conta desativada (ver `models/User.ts`), e inventar um在这里
+   * conceito de conta desativada (ver `models/User.ts`), e inventar um aqui
    * seria uma funcionalidade nova, não uma correção de segurança.
    */
   async refreshUserTokens(refreshToken: string): Promise<ServiceResult> {

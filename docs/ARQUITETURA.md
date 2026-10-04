@@ -219,8 +219,11 @@ O caminho mais sensível do serviço.
 POST /refresh
   → validateRefresh
   → AuthWebController.refresh
-      → AuthService.refreshSession
-          → verifyRefreshToken      assinatura + expiração
+      → AuthService.refreshUserTokens
+          → verifyRefreshToken      assinatura + expiração + token_type
+          → o usuário ainda existe?  UserRepository.findById
+             │  não  ──► revoga o token órfão, 401 USER_NOT_FOUND
+             ▼
           → revogado?               Redis: token_blacklist:jti:<jti>
              │  já rotacionado  ────┐
              │  já revogado (logout)│
@@ -239,6 +242,16 @@ POST /refresh
 Duas requisições com o mesmo refresh token: uma recebe `200`, a outra `401
 REFRESH_TOKEN_REUSED`. Um refresh token vazado e reutilizado é sempre
 rejeitado — é essa a propriedade que o `SET NX` antes da emissão garante.
+
+**A existência do usuário é conferida antes de rotacionar**, e não depois. Um
+refresh token assinado não é prova de que a conta existe: entre a emissão e a
+renovação o usuário pode ter sido excluído. Sem a checagem, o par emitido para
+um usuário apagado sobreviveria a todas as verificações seguintes — assinatura
+válida, `sv` batendo, revogação em massa confirmada na exclusão — e continuaria
+sendo aceito por 7 dias. Conferir antes também evita gastar a única credencial
+de renovação que aquele usuário tinha só para recusar a emissão depois: o token
+órfão é revogado e a resposta é `401 USER_NOT_FOUND`. Ver
+[`SEGURANCA.md`](SEGURANCA.md) (D31).
 
 Se o Redis estiver fora, isso vira `503 REVOCATION_UNAVAILABLE` em produção
 (fail-closed). Ver README, "Política de revogação quando o Redis está
@@ -273,10 +286,16 @@ diferenciar revelaria se o par existia.
 PUT /password   (access token obrigatório)
   → validateChangePassword
   → AuthService.changePassword
-      → compara a senha atual         (step-up)
+      → compara a senha atual          (step-up)
       → nova senha não pode ser igual à anterior
-      → grava o histórico da senha
-      → revokeUserTokens(userId)      incrementa sv
+      → consulta o histórico            (falha aqui = 503, não fail-open)
+      → hash da nova senha
+      → revokeUserTokens(userId)        incrementa sv
+         │  não confirmado ──► 503, SENHA NÃO É ALTERADA
+         ▼
+      → user.changePassword() + save()
+         │  save() falha ──► 503, sessões encerradas, senha antiga valendo
+         ▼
   → todas as sessões, inclusive a atual, morrem
 ```
 
@@ -285,9 +304,67 @@ sessão viva. O `sv` é contador, não relógio — comparação por timestamp
 rejeitaria tokens emitidos no mesmo segundo da revogação, que é exatamente o
 caso de quem acabou de trocar a senha.
 
+**A ordem é uma exigência de segurança, não estilo.** Revogar antes de gravar é o
+que impede o estado que não tem volta — senha nova persistida e revogação que
+falha depois, com o usuário achando que trocou a senha e as sessões antigas
+seguindo válidas sem nada registrar. `revokeUserTokens()` devolve `boolean` e o
+retorno é conferido: revogação não confirmada devolve `503` e a senha **não** é
+alterada.
+
+O caminho inverso tem um custo real e conhecido, e ele é o escolhido: se a
+revogação der certo e o `save()` falhar, o usuário fica com a senha antiga e sem
+sessão nenhuma. Isso é seguro — ninguém entra sem a senha antiga, e o contorno é
+refazer a troca. O estado inverso não tem contorno.
+
 ---
 
-## 8. Onde o estado mora
+## 8. Fluxo: exclusão de usuário
+
+```text
+DELETE /delete   (access token obrigatório)
+  → AuthService.deleteUser
+      → revokeUserTokens(userId)        revoga ANTES de apagar
+         │  não confirmado ──► 503, USUÁRIO PERMANECE
+         ▼
+      → repository.delete(userId)
+         │  falha ──► 503 USER_DELETE_NOT_PERSISTED, sessões encerradas
+         ▼
+  → conta removida, nenhum token emitido para ela continua valendo
+```
+
+Excluir antes de revogar deixa o token vivo até expirar, e a conta nem existe
+mais para ser conferida. A checagem de existência do `POST /refresh` (D31) fecha
+a outra ponta do mesmo problema.
+
+---
+
+## 9. Limites de concorrência: dois números, duas unidades
+
+| proteção | conta | limite | o que protege |
+| --- | --- | --- | --- |
+| `inFlightLimit` | requisições HTTP abertas por processo | 1024 | rajada de tráfego, qualquer rota |
+| `argon2Limiter` | operações argon2id **simultâneas** | `ARGON2_MAX_CONCURRENCY` (8) | memória: 64 MiB por hash, alocado fora do heap do JS |
+
+Nenhuma substitui a outra, e a distinção importa porque uma requisição em
+andamento não é necessariamente um hash em andamento. `/profile` ocupa uma vaga
+do disjuntor e zero do semáforo; um burst de 200 logins pode passar inteiro pelo
+disjuntor de 1024 e ser 200 hashes se nada os serializar.
+
+O semáforo é uma fila FIFO com profundidade limitada
+(`ARGON2_MAX_QUEUE`, 64) e vale para `hash()` e `verify()` — as duas operações
+têm o mesmo custo de memória. Fila cheia devolve `503 ARGON2_OVERLOADED` com
+`Retry-After: 1`: erro de capacidade não é erro de credencial, e 401 diria ao
+usuário que a senha dele está errada.
+
+E o orçamento de memória do arranque (`m × limite`) usa **o mesmo número que o
+semáforo impõe**, de modo que a validação de arranque descreve o que pode
+acontecer de fato. Antes eram duas verdades: uma orçada e nenhuma aplicada. Ver
+[`SEGURANCA.md`](SEGURANCA.md) (D30) e
+[`metricas.md`](metricas.md#5-calibrando-o-limite-de-requisições-em-andamento).
+
+---
+
+## 10. Onde o estado mora
 
 | Estado | Onde | Alcance | Perde ao reiniciar |
 | --- | --- | --- | --- |
@@ -319,7 +396,7 @@ não trafegar em claro.
 
 ---
 
-## 9. Projeção em hardware grande (120 núcleos / 120 GB)
+## 11. Projeção em hardware grande (120 núcleos / 120 GB)
 
 Seção **teórica**, por extrapolação a partir do que está medido em
 [`metricas.md`](metricas.md) num i5-7200U com 4 núcleos, 2.0 CPU de orçamento e
@@ -368,7 +445,7 @@ Nada da segurança. Três coisas de operação, nesta ordem de impacto:
    para 4 núcleos. Com 120 núcleos e 2.0 CPU de orçamento, 4 workers é
    desperdício; o número de workers deve acompanhar o `cpus`, não o total de
    núcleos. Cada worker tem seu próprio heap, seu próprio agregado de
-   `GET /observability` e sua própria memória de auditoria — a seção 8 mostra que
+   `GET /observability` e sua própria memória de auditoria — a seção 10 mostra que
    esse estado é **por worker**, então mais workers significa mais estado não
    compartilhado, e é aí que a horizontalização cobra.
 
