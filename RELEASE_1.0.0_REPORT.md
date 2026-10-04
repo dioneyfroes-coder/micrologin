@@ -44,8 +44,9 @@ Tudo executado em 2026-10-04, nesta árvore.
 | Replica session | `npm run test:replica-session` | ✅ | revogação cruzada em **3 réplicas reais** atrás do proxy |
 | DDoS | `npm run test:ddos` | ✅ | 3254 checks 100%; liveness p95 5,5 ms → 6,3 ms sob ataque |
 | Capacity | `npm run test:capacity` | ✅ | matriz 100/200/400 VUs concluída; artefatos em `artifacts/capacity/` |
-| Dependency audit | `npm audit --audit-level=high` | ⚠️ **exit 1** — 30 high | ver Security Note abaixo |
-| audit-ci | `npx audit-ci --config .audit-ci.json` | ✅ **Passed** | 1 advisory allowlisted, com expiry `2027-01-01` |
+| Dependency audit | `npm audit --audit-level=high` | ⚠️ **exit 1** — 30 high | ver Security Note. **Removido do gate do release**: como step, ele reprovaria sempre |
+| audit-ci | `npx audit-ci --config .audit-ci.json` | ✅ **Passed** | **é o gate de dependências do `release.yml`**; 1 advisory allowlisted, expiry `2027-01-01` |
+| Build (gate do release) | `npm run build` | ✅ exit 0 | step do job `quality`, conferido porque `image` depende dele |
 | Secrets | `npm run test:secrets` | ✅ | gitleaks v8.24.0: 103 commits, 4,57 MB, nenhum leak |
 | Coverage | `npm run test:coverage:fast` | ✅ **967 passed / 967**, 71 suites | statements 87,5 % · branches 83,76 % · functions 89,92 % · lines 87,49 % |
 
@@ -174,6 +175,17 @@ como `body_path`.
 
 Honestidade vale mais que uma tabela toda verde.
 
+- **O `release.yml` tinha um gate que não podia passar, e isso foi encontrado
+  antes de mexer na tag.** O job `quality` rodava
+  `npm audit --audit-level=moderate` como step de gate — medido em **exit 1**
+  nesta árvore. O `npm audit` não tem mecanismo de exceção, e a única advisory
+  `moderate+` (`braces`) está allowlisted até 2027-01-01 justamente por não
+  ter versão corrigida. Como `quality` está em `needs` de `image`, e `image` em
+  `needs` de `release`, **a release nunca teria sido publicada** — e o operador
+  só descobriria isso **depois** da tag `v1.0.0` reescrita e `e29032f`
+  irrecuperável. O step foi removido; o `audit-ci` cobre o mesmo threshold
+  (`moderate: true`) com a exceção. Um teste que **exigia** o step quebrado foi
+  invertido para falhar se ele voltar. Detalhes em "Achados durante a execução".
 - **`test:ddos` falhou 1 vez em 7 execuções, e não se sabe por quê.** A primeira
   execução depois do `npm ci` do freeze terminou com `exit 1` e
   `checks: 99.69% (3301 de 3311)` — 10 checks falharam. As **seis** execuções
@@ -185,6 +197,13 @@ Honestidade vale mais que uma tabela toda verde.
   em "Achados durante a execução" do checklist. Não é bloqueante — a propriedade
   testada foi verificada seis vezes seguidas — mas é a pendência mais relevante
   que este relatório carrega.
+- **O pipeline de release nunca foi executado de ponta a ponta.** É a causa raiz
+  dos dois problemas acima: um gate que ninguém executou não é evidência, é
+  hipótese. Os gates que rodam foram conferidos um a um contra a árvore local
+  (`npm audit --audit-level=moderate` foi medido e reprovado; `build`,
+  `audit-ci` e `test:secrets` foram medidos e passaram), mas o encadeamento
+  completo — `validate → quality → tests → image → security → release` — não tem
+  execução registrada.
 - **O RTO do backup não é constante.** Duas execuções no mesmo dia, na mesma
   máquina: **1s e 2s**. A documentação passou a dizer 1–2s. Um número único
   seria apresentar uma medição como se fosse especificação.
@@ -202,7 +221,8 @@ Honestidade vale mais que uma tabela toda verde.
   foi **verificado por inspeção e por teste de política**, não executado.
 - **Trivy em imagem real: não executado** localmente.
 - **`npm audit` cru continua falhando** (30 high, 3 deles em produção), conforme
-  detalhado na Security Note. O que passa é o `audit-ci` com exceção datada.
+  detalhado na Security Note. O que passa é o `audit-ci` com exceção datada — e
+  o `npm audit` deixou de ser gate do release por isso.
 - **`tests/integration/login-throttle.test.ts` é dependente de tempo.** Passa em
   `test:integration` e falhou em runs agregados de cobertura no passado. É
   pré-existente (reproduzido na árvore limpa em `9c879bc`), não é regressão dos

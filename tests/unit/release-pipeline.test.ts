@@ -436,7 +436,6 @@ describe('release: os gates do item 1.9 estão todos lá', () => {
     ['lint', 'npm run lint'],
     ['typecheck', 'npm run typecheck'],
     ['build', 'npm run build'],
-    ['npm audit', 'npm audit --audit-level=moderate'],
     ['audit-ci', 'npx audit-ci --config .audit-ci.json'],
     ['secret scanning', 'npm run test:secrets'],
     ['unit', 'npm run test:unit:fast'],
@@ -449,6 +448,29 @@ describe('release: os gates do item 1.9 estão todos lá', () => {
       expect(gateOf(fragment)).toBe(true);
     });
   }
+
+  it('o gate de dependências não é o `npm audit` cru, porque ele nunca passa', () => {
+    // Este step existiu no `quality` e foi removido. O `npm audit` não tem
+    // mecanismo de exceção, e a única advisory `moderate+` da árvore
+    // (GHSA-vfj7-8cjw-p6xm, `braces`) está allowlisted até 2027-01-01. Como
+    // `quality` é pré-requisito de `image` e de `release`, o step transformava
+    // uma exceção documentada em uma release que nunca publica — e o operador
+    // só descobria isso depois da tag reescrita, com `npm audit
+    // --audit-level=moderate` medido em exit 1 nesta árvore. O `audit-ci` cobre
+    // o mesmo threshold com a exceção, e é ele que decide.
+    // O comentário no YAML cita o comando removido, para explicar por que ele
+    // não volta. A asserção é sobre o que os steps **executam**, não sobre a
+    // prosa: por isso as linhas de comentário saem antes de procurar.
+    const semComentario = WORKFLOW
+      .split('\n')
+      .filter(line => !/^\s*#/.test(line))
+      .join('\n');
+
+    expect(semComentario).not.toMatch(/npm audit --audit-level/);
+
+    // E o gate que fica precisa ser o que tem a exceção, não o que não tem.
+    expect(gateOf('npx audit-ci --config .audit-ci.json')).toBe(true);
+  });
 
   it('a release depende do scan, não só do build', () => {
     // Publicar release sem o gate de segurança rodando é o fluxo que o item 1.7

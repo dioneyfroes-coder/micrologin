@@ -1811,7 +1811,11 @@ ver "Achados durante a execução".)
 
 [x] Nenhum pacote de produção é usado apenas por testes.
 
-[x] `npm audit` e `audit-ci` estão verdes.
+[x] O gate de dependências está verde — **que é o `audit-ci`, não o
+`npm audit`**. Este item dizia "`npm audit` e `audit-ci` estão verdes", e a
+primeira metade é falsa: `npm audit --audit-level=high` sai em exit 1, com 30
+`high`. O que decide é o `audit-ci`, com a exceção datada. Ver "Gate de
+dependências" em 3.1 e o achado do step `npm audit` no `release.yml`.
 
 [x] Actions do GitHub estão em versões suportadas.
 
@@ -2315,6 +2319,41 @@ causados pelos itens em si.
 - **Correção de processo que já vale:** em gate que possa falhar, capturar a
   saída inteira (com `tee`), não filtrar com `grep`. Foi esse filtro que
   destruiu a evidência.
+
+### O `release.yml` tinha um gate que nunca podia passar
+
+- **Sintoma:** nenhum. O pipeline nunca foi executado de ponta a ponta, então
+  ninguém tinha visto o step falhar.
+- **O step:** `release.yml`, job `quality`, tinha
+  `npm audit --audit-level=moderate` como step de gate. Medido nesta árvore:
+  **exit 1**. O `npm audit` não tem mecanismo de exceção, e a única advisory
+  `moderate+` da árvore (`GHSA-vfj7-8cjw-p6xm`, `braces`) está allowlisted no
+  `.audit-ci.json` até 2027-01-01 justamente porque **não existe versão
+  corrigida** para instalar.
+- **Por que era bloqueador, e não cosmético:** `quality` está em `needs` de
+  `image`, e `image` em `needs` de `release`. Um step que sempre falha nesse
+  caminho significa que **a release nunca seria publicada**. E o dano só
+  apareceria **depois** da tag `v1.0.0` reescrita, com `e29032f` já
+  irrecuperável por tag.
+- **Agravante:** o próprio checklist diz, em 3.1, que "`npm audit` não tem
+  mecanismo de exceção" e que "o gate que decide é o `audit-ci`". O `release.yml`
+  mantinha os dois, e o que não tem exceção era o que barrava. O item 5.2
+  afirmava "`npm audit` e `audit-ci` estão verdes" — afirmação falsa, corrigida.
+- **Correção:** o step `npm audit` foi removido do job `quality`, e o `audit-ci`
+  ficou como o gate de dependências. O `audit-ci` cobre o mesmo threshold
+  (`moderate: true` no `.audit-ci.json`) **com** a exceção, então nada se perde
+  em cobertura — inclusive a proteção contra advisory `moderate+` nova, que é
+  o que o step estava ali para pegar.
+- **Teste que trava a correção:** em `tests/unit/release-pipeline.test.ts`, o
+  gate que **exigia** o step quebrado foi invertido em
+  `o gate de dependências não é o npm audit cru, porque ele nunca passa`, que
+  falha se `npm audit --audit-level` voltar a aparecer em qualquer `run:`.
+  Antes o teste protegia o defeito; agora protege a correção.
+- **Lição de processo, a mesma do `test:ddos`:** os dois problemas encontrados
+  nesta passagem final eram **steps e gates que ninguém nunca executou**. Um gate
+  não exercitado não é evidência de nada — é uma hipótese. Vale executar o
+  pipeline de release completo ao menos uma vez, mesmo em um repositório de
+  portfólio.
 
 ### Tag `v1.0.0` já publicada
 

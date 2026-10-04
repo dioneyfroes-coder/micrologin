@@ -170,10 +170,16 @@ jobs:
       - name: 🏗️ Build
         run: npm run build
 
-      - name: 🔒 npm audit
-        run: npm audit --audit-level=moderate
-
-      - name: 📊 audit-ci
+      # O gate de dependências é o `audit-ci`, e só ele. Havia também um
+      # `npm audit --audit-level=moderate` aqui, que nunca podia passar: o
+      # `npm audit` não tem mecanismo de exceção, e a única advisory
+      # `moderate+` da árvore (GHSA-vfj7-8cjw-p6xm, `braces`) está allowlisted
+      # com validade até 2027-01-01 e justificativa no `.audit-ci.json`. Como o
+      # `quality` é pré-requisito de `image` e de `release`, aquele step
+      # transformava "exceção documentada" em "release que nunca publica" — e
+      # só depois da tag já reescrita. O `audit-ci` cobre o mesmoThreshold
+      # (`moderate: true`) com a exceção, e é ele que decide.
+      - name: 📊 audit-ci (gate de dependências)
         run: npx audit-ci --config .audit-ci.json
 
       - name: 🔑 Secret scanning
