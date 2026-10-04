@@ -295,15 +295,26 @@ jobs:
 
           # `buildx build --push` de verdade. O workflow anterior imprimia
           # "✅ Docker images tagged" sem tocar em registry nenhum.
+          #
+          # Só `linux/amd64`. O arm64 saiu por decisão, e o motivo é o caminho
+          # crítico: `buildx` constrói todas as plataformas em UMA invocação,
+          # então um arm64 quebrado derrubaria a release inteira — inclusive
+          # para quem só puxa amd64. E não havia nada consumindo arm64: nenhum
+          # compose pinando plataforma, nenhum alvo de deploy, nenhum host
+          # configurado. Somando a isso, arm64 nunca foi verificado aqui (a
+          # máquina não tem QEMU). Publicar plataforma sem consumidor e sem
+          # verificação só compra um modo de falha. Quando alguém precisar de
+          # arm64, ele entra como item próprio, com build próprio e verificação
+          # própria.
           docker buildx build \
-            --platform linux/amd64,linux/arm64 \
+            --platform linux/amd64 \
             --provenance=false \
             --tag "$TAGS" \
             --push \
             .
 
           # buildx grava o digest de cada tag em metadata; a primeira é o digest
-          # multi-plataforma efetivamente publicado.
+          # efetivamente publicado.
           DIGEST=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{ .Manifest.Digest }}')
 
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
@@ -314,7 +325,7 @@ jobs:
             echo "- registry: \`${REGISTRY}\`"
             echo "- image: \`${IMAGE}\`"
             echo "- tags: \`${VERSION}\`, \`${TAG}\`, \`${SHA}\`"
-            echo "- platforms: \`linux/amd64\`, \`linux/arm64\`"
+            echo "- platforms: \`linux/amd64\`"
             echo "- **digest**: \`${DIGEST}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 

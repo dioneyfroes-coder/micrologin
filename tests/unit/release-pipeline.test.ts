@@ -383,7 +383,16 @@ fi
     expect(calls).toMatch(/:1\.0\.0/);
     expect(calls).toMatch(/:v1\.0\.0/);
     expect(calls).toMatch(/:abc123def456/);
-    expect(calls).toMatch(/linux\/amd64,linux\/arm64/);
+    // Só `linux/amd64`, por decisão e não por esquecimento. O arm64 entrou no
+    // caminho crítico da release sem nenhum consumidor — nenhum compose pinando
+    // plataforma, nenhum alvo de deploy — e sem ter sido verificado: a máquina
+    // do build não tem QEMU, então `linux/arm64` só era prova por inspeção do
+    // lock. O problema é que `buildx` constrói as duas plataformas numa única
+    // invocação: se o arm64 falhasse, a release inteira cairia, inclusive para
+    // quem só puxa amd64. Numa release o caminho crítico deve conter só o que
+    // foi verificado de fato.
+    expect(calls).toMatch(/--platform linux\/amd64\b/);
+    expect(calls).not.toMatch(/linux\/arm64/);
 
     const summaryText = readFileSync(summary, 'utf8');
     expect(summaryText).toMatch(/digest/);

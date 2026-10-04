@@ -861,8 +861,7 @@ fora da main reprovam.
 [x] `v1.1.0-rc.1` reconhecida como prerelease.
 [x] Tag anterior resolvida no pai (`v1.0.0` → `v0.9.0`), e demonstrado que a
 forma ingênua devolveria a própria tag.
-[x] Comando de build verificado: `--push`, três tags, multi-arch, digest no
-resumo.
+[x] Comando de build verificado: `--push`, três tags, digest no resumo.
 [x] `latest` presente em estável e ausente em prerelease.
 [x] RC publicada como `prerelease`, não como estável.
 [x] Todos os gates presentes; release depende do scan; digest no resumo;
@@ -1674,7 +1673,8 @@ publicar não há o que escanear. As tags de PR são `pr-<n>` e `<sha>`; a
 
 [x] Tudo do PR.
 
-[x] Build Docker multi-arch.
+[x] Build Docker. Uma plataforma só (`linux/amd64`): ver a decisão no fim
+deste documento.
 
 [x] Scan de segurança.
 
@@ -1688,7 +1688,7 @@ publicar não há o que escanear. As tags de PR são `pr-<n>` e `<sha>`; a
 
 `main` dispara os mesmos jobs de PR (as condições são por evento, não por
 branch): quality, testes, build e segurança. O `build` usa buildx com
-`platforms: linux/amd64,linux/arm64` e publica em GHCR. O digest sai do próprio
+`platforms: linux/amd64` e publica em GHCR. O digest sai do próprio
 `build-push-action` e é exposto como output do job
 (`image-digest`, `image-ref`) — é esse valor que o Trivy escaneia e que o deploy
 consome, então imagem escaneada e imagem implantada são a mesma por
@@ -2380,7 +2380,7 @@ causados pelos itens em si.
 - **O que fica fora do pipeline, e é onde a resiliência é medida:** o drill do
   k6 roda localmente e o resultado está no relatório de release.
 
-### O build multi-arch e a imagem de produção
+### A imagem de produção, e o arm64 que saiu
 
 - **`docker build` do stage `production` foi executado** (exit 0). Antes disso
   só havia inspeção, o que não é evidência.
@@ -2397,13 +2397,46 @@ causados pelos itens em si.
 - **O boot da imagem de produção já era coberto:** `scripts/deploy.sh` faz
   `docker build` (stage padrão = produção) e espera `/health` antes de dar
   sucesso, e `test:deploy` passou.
-- **O que não deu para provar: `linux/arm64`.** O `image` job publica
-  `--platform linux/amd64,linux/arm64`, e a máquina local não tem QEMU
-  registrado (`exec format error`). Risco baixo e reduzido por inspeção: o único
-  nativo da árvore de produção é o `@node-rs/argon2`, e o `linux-arm64-musl`
-  está no lock com `resolved` e `integrity`, ou seja, binário pré-compilado sem
-  toolchain. Mas baixo risco não é verificado — se o arm64 quebrar, quebra no
-  build da release, depois da tag reescrita.
+
+#### O arm64 saiu do build
+
+- **O `image` job publicava `--platform linux/amd64,linux/arm64`.** Dois defeitos,
+  e o primeiro é o que importa.
+- **`buildx` constrói todas as plataformas numa única invocação.** Se o arm64
+  falhasse, a release inteira cairia — inclusive para quem só puxa amd64. O
+  `--platform` não é "um extra opcional": ele coloca a plataforma no caminho
+  crítico.
+- **Não havia nada consumindo arm64.** Nenhum `docker-compose*.yml` pinando
+  plataforma, nenhum script de deploy tocando arm64, nenhum
+  `STAGING_DEPLOY_HOST` nem `PRODUCTION_DEPLOY_HOST`. E nunca foi verificado: a
+  máquina não tem QEMU, então a única evidência era o lock mostrar
+  `linux-arm64-musl` com `resolved` e `integrity`.
+- **Saiu por decisão, não por esquecimento**, e o teste exige
+  `not.toMatch(/linux\/arm64/)` para ninguém reintroduzi-lo em silêncio. O
+  comentário no `release.yml` registra o motivo ao lado do comando.
+- **O risco era de build, não de segurança:** com `@node-rs/argon2`, é bem
+  provável que o arm64 *funcionasse*. Publicar uma plataforma sem consumidor e
+  sem verificação, dentro do caminho crítico, compra um modo de falha em troca
+  de nada.
+- **Quando alguém precisar de arm64:** entra como item próprio, com build e
+  verificação próprios.
+
+#### Por que plataforma importa num projeto que parece universal
+
+- **Node é universal; a imagem não é.** O código roda em Linux, macOS e
+  Windows, e o lock traz `darwin-*` e `win32-*`. Mas o `Dockerfile` se
+  compromete com `node:22-alpine` — **musl**, não glibc — e com uma arquitetura
+  de CPU. `apk add`, `addgroup -g 1001` e `dumb-init` são Linux.
+- **A prova está no próprio lock:** `@node-rs/argon2` tem **13 pacotes**
+  plataformaspecíficos, cada um com `cpu`, `os` e `integrity` próprios.
+- **N-API padroniza a interface de chamada, não o artefato compilado.** Não
+  existe bytecode sem arquitetura em addon nativo; por isso `linux-arm64-musl` é
+  um pacote à parte.
+- **O musl é o canto mais afiado:** um addon que compila via `node-gyp` precisa de
+  `python3`, `make` e `g++`, que o Alpine não tem. O projeto escapa por usar
+  `@node-rs`, e não o `argon2` do node-gyp — o mesmo passo quebraria no arm64 e
+  passaria no amd64. Universalidade que depende de qual pacote você escolheu não
+  é universalidade.
 
 ### Tag `v1.0.0` já publicada
 

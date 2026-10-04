@@ -136,7 +136,7 @@ image tag:       ghcr.io/dioneyfroes-coder/micrologin:1.0.0
                  ghcr.io/dioneyfroes-coder/micrologin:<sha do commit>
                  ghcr.io/dioneyfroes-coder/micrologin:latest
 image digest:    (a preencher pelo workflow — published no $GITHUB_STEP_SUMMARY)
-platforms:       linux/amd64, linux/arm64
+platforms:       linux/amd64
 ```
 
 `docker-compose.prod.yml` consome `IMAGE_REF` por digest, com a tag como fallback.
@@ -219,16 +219,35 @@ Honestidade vale mais que uma tabela toda verde.
   que `src/` não é copiado para a imagem. O boot completo também está coberto:
   `test:deploy` sobe a imagem de produção e espera `/health` antes de dar
   sucesso, e passou.
-- **A plataforma `linux/arm64` do build multi-arch não foi provada.** O
-  `--platform linux/amd64,linux/arm64` do `image` job não pôde ser reproduzido
-  localmente: não há QEMU registrado (`exec format error`). O risco é baixo e
-  foi reduzido por inspeção — o único módulo nativo da árvore de produção é
-  `@node-rs/argon2`, e o `linux-arm64-musl` está no lock com `resolved` e
-  `integrity`, então é binário pré-compilado, sem toolchain. Mas "baixo risco"
-  não é "verificado", e o primeiro a descobrir um eventual problema será o
-  build da própria release.
-- **O pipeline de release nunca foi executado de ponta a ponta.** É a causa raiz
-  dos dois problemas acima: um gate que ninguém executou não é evidência, é
+- **A imagem é `linux/amd64` só, e isso foi decisão.** O `image` job publicava
+  `--platform linux/amd64,linux/arm64` com **dois** defeitos. O primeiro: o
+  `buildx` constrói todas as plataformas numa única invocação, então um arm64
+  quebrado derrubaria a release inteira — inclusive para quem só puxa amd64. O
+  segundo: não havia **nada** consumindo arm64. Nenhum `docker-compose*.yml`
+  pinando plataforma, nenhum script de deploy tocando arm64, nenhum
+  `STAGING_DEPLOY_HOST` nem `PRODUCTION_DEPLOY_HOST` configurado. E ele nunca
+  foi verificado — a máquina não tem QEMU, então a única evidência era o lock
+  mostrar `linux-arm64-musl` com `resolved` e `integrity`.
+
+  Note que o risco era de build, não de segurança: como o `@node-rs/argon2` traz
+  binário pré-compilado para musl, é bem provável que o arm64 *funcionasse*. O
+  que não podia é publicar, no caminho crítico de uma release, uma plataforma
+  sem consumidor e sem verificação, comprando um modo de falha em troca de nada.
+  Quando alguém precisar de arm64, ele entra como item próprio, com build e
+  verificação próprios — não de graça dentro do build de hoje.
+- **O código-fonte é cross-platform; a imagem não é.** Node roda em Linux,
+  macOS e Windows, e o lock traz variantes `darwin-*` e `win32-*`, então
+  `npm test` funciona nos três. Mas o `Dockerfile` se compromete com
+  `node:22-alpine` — que é **musl**, não glibc — e com uma arquitetura de CPU.
+  O `@node-rs/argon2` é a prova materialize da diferença: 13 pacotes
+  plataformaspecíficos no lock, cada um com `cpu`, `os` e `integrity` próprios,
+  porque N-API padroniza a *interface* de chamada, não o *artefato compilado*.
+  Não existe bytecode sem arquitetura em addon nativo. E o musl é o canto mais
+  afiado: um addon que compila via `node-gyp` precisaria de `python3`, `make` e
+  `g++`, que o Alpine não tem — o projeto escapa disso por usar `@node-rs`, não
+  o `argon2` do node-gyp. Universalidade que depende de qual pacote você
+  escolheu não é universalidade.
+- **O pipeline de release nunca foi executado de ponta a ponta.** É a causa raiz  dos dois problemas acima: um gate que ninguém executou não é evidência, é
   hipótese. Os gates que rodam foram conferidos um a um contra a árvore local
   (`npm audit --audit-level=moderate` foi medido e reprovado; `build`,
   `audit-ci` e `test:secrets` foram medidos e passaram), mas o encadeamento

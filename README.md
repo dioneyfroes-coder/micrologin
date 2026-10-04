@@ -571,7 +571,7 @@ fica como relatório direto do registry. Por isso ele ainda sai vermelho com
 `braces`, e isso é esperado: a única advisory `moderate+` da árvore é a que está
 na tabela acima.
 2. **tests**: unitários rápidos, integração e upload de cobertura para Codecov
-3. **build**: build e push da imagem multi-plataforma (amd64/arm64) para GHCR
+3. **build**: build e push da imagem para GHCR (`linux/amd64`)
 4. **security**: scan de vulnerabilidades com Trivy, na mesma referência de imagem que será implantada (o digest) — **reprova o pipeline** em HIGH/CRITICAL (`exit-code: '1'`, `ignore-unfixed: true`)
 5. **deploy**: deploy real por SSH, apenas em `workflow_dispatch` (ver abaixo). Sem servidor configurado, o job falha com mensagem explícita em vez de reportar sucesso
 
