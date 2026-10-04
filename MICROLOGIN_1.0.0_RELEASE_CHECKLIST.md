@@ -2500,11 +2500,16 @@ causados pelos itens em si.
 
 ### Tag `v1.0.0` movida para o commit de freeze
 
-- **Estado:** **executado.** `v1.0.0` aponta para `dedea92`, local e no remote.
-  Confirmado por `git ls-remote --tags origin`, que mostra `refs/tags/v1.0.0^{}`
-  resolvendo para `dedea92edc838c4ad1cba8f1d09c45fdc5176349`, e por
-  `git rev-parse v1.0.0^{commit}`. A tag é anotada (`git cat-file -t v1.0.0`
-  devolve `tag`); o objeto tag tem SHA próprio (`9d1919d`) e o commit, outro.
+- **Estado:** **executado.** `v1.0.0` aponta para `1392e2b`, local e no remote.
+  Confirmado por `git ls-remote --tags origin` e por
+  `git rev-parse v1.0.0^{commit}`. A tag é anotada
+  (`git cat-file -t v1.0.0` devolve `tag`); o objeto tag tem SHA próprio e o
+  commit, outro.
+- **Movida três vezes, e cada movimento tinha um motivo:** para `dedea92`
+  (freeze), depois para `f680df8` (`JWT_SECRET` curto), depois para `3324ef1`
+  (`--tag` separado por vírgula), e por fim para `1392e2b` (npm na imagem de
+  runtime). A tag nunca foi movida por conveniência: cada `--force` cobriu um
+  pipeline que tinha reprovado de verdade.
 - **Antes disso:** `v1.0.0` apontava para `e29032f`, 91 commits atrás de `main`,
   sem release, imagem nem digest. Era uma tag plantada antes de o projeto
   existir como produto.
@@ -2529,12 +2534,14 @@ causados pelos itens em si.
   repositório". Isso é **exato** — depois do movimento, é a primeira. O
   `CHANGELOG.md` versionado no repositório é outro arquivo, com o histórico
   completo, e não é sobrescrito pelo pipeline (que só o usa como `body_path`).
-- **Comando executado**, no lugar de `git tag -a v1.0.0`:
+- **Comando executado**, no lugar de `git tag -a v1.0.0`. Repetido três vezes,
+  cada uma apontando para o commit que corrigia a falha anterior:
 
 ```bash
-git tag -f -a v1.0.0 -m "Release v1.0.0" dedea92
+git tag -f -a v1.0.0 -m "Release v1.0.0" dedea92   # freeze
 git push origin main
 git push --force origin v1.0.0
+# depois: f680df8 (JWT_SECRET), 3324ef1 (--tag), 1392e2b (npm na imagem)
 ```
 
 - **Disparo:** `on: push: tags: 'v*.*.*'` casa com `v1.0.0`, então o `Release`
@@ -2547,41 +2554,105 @@ git push --force origin v1.0.0
 ```text
 [x] NÃO PRONTO            <- estado em 2026-10-04, ver abaixo
 [x] CANDIDATO A RELEASE
-[ ] 1.0.0 LANÇADA          <- depende de o workflow terminar; ver item 5
+[x] 1.0.0 LANÇADA          <- Release publicada em 2026-10-04T17:42:35Z
 ```
 
-**Candidato a release desde 2026-10-04:** o freeze local está fechado (lockfile
-congelado, 18 gates reexecutados, tag apontando para o commit de freeze). O
-primeiro `Release` já **rodou** e falhou em `tests` por um valor de ambiente
-inválido, corrigido nesta passagem. Nenhum item de código, teste ou documentação
-está pendente; o que falta é reexecutar o pipeline até o fim.
+**1.0.0 lançada em 2026-10-04T17:42:35Z.** O freeze local está fechado
+(lockfile congelado, gates reexecutados) e o pipeline foi até o fim, depois de
+quatro execuções em que cada uma reprovou por um defeito do workflow. O único
+item que continua aberto é a prova em staging/produção, e ele depende de hosts e
+secrets que não existem aqui.
 
 ### O que falta, em ordem
 
 1. ~~**Commit** das alterações desta revisão.~~ **Feito:** `fe488b1`, e mais
-   `12a4b95`, `d15c562`, `8445b36` e `dedea92` — todos na `main`.
+   `12a4b95`, `d15c562`, `8445b36`, `dedea92`, `bca1014`, `f680df8`, `3324ef1`
+   e `1392e2b` — todos na `main`.
 2. ~~**Congelar o lockfile** (`npm ci`).~~ **Feito:** `npm ci` exit 0,
    `package.json`/`package-lock.json` intactos, `npm ls --all` sem `invalid`,
    e os 18 gates reexecutados depois dele — todos verdes, exceto a
    intermitência do `test:ddos` registrada acima.
-3. ~~**CI verde**~~. **Verificado agora** — o rate limit da API pública do GitHub
-   renovou e a execução pôde ser lida sem token. **O `Release` rodou e falhou**
-   em `tests`, por `JWT_SECRET` curto (16 caracteres, mínimo 32). `validate` e
-   `quality` passaram inteiros. Corrigido nesta passagem; o item volta a ser
-   gate no próximo push.
-4. ~~**Mover a tag** `v1.0.0` para o commit de freeze.~~ **Feito:** a tag aponta
-   para `dedea92`, verificado por `git ls-remote --tags origin`.
-5. **Release real**: `buildx build --push`, digest, SARIF, GitHub Release.
-   Disparada pelo push da tag (`on: push: tags: 'v*.*.*'`), em execução no
-   GitHub. Se não aparecer, o caminho é `workflow_dispatch` com `tag: v1.0.0`.
-6. **Smoke pós-release** contra a imagem publicada.
+3. ~~**CI verde**~~. **Feito.** Passou por quatro execuções, e cada uma
+   reprovou por um defeito diferente do pipeline — nenhum deles no código do
+   serviço. Registrados abaixo como "Os quatro defeitos do pipeline".
+4. ~~**Mover a tag** `v1.0.0` para o commit de freeze.~~ **Feito:** a tag foi
+   movida três vezes, terminar em `1392e2b`, verificado por
+   `git ls-remote --tags origin`.
+5. ~~**Release real**: `buildx build --push`, digest, SARIF, GitHub Release.~~
+   **Feito.** Run `37221333414`, os seis jobs verdes:
+   `validate`, `quality`, `tests`, `image`, `security`, `release`.
+   Release `v1.0.0` publicada em `2026-10-04T17:42:35Z`, com o digest
+   `sha256:e9af7259e545b1880d1837311e54d984b3a7366c84ce40ba26e622586cae348b`.
+6. ~~**Smoke pós-release** contra a imagem publicada.~~ **Feito.** A imagem foi
+   puxada de `ghcr.io` **por digest**, sem tag, e rodada contra o Mongo e o
+   Redis reais do compose: `readiness` 200 com `mongodb: connected` e
+   `redis: healthy`, `login` 400 em payload inválido, rota inexistente 404,
+   `node v22.23.3`, 222 pacotes de produção, e `npm` ausente. Detalhes em
+   "Smoke pós-release", abaixo.
 7. **Provas de staging/produção** (`workflow_dispatch` com `environment=staging`),
    que dependem de `STAGING_DEPLOY_HOST`/`PRODUCTION_DEPLOY_HOST` e secrets
    externos. Não são bloqueantes para a release, mas **são** para afirmar que o
    deploy foi exercitado em produção.
 
-Os itens 3, 5 e 6 não podem ser feitos nesta máquina: exigem acesso ao GitHub e
-registry.
+### Os quatro defeitos do pipeline
+
+Nenhum era do serviço. Todos quatro estavam no workflow, e três deles eram
+visíveis sem rodar nada no GitHub — o teste que deveria cobri-los existia e
+passava.
+
+1. **`JWT_SECRET` curto nos jobs `quality` e `tests`** (run `37214687216`).
+   16 caracteres, mínimo 32. `validate` passou; `quality` e `tests` reprovaram.
+2. **Um `--tag` para quatro tags** (run `37216423853`). O script juntava as
+   tags numa string separada por vírgula:
+   `--tag "img:1.0.0,img:v1.0.0,img:sha,img:latest"`. O buildx recusa com
+   `invalid reference format` e o build falha antes de tocar no registry.
+   Bug pré-existente: o workflow antigo construía `TAGS` do mesmo jeito, e
+   nunca tinha rodado — `image` é o primeiro job que empurra para um registry.
+   **O teste passava com o comando quebrado**, porque conferia substring
+   (`:1.0.0`, `:v1.0.0`) e a string unida por vírgula contém ambos. O stub de
+   docker aceitava qualquer coisa e só registrava. O stub agora valida cada
+   referência com o mesmo critério do buildx.
+3. **O npm da imagem base reprovava o gate do Trivy** (run `37217066854`).
+   10 HIGH, todas em `/usr/local/lib/node_modules/npm/node_modules/` — a árvore
+   que o npm embarcado na base traz, não nosso código nem nosso lockfile. Zero
+   vulnerabilidades de SO. Nosso `node_modules` estava limpo
+   (brace-expansion 1.1.21, picomatch 2.3.2, ip-address 10.7.2).
+   Não dava para consertar pelo caminho óbvio: as correções exigem pacote
+   `>=21.5.1` e brace-expansion `>=5.0.11`, e **`node:24-alpine` não resolve** —
+   verificado, ele embarca brace-expansion 5.0.7, e 4 dos 5 CVEs daquele pacote
+   só fecham a partir de 5.0.11. Remover o npm da imagem de runtime resolve, e
+   é a correção verdadeira: o código vulnerável sai em vez de o scanner ser
+   silenciado.
+
+Os três foram corrigidos com teste que falha se o defeito voltar, inclusive o
+segundo — verificado reintroduzindo a vírgula e vendo o teste reprovar com a
+mensagem do buildx.
+
+### Smoke pós-release
+
+Imagem puxada de `ghcr.io/dioneyfroes-coder/micrologin` **por digest**, sem tag,
+na rede do compose, com o mesmo ambiente que o serviço recebe:
+
+```text
+readiness .............. 200
+checks ................. ready | mongo: connected | redis: healthy
+login payload vazio ... HTTP 400
+rota inexistente ..... HTTP 404
+npm na imagem ......... AUSENTE
+node ................... v22.23.3
+deps de produção ....... 222 pacotes
+digest rodando ......... sha256:e9af7259e545b1880d1837311e54d984b3a7366c84ce40ba26e622586cae348b
+```
+
+O digest rodando é o mesmo que o pipeline registrou na release. As quatro tags
+(`1.0.0`, `v1.0.0`, `1392e2b`, `latest`) respondem em `ghcr.io`.
+
+Pull anônimo funciona, mas com uma ressalva que não é óbvia: `curl` direto no
+manifest retorna 401, e o `docker pull` funciona. O token anônimo que o
+`ghcr.io` emite carrega identidade vazia (`0:...`), e o `curl` não consegue
+negociar o escopo. Quem for consumir a imagem por script precisa passar por um
+cliente que faça a troca de token — `docker pull` e `docker manifest inspect`
+funcionam, `curl` cru não.
 
 ---
 

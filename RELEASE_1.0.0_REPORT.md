@@ -145,17 +145,45 @@ platforms:       linux/amd64
 ## Git
 
 ```text
-commit:      dedea92 — e a tag aponta para ele, verificado por
+commit:      1392e2b — e a tag aponta para ele, verificado por
              git rev-parse v1.0.0^{commit}
 tag:         v1.0.0 (movida de e29032f — ver abaixo)
-release URL: (preenchida pelo workflow)
+release URL: https://github.com/dioneyfroes-coder/micrologin/releases/tag/v1.0.0
+digest:      sha256:e9af7259e545b1880d1837311e54d984b3a7366c84ce40ba26e622586cae348b
+run:         37221333414 — os seis jobs verdes
+publicada:   2026-10-04T17:42:35Z
 ```
 
 Commits enviados nesta passagem de freeze, todos na `main`:
 `fe488b1` (revisão de documentação), `12a4b95` (RTO e intermitência do
 `test:ddos`), `d15c562` (gate `npm audit` removido do release), `8445b36`
-(preflight de DDoS documentado e imagem de produção exercitada) e `dedea92`
-(build só em `linux/amd64`). O tag de freeze aponta para o último.
+(preflight de DDoS documentado e imagem de produção exercitada), `dedea92`
+(build só em `linux/amd64`), `bca1014` (tag movida, registrado sem verificação),
+`f680df8` (`JWT_SECRET` dos jobs), `3324ef1` (um `--tag` por tag) e `1392e2b`
+(npm fora da imagem de runtime). A tag aponta para o último.
+
+### Como a release foi efetivada
+
+A tag foi movida **três vezes**, e cada movimento foi uma resposta a uma falha
+real do pipeline — nenhuma delas no código do serviço:
+
+|_run_| `head` | Onde parou |
+|---|---|---|
+| `37214687216` | `dedea92` | `tests` — `JWT_SECRET` de 16 caracteres, mínimo 32 |
+| `37216423853` | `f680df8` | `image` — um `--tag` para quatro tags; buildx recusa |
+| `37217066854` | `3324ef1` | `security` — 10 HIGH no npm embarcado da base |
+| `37221333414` | `1392e2b` | **verde, dos seis jobs** |
+
+O detalhe de cada defeito está em
+[`MICROLOGIN_1.0.0_RELEASE_CHECKLIST.md`](MICROLOGIN_1.0.0_RELEASE_CHECKLIST.md),
+seção "Os quatro defeitos do pipeline".
+
+O ponto que importa registrar: **o segundo defeito tinha teste, e o teste
+passava.** Ele executava o `run:` de verdade com docker stubado e conferia
+substring — e a string errada, separada por vírgula, contém as substrings
+`:1.0.0` e `:v1.0.0`. Um teste que passa com o comando quebrado não é evidência
+de nada. O stub agora valida cada referência com o mesmo critério do buildx, e
+foi verificado reintroduzindo o defeito.
 
 ### Decisão da tag — `v1.0.0` já existia
 
@@ -164,10 +192,10 @@ nem digest associados. **Decisão: mover a tag para o commit de freeze.** A
 alternativa `v1.0.1` foi descartada porque `release.yml` exige que a tag e o
 `package.json` concordem, e o checklist inteiro já declara `1.0.0`.
 
-**Executado:** a tag aponta para `dedea92`, local e no remote. Confirmado por
+**Executado:** a tag aponta para `1392e2b`, local e no remote. Confirmado por
 `git ls-remote --tags origin`, que resolve `refs/tags/v1.0.0^{}` para
-`dedea92edc838c4ad1cba8f1d09c45fdc5176349`, e por `git rev-parse v1.0.0^{commit}`.
-A tag é anotada; o objeto tag tem SHA próprio (`9d1919d`) e o commit, outro.
+`1392e2b`, e por `git rev-parse v1.0.0^{commit}`.
+A tag é anotada; o objeto tag tem SHA próprio, e o commit, outro.
 `on: push: tags: 'v*.*.*'` casa com `v1.0.0`, então o `Release` foi disparado pelo
 push.
 
