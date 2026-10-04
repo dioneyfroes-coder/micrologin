@@ -115,11 +115,31 @@ a documentação precisa ir junto.
 
 ### Status do Trivy
 
-**Gate.** Roda na stage `production` do `Dockerfile` (que nasce de `base`, sem
-histórico de comandos), faz upload do SARIF com `security-events: write` e
-`if: always()`, e falha o job. O `exit-code` foi removido de propósito: o default
-da action é o que se quer. O scan aponta para o **digest** da imagem, não para tag
-mutável. Não executado localmente nesta revisão: exige o registry.
+**Gate.** Roda na stage `production` do `Dockerfile`, faz upload do SARIF com
+`security-events: write` e `if: always()`, e falha o job quando acha algo. O scan
+aponta para o **digest** da imagem, não para tag mutável.
+
+**Executado, e reprovou uma vez.** No run `37217066854` o gate reprovou com 10
+`HIGH`. Todas as 10 estavam em `/usr/local/lib/node_modules/npm/node_modules/` —
+a árvore que o npm da imagem base embarca, não o nosso código nem o nosso
+lockfile. **Zero vulnerabilidades de SO** (Alpine 3.24.2, 28 pacotes). O nosso
+`node_modules` estava limpo: brace-expansion 1.1.21, picomatch 2.3.2,
+ip-address 10.7.2, todos acima da versão corrigida.
+
+Não dava para consertar pelo caminho óbvio. As correções exigem pacote
+`>=21.5.1` e brace-expansion `>=5.0.11`; `npm install -g npm@latest` só resolve
+quando o npm publicar essa árvore. E **`node:24-alpine` não resolve** — medido:
+traz npm 11.19.0, que embarca pacote 21.5.1 (corrigido) e não embarca mais
+picomatch, mas embarca brace-expansion 5.0.7, e 4 dos 5 CVEs daquele pacote só
+fecham a partir de 5.0.11.
+
+A correção foi **remover o npm da imagem de runtime**. Ele é preciso para o
+`npm ci --omit=dev` e nunca é usado em runtime (o `CMD` é `node dist/app.js`).
+Some o código vulnerável em vez de silenciar o scanner.
+
+Medido com o mesmo gate e a mesma versão do Trivy (`v0.75.0`): **exit 1** antes,
+**exit 0** depois. E a imagem sem npm sobe — `readiness` 200 contra o Mongo e o
+Redis reais, 222 pacotes de produção intactos.
 
 ### Status do secret scanning
 
@@ -133,11 +153,45 @@ mutável. Não executado localmente nesta revisão: exige o registry.
 registry:        ghcr.io
 image tag:       ghcr.io/dioneyfroes-coder/micrologin:1.0.0
                  ghcr.io/dioneyfroes-coder/micrologin:v1.0.0
-                 ghcr.io/dioneyfroes-coder/micrologin:<sha do commit>
+                 ghcr.io/dioneyfroes-coder/micrologin:1392e2b
                  ghcr.io/dioneyfroes-coder/micrologin:latest
-image digest:    (a preencher pelo workflow — published no $GITHUB_STEP_SUMMARY)
+image digest:    sha256:e9af7259e545b1880d1837311e54d984b3a7366c84ce40ba26e622586cae348b
 platforms:       linux/amd64
 ```
+
+As quatro tags respondem em `ghcr.io`, e o digest acima é o que o corpo da
+release referencia.
+
+**O `curl` cru no manifest dá 401, mas `docker pull` funciona.** O token
+anônimo que o `ghcr.io` emite carrega identidade vazia (`0:...`) e o `curl` não
+negocia o escopo. Quem consumir a imagem por script precisa de um cliente que
+faça a troca de token — `docker pull` e `docker manifest inspect` funcionam.
+
+### Smoke pós-release, com o comando que mediu
+
+Imagem puxada de `ghcr.io` **por digest** (não por tag), na rede do compose, com
+o mesmo ambiente que o serviço recebe:
+
+```text
+readiness .............. 200
+checks ................. ready | mongo: connected | redis: healthy
+login payload vazio ... HTTP 400
+rota inexistente ..... HTTP 404
+npm na imagem ......... AUSENTE
+node ................... v22.23.3
+deps de produção ....... 222 pacotes
+digest rodando ......... sha256:e9af7259e545b1880d1837311e54d984b3a7366c84ce40ba26e622586cae348b
+```
+
+O `400` no login com payload vazio é o comportamento certo: é a validação de
+entrada respondendo, o que prova que a rota existe e que o grafo de módulos
+carregou. Um `500` ali seria o app quebrado.
+
+Uma ressalva de método: na primeira tentativa o `readiness` deu `000` e o log
+mostrou `MongooseServerSelectionError: getaddrinfo ENOTFOUND mongo`, o que
+parecia imagem quebrada. Era o teste — em produção o app exige credencial de
+Mongo e Redis, e o teste não tinha passado. A validação de configuração estava
+funcionando corretamente.
 
 `docker-compose.prod.yml` consome `IMAGE_REF` por digest, com a tag como fallback.
 **Nada foi publicado**: digest e URL da release só existem depois do push da tag.
