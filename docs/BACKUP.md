@@ -5,13 +5,16 @@
 | Métrica | Valor | Como foi medido |
 |---|---|---|
 | RPO (perda aceitável) | **24h** | cadência do agendador: 1 backup/dia (configurável com `--rpo-hours`) |
-| RTO (restauração) | **1s em banco de autenticação pequeno** | `scripts/test-backup.sh` cronometra de `restore.sh` até o login voltar 200 |
+| RTO (restauração) | **1–2s em banco de autenticação pequeno** | `scripts/test-backup.sh` cronometra de `restore.sh` até o login voltar 200 |
 | Retenção | **7 diários + 4 semanas** (≈ 35 dias) | `--retain-daily`/`--retain-weekly`, poda após cada backup e via `--prune-only` |
 
-O RTO de 1s é para a base deste serviço (uma coleção `users`). Ele **cresce
-com o tamanho dos dados**; a fórmula de referência para o operador é
-_bytes_decifrados / vazão_ + _start do Mongo_. O número importante é o contrato:
-**o restore é exercitado de ponta a ponta antes de precisar dele.**
+O RTO de 1–2s é para a base deste serviço (uma coleção `users`). O número não é
+uma constante: duas execuções do drill no mesmo dia, na mesma máquina, deram 1s
+e 2s. Quem ler "1s" como número fixo está lendo uma medição como se fosse
+especificação. Ele **cresce com o tamanho dos dados**; a fórmula de referência
+para o operador é _bytes_decifrados / vazão_ + _start do Mongo_. O número
+importante é o contrato: **o restore é exercitado de ponta a ponta antes de
+precisar dele.**
 
 ## O que o backup é (e não é)
 

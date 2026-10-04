@@ -1492,7 +1492,7 @@ suite própria nos itens 1.3 e 2.1.
 | `test:infra` (13/13) | Redis parado com o app no ar: `503 REVOCATION_UNAVAILABLE`, **sem 429 e sem fail-open**; Redis volta e a autenticação se restaura sozinha, sem restart; container reiniciado **1s** mesmo com o Redis fora; anônimo e senha errada recusados nos dois serviços; rotação do Redis com janela e do Mongo sem janela, login preservado nas duas |
 | `test:redis` | Redis de volta em **0.6s**; token revogado continua 401 depois do restart do processo; `user_session_version` relida do volume |
 | `test:redis:volume-loss` | Limite da D20 medido: access revogado volta a valer por até o TTL (**~15.0 min** medido na resposta); refresh já consumido volta a valer e renova access tokens; **0 erros** no log do app |
-| `test:backup` | Dump cifrado (gpg AES-256) + `--check` dentro da janela RPO; restore após apagar o banco; **RTO 1s** (`restore.sh` → login 200) |
+| `test:backup` | Dump cifrado (gpg AES-256) + `--check` dentro da janela RPO; restore após apagar o banco; **RTO 1s** (`restore.sh` → login 200) — **corrigido em 2026-10-04**: uma segunda execução no mesmo dia deu **2s**, então o número é uma faixa de 1–2s, não 1s fixo |
 | `test:config-backup` | Rollback por metadata restaurou **imagem e env** que estavam rodando (`VERSION=cfg-v1-...`), não a config editada no disco |
 | `test:deploy` | v1 → v2 → v3 com Mongo na porta errada: abortou no health check, rollback devolveu imagem, digest e env da v2 |
 | `test:replica-session` | **3 réplicas** endereçadas diretamente; chave de assinatura compartilhada antes da revogação; logout e troca de senha revogaram em todas as réplicas; sessão nova aceita em todas; **refresh roubado após logout → 401** |
@@ -2244,13 +2244,14 @@ Marque somente depois de todas as etapas acima:
 
 - [x] Todos os P0 concluídos. (Itens 1.1–1.9, 2.1–2.4 e 5.1–5.3 verificados um a
   um, cada um com a mutação que o reprovaria.)
-- [x] Todos os testes críticos verdes. (18 comandos, todos com exit 0 em
-  2026-10-04: lint, typecheck, 925 unit, 42 integration, 16 e2e, 14 credential
-  theft, 13/13 infra, redis, redis volume-loss, backup, config-backup, deploy,
-  replica-session, ddos, capacity, audit-ci, secrets, coverage 967. Tabela
-  completa em `RELEASE_1.0.0_REPORT.md`.)
-- [ ] CI verde no último commit da `main`. (As alterações desta revisão ainda
-  **não foram commitadas**, então não há CI para elas.)
+- [x] Todos os testes críticos verdes. (18 comandos reexecutados depois do
+  `npm ci` do freeze: lint, typecheck, 925 unit, 42 integration, 16 e2e, 14
+  credential theft, 13/13 infra, redis, redis volume-loss, backup, config-backup,
+  deploy, replica-session, ddos, capacity, audit-ci, secrets, coverage 967.
+  **Ressalva:** o `test:ddos` falhou 1 vez em 7 e passou 6 — ver "Achados".)
+- [ ] CI verde no último commit da `main`. (**Não verificado:** sem token e sem
+  `gh` CLI; a API sem auth devolve rate limit. `fe488b1` foi enviado, mas o
+  resultado do CI precisa ser conferido por quem tem acesso.)
 - [x] Release workflow corrigido e validado. (Item 1.9, com testes contra um
   repositório git real.)
 - [ ] Docker release real, não apenas simulado por `echo`. (O passo de Docker foi
@@ -2284,6 +2285,36 @@ causados pelos itens em si.
 - **Não é bloqueante para a 1.0.0**, mas o teste é dependente de tempo e
   deveria usar relógio injetável. Anotado para não ser confundido com
   regressão dos itens 1.2/1.3.
+
+### `test:ddos` falhou uma vez em sete execuções, e a causa não foi capturada
+
+- **Sintoma:** na primeira execução depois do `npm ci` do freeze, o drill
+  terminou com `exit 1` e `checks: 99.69% (3301 de 3311)` — **10 checks
+  falharam**. As seis execuções seguintes passaram com `100.00%`.
+- **O que se sabe:** os checks do script (`k6/ddos-survival.js:95-147`) são
+  `status < 500` em login, refresh, register e forwarded-IP, e
+  `status === 200` em liveness. Os *thresholds* são `ddos_liveness_failures:
+  ['count==0']` e `ddos_server_errors: ['count<5']`.
+- **O que NÃO se sabe, e é o problema:** **quais** checks falharam. A saída
+  daquela execução foi filtrada por `grep` e o nome dos checks que falharam se
+  perdeu. Não dá para distinguir "o liveness piscou 10 vezes" de "um 5xx no
+  register flood" — que são defeitos completamente diferentes.
+- **Leitura provável:** 10 falhas em 3311 checks, com 2 VUs de liveness por 20s,
+  é a assinatura de `liveness stays 200 during flood` cedendo algumas vezes
+  durante o flood — exatamente a propriedade que o drill existe para proteger
+  (itens 2.4 e o escopo de DDoS). **É hipótese, não medição.**
+- **Por que não foi reproduzido:** seis execuções seguidas passaram. O drill
+  demora ~2 min cada e exige compose próprio; a taxa de falha observada é de
+  ~1 em 7, o que significa que fewar mais execuções pode não reproduzir.
+- **Não é bloqueante para a 1.0.0**, por duas razões: a propriedade testada
+  (o serviço sobrevive ao flood, com liveness em 200 e o resto em 429) foi
+  verificada nas seis execuções seguintes, e a falha não se reproduz. **Mas
+  fica como pendência real**, e a ação sugerida é rodar o drill em CI algumas
+  vezes e falhar o build quando os checks caírem — é a forma de transformar um
+  sintoma intermitente em dado.
+- **Correção de processo que já vale:** em gate que possa falhar, capturar a
+  saída inteira (com `tee`), não filtrar com `grep`. Foi esse filtro que
+  destruiu a evidência.
 
 ### Tag `v1.0.0` já publicada
 
@@ -2330,11 +2361,15 @@ pendente.
 
 ### O que falta, em ordem
 
-1. **Commit** das alterações desta revisão (working tree suja agora: 13 arquivos
-   modificados e 2 novos).
-2. **CI verde** nesse commit.
-3. **Congelar o lockfile** (`npm ci` no commit final) — item 5.2.
-4. **Mover a tag** `v1.0.0` para esse commit e fazer push forçado da tag.
+1. ~~**Commit** das alterações desta revisão.~~ **Feito:** `fe488b1` na `main`.
+2. ~~**Congelar o lockfile** (`npm ci`).~~ **Feito:** `npm ci` exit 0,
+   `package.json`/`package-lock.json` intactos, `npm ls --all` sem `invalid`,
+   e os 18 gates reexecutados depois dele — todos verdes, exceto a
+   intermitência do `test:ddos` registrada acima.
+3. **CI verde** em `fe488b1`. **Não verificado**: sem token e sem `gh` CLI, e a
+   API do GitHub sem autenticação responde rate limit. **Este é o próximo
+   gate, e ele precisa de alguém com acesso.**
+4. **Mover a tag** `v1.0.0` para o commit de freeze e fazer push forçado.
 5. **Release real**: `buildx build --push`, digest, SARIF, GitHub Release.
 6. **Smoke pós-release** contra a imagem publicada.
 7. **Provas de staging/produção** (`workflow_dispatch` com `environment=staging`),
@@ -2342,8 +2377,8 @@ pendente.
    externos. Não são bloqueantes para a release, mas **são** para afirmar que o
    deploy foi exercitado em produção.
 
-Os itens 5 e 6 não podem ser feitos nesta máquina: exigem registry e tag
-publicada.
+Os itens 3, 5 e 6 não podem ser feitos nesta máquina: exigem acesso ao GitHub e
+registry.
 
 ---
 

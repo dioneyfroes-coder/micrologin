@@ -5,8 +5,8 @@ medido está escrito como não medido. Nenhum número deste arquivo é estimado.
 
 - Item a item do checklist, com a evidência de cada um:
   [`MICROLOGIN_1.0.0_RELEASE_CHECKLIST.md`](MICROLOGIN_1.0.0_RELEASE_CHECKLIST.md).
-- Estado da árvore quando estas medições foram feitas: `4ba1e85`, com as
-  alterações de documentação e do `.audit-ci.json` **ainda não commitadas**.
+- Estas medições são de **duas passagens**: uma antes do commit, outra depois do
+  `npm ci` do freeze. Onde os números divergiram, o relatório traz os dois.
 
 ## Ambiente
 
@@ -38,7 +38,7 @@ Tudo executado em 2026-10-04, nesta árvore.
 | Infra | `npm run test:infra` | ✅ **13/13** | Redis caiu → 503 sem fail-open; rotação de Redis e Mongo no ar |
 | Redis | `npm run test:redis` | ✅ | blacklist sobreviveu ao restart; `user_session_version` relido do volume |
 | Redis volume-loss | `npm run test:redis:volume-loss` | ✅ | **mede o custo do limite D20**, que é o objetivo do drill |
-| Backup | `npm run test:backup` | ✅ | **RTO medido = 1 s** (restore → login 200) |
+| Backup | `npm run test:backup` | ✅ | **RTO medido: 1s e 2s** em duas execuções (restore → login 200) |
 | Config backup | `npm run test:config-backup` | ✅ | devolveu o valor **EM EXECUÇÃO**, não o do disco editado |
 | Deploy | `npm run test:deploy` | ✅ | v1 → v2 → v3 quebrada → **rollback para v2**, imagem e config |
 | Replica session | `npm run test:replica-session` | ✅ | revogação cruzada em **3 réplicas reais** atrás do proxy |
@@ -142,10 +142,15 @@ platforms:       linux/amd64, linux/arm64
 ## Git
 
 ```text
-commit:      4ba1e85f2d5627f8d9a64c7f8a939dc15e4161a3
-tag:         (pendente — ver "Decisão da tag" abaixo)
-release URL: (pendente)
+commit:      o commit que carrega este relatório — ou seja, o próprio commit de
+             freeze. O SHA não pode estar escrito dentro do arquivo que ele
+             carrega; consulte `git rev-parse v1.0.0^{commit}`.
+tag:         v1.0.0 (movida de e29032f — ver abaixo)
+release URL: (preenchida pelo workflow)
 ```
+
+Push da revisão de documentação: `4ba1e85..fe488b1` na `main`. O commit de
+freeze é o que a tag `v1.0.0` passa a apontar.
 
 ### Decisão da tag — `v1.0.0` já existia
 
@@ -169,10 +174,28 @@ como `body_path`.
 
 Honestidade vale mais que uma tabela toda verde.
 
+- **`test:ddos` falhou 1 vez em 7 execuções, e não se sabe por quê.** A primeira
+  execução depois do `npm ci` do freeze terminou com `exit 1` e
+  `checks: 99.69% (3301 de 3311)` — 10 checks falharam. As **seis** execuções
+  seguintes passaram com `100.00%`. O nome dos checks que falharam **se
+  perdeu**: a saída foi filtrada com `grep` e só sobrou o contador. Os checks do
+  script são `status < 500` em login/refresh/register/forwarded-IP e
+  `status === 200` em liveness; a hipótese mais provável é o liveness cedendo
+  algumas vezes durante o flood, mas **é hipótese, não medição**. Ver o registro
+  em "Achados durante a execução" do checklist. Não é bloqueante — a propriedade
+  testada foi verificada seis vezes seguidas — mas é a pendência mais relevante
+  que este relatório carrega.
+- **O RTO do backup não é constante.** Duas execuções no mesmo dia, na mesma
+  máquina: **1s e 2s**. A documentação passou a dizer 1–2s. Um número único
+  seria apresentar uma medição como se fosse especificação.
 - **Staging e produção: nada foi executado.** Não existe `STAGING_DEPLOY_HOST`
   nem `PRODUCTION_DEPLOY_HOST` configurado, nem secrets correspondentes. Os itens
   1.5, 2.4, 4.3 e todos os de pós-release que dependem de servidor real seguem
   **pendentes por falta de infraestrutura**, não por defeito.
+- **CI não foi verificado.** Sem token e sem `gh` CLI, e a API do GitHub sem
+  autenticação responde com rate limit. O gate "CI verde no último commit da
+  `main`" **não foi checado** — precisa ser conferido por quem tem acesso antes
+  de mover a tag.
 - **`workflow_dispatch` de staging: não executado** (mesma razão).
 - **Release completa: não executada.** `buildx build --push`, digest, upload de
   SARIF e criação da GitHub Release exigem tag real e registry. O comando de build
