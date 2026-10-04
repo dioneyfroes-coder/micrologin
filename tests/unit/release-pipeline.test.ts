@@ -348,12 +348,41 @@ describe('release: a imagem é construída de verdade', () => {
   it('o script do workflow executa buildx com --push e as três tags', () => {
     // Roda o `run:` real com docker stubado, para o teste ser rápido e não
     // precisar de registry. O que se verifica é o comando que sai.
+    //
+    // O stub **valida** as referências que recebe, em vez de só logar: o
+    // Release 1.0.0 morreu no job `image` porque o script juntava quatro tags
+    // numa string separada por vírgula e passava num `--tag` só, e o buildx
+    // recusa com `invalid reference format`. O teste antigo passava porque
+    // conferia substring — e a string unida por vírgula contém
+    // `:1.0.0`, `:v1.0.0` e `:abc123`. Um teste que passa com o comando
+    // quebrado não é evidência de nada.
     const stub = mkdtempSync(join(tmpdir(), 'docker-stub-'));
     const log = join(stub, 'calls.log');
     writeFileSync(
       join(stub, 'docker'),
       `#!/usr/bin/env bash
 echo "$@" >> ${log}
+
+# Mesmo critério do buildx para uma referência: sem vírgula, sem espaço, e com
+# uma parte apos os dois-pontos para a tag. A vírgula é o que reprovava.
+if [ "$1" = "buildx" ] && [ "$2" = "build" ]; then
+  shift 2
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--tag" ]; then
+      ref="$2"
+      case "$ref" in
+        *,*) echo "invalid tag \\"$ref\\": invalid reference format" >&2; exit 1;;
+        *[[:space:]]*) echo "invalid tag \\"$ref\\": invalid reference format" >&2; exit 1;;
+        *:*) ;;
+        *) echo "invalid tag \\"$ref\\": invalid reference format" >&2; exit 1;;
+      esac
+      shift 2
+    else
+      shift
+    fi
+  done
+fi
+
 if [ "$1" = "buildx" ] && [ "$2" = "imagetools" ]; then
   echo "sha256:deadbeef"
 fi

@@ -278,27 +278,36 @@ jobs:
           set -euo pipefail
 
           IMAGE="${REGISTRY}/${IMAGE_NAME}"
-          TAGS="${IMAGE}:${VERSION}"
-          TAGS="${TAGS},${IMAGE}:${TAG}"
-          TAGS="${TAGS},${IMAGE}:${SHA}"
+
+          # Cada tag vira um `--tag` próprio. A versão anterior juntava as quatro
+          # numa string separada por vírgula e passava isso em UM `--tag`, e o
+          # buildx recusa: `invalid tag "a:1,b:2": invalid reference format`. Um
+          # `--tag` aceita uma referência, não uma lista — o build inteiro falha
+          # antes de tocar no registry. Foi a causa da falha do Release 1.0.0 no
+          # job `image`, depois de `quality` e `tests` já terem passado.
+          TAGS=("${IMAGE}:${VERSION}" "${IMAGE}:${TAG}" "${IMAGE}:${SHA}")
 
           # `latest` é movido só em versão estável. Um RC que toma `latest` faz
           # consumidor pulling em `latest` receber pré-release.
           if [ "$IS_PRERELEASE" = "false" ]; then
-            TAGS="${TAGS},${IMAGE}:latest"
+            TAGS+=("${IMAGE}:latest")
             echo "→ latest será movido (versão estável)" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "→ latest NÃO será movido (prerelease)" >> "$GITHUB_STEP_SUMMARY"
           fi
 
-          echo "Tags: $TAGS" >> "$GITHUB_STEP_SUMMARY"
+          echo "Tags: ${TAGS[*]}" >> "$GITHUB_STEP_SUMMARY"
+
+          TAG_ARGS=()
+          for image_tag in "${TAGS[@]}"; do
+            TAG_ARGS+=(--tag "${image_tag}")
+          done
 
           # `buildx build --push` de verdade. O workflow anterior imprimia
           # "✅ Docker images tagged" sem tocar em registry nenhum.
           #
           # Só `linux/amd64`. O arm64 saiu por decisão, e o motivo é o caminho
-          # crítico: `buildx` constrói todas as plataformas em UMA invocação,
-          # então um arm64 quebrado derrubaria a release inteira — inclusive
+          # crítico: um arm64 quebrado derrubaria a release inteira — inclusive
           # para quem só puxa amd64. E não havia nada consumindo arm64: nenhum
           # compose pinando plataforma, nenhum alvo de deploy, nenhum host
           # configurado. Somando a isso, arm64 nunca foi verificado aqui (a
@@ -309,7 +318,7 @@ jobs:
           docker buildx build \
             --platform linux/amd64 \
             --provenance=false \
-            --tag "$TAGS" \
+            "${TAG_ARGS[@]}" \
             --push \
             .
 
