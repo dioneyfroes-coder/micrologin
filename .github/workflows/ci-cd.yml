@@ -93,7 +93,7 @@ jobs:
       - name: 🔧 Setup test environment
         run: |
           echo "NODE_ENV=test" >> $GITHUB_ENV
-          echo "JWT_SECRET=test-secret-ci-cd" >> $GITHUB_ENV
+          echo "JWT_SECRET=ci-cd-pipeline-secret-nao-e-real-32" >> $GITHUB_ENV
           echo "JWT_EXPIRES=1h" >> $GITHUB_ENV
 
       - name: 🧪 Run unit tests (fast)

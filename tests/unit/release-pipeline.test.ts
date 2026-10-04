@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
+import { describe, it, expect, beforeAll, afterAll, jest } from '@jest/globals';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -666,5 +666,69 @@ describe('release: o preflight de DDoS é honesto sobre o que não verifica', ()
     // vira engano na próxima leitura.
     const script = scriptOf('tests', '🧪 Run test suite');
     expect(script).toMatch(/N[ÃA]O é um gate de resili[êe]ncia a DDoS/);
+  });
+});
+
+describe('release: o ambiente de teste dos workflows é uma configuração válida', () => {
+  // Este describe existe porque o Release 1.0.0 rodou e falhou em `tests` por
+  // causa disto. O job escrevia `JWT_SECRET=release-pipeline` (16 caracteres) e
+  // `validateConfiguration()` exige no mínimo 32 — então 7 testes de
+  // `security-config` derrubavam com "JWT_SECRET deve ter pelo menos 32
+  // caracteres". Nada aqui acusou: o `.env` da máquina não existe, e quem rodou
+  // unitário local herdou um `JWT_SECRET` válido do próprio shell.
+  //
+  // É a terceira vez que um valor do workflow, nunca executado, invalida o
+  // build. Depois do `npm audit` que reprovava sempre e do preflight de DDoS que
+  // não verificava nada. O padrão é o mesmo: o que ninguém executa não é
+  // evidência, é hipótese.
+
+  const workflowsOf = (): { name: string; body: string }[] => ['release.yml', 'ci-cd.yml']
+    .map(name => ({
+      name,
+      body: readFileSync(resolve(process.cwd(), '.github/workflows', name), 'utf8')
+    }));
+
+  /** Os valores de `VAR=valor` que o workflow escreve em `$GITHUB_ENV`. */
+  const envOfWorkflow = (body: string): Record<string, string> => {
+    const written = [...body.matchAll(/echo "([A-Z0-9_]+)=([^"]*)"/g)];
+
+    return Object.fromEntries(written.map(([, key, value]) => [key, value]));
+  };
+
+  const validate = async(env: Record<string, string>): Promise<string[]> => {
+    const previous = { ...process.env };
+    // Só o que o job escreve, mais o mínimo para a configuração carregar.
+    process.env = { ...process.env, NODE_ENV: 'test', ...env } as NodeJS.ProcessEnv;
+
+    try {
+      jest.resetModules();
+      const { validateConfiguration } = await import('../../src/interfaces/config/appConfig.js');
+
+      try {
+        validateConfiguration();
+        return [];
+      } catch (error) {
+        return String((error as Error).message).split('\n').filter(line => line.startsWith('- '));
+      }
+    } finally {
+      process.env = previous;
+    }
+  };
+
+  it.each(workflowsOf())('$name escreve um ambiente que a configuração aceita', async({ body }) => {
+    const env = envOfWorkflow(body);
+
+    expect(Object.keys(env)).toContain('JWT_SECRET');
+    expect(await validate(env)).toEqual([]);
+  });
+
+  it.each(workflowsOf())('$name não escreve segredo curto', ({ body }) => {
+    // O limite vem da configuração, não deste teste: repetir o número aqui
+    // deixaria os dois divergirem quando o requisito mudar.
+    for (const [key, value] of Object.entries(envOfWorkflow(body))) {
+      if (key.endsWith('_SECRET')) {
+        expect({ [key]: value.length >= 32 }).toEqual({ [key]: true });
+      }
+    }
   });
 });

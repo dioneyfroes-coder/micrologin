@@ -158,7 +158,7 @@ jobs:
       - name: 📝 Set up test environment
         run: |
           echo "NODE_ENV=test" >> $GITHUB_ENV
-          echo "JWT_SECRET=release-pipeline" >> $GITHUB_ENV
+          echo "JWT_SECRET=ci-release-pipeline-secret-nao-e-real-32" >> $GITHUB_ENV
           echo "JWT_EXPIRES=1h" >> $GITHUB_ENV
 
       - name: 🎨 ESLint
@@ -208,7 +208,7 @@ jobs:
       - name: 🔧 Setup test environment
         run: |
           echo "NODE_ENV=test" >> $GITHUB_ENV
-          echo "JWT_SECRET=release-pipeline" >> $GITHUB_ENV
+          echo "JWT_SECRET=ci-release-pipeline-secret-nao-e-real-32" >> $GITHUB_ENV
           echo "JWT_EXPIRES=1h" >> $GITHUB_ENV
 
       - name: 🧪 Run test suite

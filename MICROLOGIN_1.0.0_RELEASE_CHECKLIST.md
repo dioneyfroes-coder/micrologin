@@ -2272,6 +2272,41 @@ Marque somente depois de todas as etapas acima:
 - [x] Nenhum TODO restante classificado como blocker. (O que resta aberta está
   listado em "O que falta, em ordem" abaixo, e cada item tem o motivo.)
 
+## O Release 1.0.0 rodou e falhou: `JWT_SECRET` curto
+
+- **O que aconteceu:** o `Release` disparado pelo push da tag (`dedea92`) rodou
+  em 65 segundos e terminou em `failure`. `validate` passou, `quality` passou
+  **inteiro** — os oito steps verdes, incluindo `audit-ci`, o que confirma que a
+  remoção do `npm audit` foi a correção certa — e `tests` falhou no step `Run test
+  suite`. `image`, `security` e `release` ficaram `skipped`.
+- **Causa:** os jobs escreviam `JWT_SECRET=release-pipeline` (16 caracteres).
+  `validateConfiguration()` exige **no mínimo 32** para `JWT_SECRET`. Sete testes
+  de `security-config` derrubavam com `Configuração inválida: - JWT_SECRET deve
+  ter pelo menos 32 caracteres`.
+- **Por que ninguém viu localmente:** rodada de unitário nesta máquina passa
+  porque o `.env` não existe e não há `JWT_SECRET` no shell, então a validação
+  nem entra no caminho. Só o job do runner monta o ambiente — e era a primeira
+  vez que esse ambiente era montado por alguém.
+- **`ci-cd.yml` tinha o mesmo defeito**, com `JWT_SECRET=test-secret-ci-cd`
+  (20 caracteres), rodando exatamente a mesma suíte. Nunca observável aqui pelo
+  mesmo motivo.
+- **Correção:** os dois workflows passaram a escrever segredos de teste com
+  40 e 35 caracteres. O nome diz que não é segredo real
+  (`ci-release-pipeline-secret-nao-e-real-32`), porque é isso que é: valor de
+  fixture, num job de teste.
+- **Teste que fecha a classe do defeito:** `tests/unit/release-pipeline.test.ts`
+  agora extrai todo `VAR=valor` escrito em `$GITHUB_ENV` de `release.yml` e
+  `ci-cd.yml`, e passa esse ambiente pelo **`validateConfiguration()` real** —
+  não por uma regra copiada. Falha se a configuração rejeitar. Verificado que
+  tem dentes: restaurando o valor curto, o teste falha com a mensagem de 32
+  caracteres.
+- **A lição, pela terceira vez:** `npm audit` que reprovava sempre, preflight de
+  DDoS que não verificava nada, e agora um valor de ambiente inválido. Os três
+  eram **valores e gates de workflow que ninguém nunca executou**. Nenhum dos
+  três apareceu em nenhum gate local, porque nenhum deles é alcançável sem o
+  runner. Pre-flight local encontra a maior parte; esta classe só aparece
+  executando.
+
 ## Decisões tomadas sem verificação possível
 
 Esta seção existe porque um checklist que só registra o que deu certo serve
@@ -2283,13 +2318,13 @@ para nada quando alguém precisa saber em que ponto o registro é paroleiro.
   pelo owner após a informação estar disponível e exposta duas vezes, e a
   operação é reversível (`e29032f` é ancestral de `main`). O registro fica
   explícito: **quem confirmar o CI agora confirma depois do fato.**
-- **O `Release` não foi observado em execução.** O push da tag disparou o
-  workflow, e o gatilho casa (`on: push: tags: 'v*.*.*'`), mas nenhuma execução
-  foi vista. Consequência prática: os achados desta passagem — o gate `npm
-  audit` que reprovava sempre, o preflight de DDoS que não verifica nada, o
-  arm64 sem consumidor no caminho crítico — foram todos encontrados por
-  **pre-flight local**, não por falha observada. Não há execução real do
-  `release.yml` end-to-end que valha como evidência.
+- **O `Release` foi observado em execução, e falhou.** O push da tag disparou o
+  workflow, e a execução é pública: `validate` e `quality` verdes, `tests`
+  vermelho, `image`/`security`/`release` `skipped`. Causa e correção na seção
+  "O Release 1.0.0 rodou e falhou" acima. Os outros três achados desta passagem
+  (`npm audit`, preflight de DDoS, arm64) vieram de **pre-flight local**; este
+  quarto só apareceu porque alguém rodou. Ainda não há execução do `release.yml`
+  que chegue ao fim.
 - **A etapa de release que falta confirmar é o `image`.** Foi a única que não
   pôde ser reproduzida: exige `buildx --push` contra registry e token do GHCR.
   A parte local foi verificada (build do stage `production`, argon2 nativo,
@@ -2516,9 +2551,10 @@ git push --force origin v1.0.0
 ```
 
 **Candidato a release desde 2026-10-04:** o freeze local está fechado (lockfile
-congelado, 18 gates reexecutados, tag apontando para o commit de freeze). O que
-falta é o que depende de rede: o workflow não pode ser observado nem reversido
-nesta máquina. Nenhum item de código, teste ou documentação está pendente.
+congelado, 18 gates reexecutados, tag apontando para o commit de freeze). O
+primeiro `Release` já **rodou** e falhou em `tests` por um valor de ambiente
+inválido, corrigido nesta passagem. Nenhum item de código, teste ou documentação
+está pendente; o que falta é reexecutar o pipeline até o fim.
 
 ### O que falta, em ordem
 
@@ -2528,11 +2564,11 @@ nesta máquina. Nenhum item de código, teste ou documentação está pendente.
    `package.json`/`package-lock.json` intactos, `npm ls --all` sem `invalid`,
    e os 18 gates reexecutados depois dele — todos verdes, exceto a
    intermitência do `test:ddos` registrada acima.
-3. ~~**CI verde**~~. **Não verificado por esta máquina** (sem token, sem `gh` CLI,
-   API sem autenticação com rate limit), mas **a tag foi movida sem essa
-   confirmação**, e é preciso registrar isso com clareza: quem confirma o CI
-   agora confirma *depois* do fato. Ver "Decisões tomadas sem verificação
-   possível" acima.
+3. ~~**CI verde**~~. **Verificado agora** — o rate limit da API pública do GitHub
+   renovou e a execução pôde ser lida sem token. **O `Release` rodou e falhou**
+   em `tests`, por `JWT_SECRET` curto (16 caracteres, mínimo 32). `validate` e
+   `quality` passaram inteiros. Corrigido nesta passagem; o item volta a ser
+   gate no próximo push.
 4. ~~**Mover a tag** `v1.0.0` para o commit de freeze.~~ **Feito:** a tag aponta
    para `dedea92`, verificado por `git ls-remote --tags origin`.
 5. **Release real**: `buildx build --push`, digest, SARIF, GitHub Release.
