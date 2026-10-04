@@ -63,6 +63,34 @@ ENV PORT=3000
 # Somente dependências de produção
 RUN npm ci --omit=dev && npm cache clean --force
 
+# Tirar o npm da imagem de runtime. Ele foi preciso acima, para o `npm ci`, mas
+# em runtime o processo e `node dist/app.js` e o npm nao participa de nada.
+#
+# Nao e limpeza estetica. O Trivy gate do Release 1.0.0 reprovou a imagem com 10
+# HIGH, e todas as 10 estavam em `usr/local/lib/node_modules/npm/node_modules/`:
+# a arvore que o proprio npm da imagem base embarca, nao o nosso codigo e nao o
+# nosso package-lock.json. Nosso node_modules esta limpo (brace-expansion
+# 1.1.21, picomatch 2.3.2, ip-address 10.7.2, todos acima da correcao).
+#
+# E nao dava para corrigir pelo caminho normal. As correcoes exigem pacote
+# >=21.5.1 e brace-expansion >=5.0.11; o `npm install -g npm@latest` dentro da
+# base resolveria, mas a arvore so e substituida quando o npm publica. E trocar
+# a base para node:24, que ja traz npm 11.19.0, NAO resolve: ele embarca
+# brace-expansion 5.0.7, e 4 dos 5 CVEs de brace-expansion so fecham a partir
+# de 5.0.11.
+#
+# Remover e a correcao verdadeira: some o codigo vulneravel da imagem em vez de
+# silenciar o scanner, e a imagem fica menor.
+#
+# O stage de build e o de desenvolvimento nao sao afetados — eles herdam de
+# `build`, que mantem o npm. So a imagem final perde.
+RUN rm -rf \
+    /usr/local/lib/node_modules/npm \
+    /usr/local/share/npm \
+    /usr/local/bin/npm \
+    /usr/local/bin/npx \
+    /usr/local/bin/corepack
+
 # Artefatos compilados (não copiamos src/ — só dist/)
 COPY --from=build --chown=nodeuser:nodejs /app/dist ./dist
 

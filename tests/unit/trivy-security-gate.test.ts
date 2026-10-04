@@ -278,3 +278,81 @@ describe('o workflow continua sendo YAML válido com o gate no lugar', () => {
     expect(trivy()['continue-on-error']).toBeUndefined();
   });
 });
+
+/**
+ * A imagem de runtime não carrega o npm
+ * ======================================
+ *
+ * Terceiro defeito do Release 1.0.0, agora no gate do Trivy (run 37217066854):
+ * `image` passou, e `security` reprovou com 10 HIGH.
+ *
+ * As 10 estavam todas em `usr/local/lib/node_modules/npm/node_modules/`: a árvore
+ * que o npm da imagem base embarca, não o nosso código e não o nosso
+ * package-lock.json. Nosso node_modules estava limpo — brace-expansion 1.1.21,
+ * picomatch 2.3.2, ip-address 10.7.2, todos acima da versão corrigida.
+ *
+ * E não dava para consertar pelo caminho óbvio. As correções exigem pacote
+ * >=21.5.1 e brace-expansion >=5.0.11. Trocar a base para node:24, que já traz
+ * npm 11.19.0, NÃO resolve: ele embarca brace-expansion 5.0.7, e 4 dos 5 CVEs
+ * daquele pacote só fecham a partir de 5.0.11.
+ *
+ * Então a remoção é a correção verdadeira: o código vulnerável sai da imagem em
+ * vez de o scanner ser silenciado.
+ */
+describe('a imagem de runtime não embarca o npm', () => {
+  /** O stage `production`, que é o stage final (o que a release publica). */
+  const productionStage = (): string => {
+    const start = DOCKERFILE.indexOf('FROM base AS production');
+    if (start === -1) {
+      throw new Error('stage production não encontrado no Dockerfile');
+    }
+    return DOCKERFILE.slice(start);
+  };
+
+  it('o stage que publica a imagem é o production, não o build', () => {
+    // Sem isto, remover o npm do stage errado não mudaria nada e o teste
+    // passaria de vazio. O stage final é o que a release efetivamente publica.
+    const stages = [...DOCKERFILE.matchAll(/^FROM\s+\S+\s+AS\s+(\w+)/gm)].map((m) => m[1]);
+    expect(stages[stages.length - 1]).toBe('production');
+  });
+
+  it('o npm é removido do stage de runtime', () => {
+    const stage = productionStage();
+
+    // O path exato onde o Trivy acha a árvore vulnerável.
+    expect(stage).toMatch(/rm -rf[\s\S]*?\/usr\/local\/lib\/node_modules\/npm/);
+    // Os binários: apagar o diretório sem os symlinks deixa `npm` no PATH
+    // apontando para um alvo inexistente, que falha diferente e mais confusa.
+    expect(stage).toMatch(/\/usr\/local\/bin\/npm/);
+    expect(stage).toMatch(/\/usr\/local\/bin\/npx/);
+  });
+
+  it('a remoção vem DEPOIS do npm ci, e não antes', () => {
+    // A ordem é o que torna isso possível. Se o `rm` viesse antes do
+    // `npm ci --omit=dev`, a imagem final não teria dependência nenhuma e
+    // quebraria em runtime — e o build ainda passaria.
+    const stage = productionStage();
+    expect(stage.indexOf('npm ci --omit=dev')).toBeGreaterThan(-1);
+    expect(stage.indexOf('/usr/local/lib/node_modules/npm')).toBeGreaterThan(
+      stage.indexOf('npm ci --omit=dev')
+    );
+  });
+
+  it('o build e o desenvolvimento continuam com npm', () => {
+    // `npm run build` e `npm run dev` precisam do npm. A remoção é só no stage
+    // final; se vazasse para os outros, o build da imagem quebraria.
+    const buildStage = DOCKERFILE.slice(
+      DOCKERFILE.indexOf('FROM base AS build'),
+      DOCKERFILE.indexOf('FROM base AS production')
+    );
+    expect(buildStage).toMatch(/npm ci --include=dev/);
+    expect(buildStage).not.toMatch(/rm -rf[\s\S]*?\/usr\/local\/lib\/node_modules\/npm/);
+  });
+
+  it('o runtime não invoca npm: o CMD é o node direto', () => {
+    // Se o CMD usasse npm, remover o npm quebraria a imagem em runtime.
+    const stage = productionStage();
+    expect(stage).toMatch(/CMD \["node", "dist\/app\.js"\]/);
+    expect(stage).not.toMatch(/CMD \["npm"/);
+  });
+});
