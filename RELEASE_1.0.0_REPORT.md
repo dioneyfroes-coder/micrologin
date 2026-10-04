@@ -47,6 +47,8 @@ Tudo executado em 2026-10-04, nesta árvore.
 | Dependency audit | `npm audit --audit-level=high` | ⚠️ **exit 1** — 30 high | ver Security Note. **Removido do gate do release**: como step, ele reprovaria sempre |
 | audit-ci | `npx audit-ci --config .audit-ci.json` | ✅ **Passed** | **é o gate de dependências do `release.yml`**; 1 advisory allowlisted, expiry `2027-01-01` |
 | Build (gate do release) | `npm run build` | ✅ exit 0 | step do job `quality`, conferido porque `image` depende dele |
+| Imagem de produção | `docker build .` (stage `production`) | ✅ exit 0 | buildada de verdade, sem `--push`; argon2 nativo e OpenAPI (21 endpoints) conferidos **dentro** da imagem |
+| Boot da imagem | `npm run test:deploy` | ✅ | o `deploy.sh` espera `/health` antes de dar sucesso, e a imagem que sobe é a de produção |
 | Secrets | `npm run test:secrets` | ✅ | gitleaks v8.24.0: 103 commits, 4,57 MB, nenhum leak |
 | Coverage | `npm run test:coverage:fast` | ✅ **967 passed / 967**, 71 suites | statements 87,5 % · branches 83,76 % · functions 89,92 % · lines 87,49 % |
 
@@ -197,6 +199,34 @@ Honestidade vale mais que uma tabela toda verde.
   em "Achados durante a execução" do checklist. Não é bloqueante — a propriedade
   testada foi verificada seis vezes seguidas — mas é a pendência mais relevante
   que este relatório carrega.
+- **O `test:ddos` no pipeline de release não verifica resiliência a DDoS, e
+  isso é deliberado.** O job `tests` roda
+  `npm run test:ddos -- --preflight-only`, e esse flag retorna em
+  `scripts/ddos-survival-test.mjs` **antes** de checar Docker, k6, bash e
+  openssl — ele resolve e imprime a URL alvo, e passa com ou sem k6
+  instalado. Um teste novo executa o script com um `PATH` sem nenhum desses
+  binários para provar que o retorno acontece antes das checagens. A suíte real
+  sobe um stack efêmero e precisa de host provisionado, o que não existe num
+  runner do Actions. **Não promovê-lo a gate foi decisão, não esquecimento:** o
+  teste falhou 1 vez em 7, então como gate a release passaria a falhar 1 em 7.
+  O comentário no `release.yml` diz isso na cara de quem for ler.
+- **A imagem de produção foi construída e exercitada nesta árvore**, o que o
+  relatório anterior afirmava apenas por inspeção. `docker build` do stage
+  `production` conclui (exit 0) e, dentro da imagem: o `@node-rs/argon2` nativo
+  carrega e faz hash/verify corretos — o que confirma que `npm ci --omit=dev`
+  traz o binário musl certo; e o spec OpenAPI é gerado a partir de
+  `dist/application/routes/*.js` com **21 endpoints**, que era o risco real, já
+  que `src/` não é copiado para a imagem. O boot completo também está coberto:
+  `test:deploy` sobe a imagem de produção e espera `/health` antes de dar
+  sucesso, e passou.
+- **A plataforma `linux/arm64` do build multi-arch não foi provada.** O
+  `--platform linux/amd64,linux/arm64` do `image` job não pôde ser reproduzido
+  localmente: não há QEMU registrado (`exec format error`). O risco é baixo e
+  foi reduzido por inspeção — o único módulo nativo da árvore de produção é
+  `@node-rs/argon2`, e o `linux-arm64-musl` está no lock com `resolved` e
+  `integrity`, então é binário pré-compilado, sem toolchain. Mas "baixo risco"
+  não é "verificado", e o primeiro a descobrir um eventual problema será o
+  build da própria release.
 - **O pipeline de release nunca foi executado de ponta a ponta.** É a causa raiz
   dos dois problemas acima: um gate que ninguém executou não é evidência, é
   hipótese. Os gates que rodam foram conferidos um a um contra a árvore local
@@ -219,8 +249,7 @@ Honestidade vale mais que uma tabela toda verde.
 - **Release completa: não executada.** `buildx build --push`, digest, upload de
   SARIF e criação da GitHub Release exigem tag real e registry. O comando de build
   foi **verificado por inspeção e por teste de política**, não executado.
-- **Trivy em imagem real: não executado** localmente.
-- **`npm audit` cru continua falhando** (30 high, 3 deles em produção), conforme
+- **Trivy em imagem real: não executado** localmente.- **`npm audit` cru continua falhando** (30 high, 3 deles em produção), conforme
   detalhado na Security Note. O que passa é o `audit-ci` com exceção datada — e
   o `npm audit` deixou de ser gate do release por isso.
 - **`tests/integration/login-throttle.test.ts` é dependente de tempo.** Passa em

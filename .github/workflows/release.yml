@@ -215,7 +215,22 @@ jobs:
         run: |
           npm run test:unit:fast
           npm run test:credential-theft:unit
+
+          # NÃO é um gate de resiliência a DDoS, e não deve ser lido como um.
+          # `--preflight-only` retorna em `scripts/ddos-survival-test.mjs`
+          # ANTES de checar Docker, k6, bash e openssl: ele só resolve e imprime
+          # a URL alvo, e passa com ou sem k6 instalado. A suíte real sobe um
+          # stack efêmero, roda k6 e exige um host provisionado — fora do escopo
+          # de um runner do GitHub Actions.
+          #
+          # A escolha é deliberada: `test:ddos` falhou 1 vez em 7 execuções
+          # (99.69%, 10 checks) e passou nas 6 seguintes. Como gate de release,
+          # ele trocaria "release nunca publicada" por "release falha 1 em 7
+          # vezes". A resiliência a DDoS é verificada no drill local e medida
+          # no relatório de release, não neste job. O que este step garante é o
+          # mais fraco que dá para garantir aqui: que o alvo do k6 resolve.
           npm run test:ddos -- --preflight-only
+
           npm run test:integration:app
 
   # ========================

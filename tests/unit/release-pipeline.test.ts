@@ -623,3 +623,39 @@ describe('release: o digest da imagem chega ao scan e ao resumo', () => {
     expect(release).toMatch(/echo "- digest: \\`\$DIGEST\\`"/);
   });
 });
+
+describe('release: o preflight de DDoS é honesto sobre o que não verifica', () => {
+  it('o job tests invoca o ddos em modo preflight', () => {
+    // Se este step deixar de ser preflight, ele passa a exigir Docker + k6 no
+    // runner do GitHub Actions. Docker existe lá; k6 não. O job inteiro passaria
+    // a reprovar por causa de uma suíte que ele nunca teve como executar.
+    expect(scriptOf('tests', '🧪 Run test suite'))
+      .toContain('npm run test:ddos -- --preflight-only');
+  });
+
+  it('`--preflight-only` roda sem k6, sem Docker e sem provisionamento', () => {
+    // Executado de verdade, e não conferido no texto: o `PATH` abaixo não tem
+    // `k6`, `docker`, `bash` nem `openssl`, então qualquer checagem de
+    // disponibilidade antes do retorno faria este comando falhar. Passar é a
+    // prova de que o early return do script acontece antes delas.
+    //
+    // Isto prende os dois lados da decisão: o flag não pode sumir (a release
+    // quebraria) e não pode ser lido como gate de resiliência (não é).
+    const out = execFileSync(process.execPath, ['scripts/ddos-survival-test.mjs', '--preflight-only'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      env: { ...process.env, PATH: join(tmpdir(), 'caminho-que-nao-existe') }
+    });
+
+    expect(out).toMatch(/Alvo aceito: \S+/);
+  });
+
+  it('o comentário ao lado declara que isto não é um gate de DDoS', () => {
+    // Um gate que se parece com verificação sem verificar nada é a mesma classe
+    // de defeito do `npm audit` removido: aparência de proteção. A diferença é
+    // que aqui a omissão é deliberada, e deliberação que não está escrita
+    // vira engano na próxima leitura.
+    const script = scriptOf('tests', '🧪 Run test suite');
+    expect(script).toMatch(/N[ÃA]O é um gate de resili[êe]ncia a DDoS/);
+  });
+});

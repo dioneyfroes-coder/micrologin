@@ -2355,6 +2355,56 @@ causados pelos itens em si.
   pipeline de release completo ao menos uma vez, mesmo em um repositório de
   portfólio.
 
+### O "gate" de DDoS no pipeline não é um gate
+
+- **O que parece:** `npm run test:ddos -- --preflight-only` no job `tests`, ao
+  lado de `test:unit`, `test:credential-theft` e `test:integration`. Lido de
+  relance, parece que a release prova resiliência a DDoS.
+- **O que é:** o flag retorna em `scripts/ddos-survival-test.mjs` **antes** das
+  checagens de Docker, k6, bash e openssl. Ele resolve e imprime a URL alvo.
+  Passei com ou sem k6 instalado — medido.
+- **Por que ficou assim, e não é omissão:** a suíte real exige host
+  provisionado, e `test:ddos` **falhou 1 vez em 7**. Como gate de release, a
+  consequência seria trocar "release nunca publicada" por "release falha 1 em 7".
+- **O que era perigoso:** não o passo em si, e sim ele parecer uma verificação.
+  É a mesma classe do `npm audit` removido —aparência de proteção. A diferença
+  é que aqui a omissão é deliberada, e **deliberação não escrita vira engano na
+  próxima leitura**. O comentário no `release.yml` agora diz, na cara de quem
+  for ler, que aquilo não é um gate de DDoS e por quê.
+- **Testes que prendem os dois lados:** um exige que o job continue em modo
+  preflight (se o flag sumir, o job passa a exigir k6 no runner e reprova), e
+  outro **executa** o script com um `PATH` sem `k6`/`docker`/`bash`/`openssl`
+  para provar que o retorno acontece antes das checagens — o que também impede
+  que alguém "conserte" o early return e transforme o passo em dependência de
+  binários do host.
+- **O que fica fora do pipeline, e é onde a resiliência é medida:** o drill do
+  k6 roda localmente e o resultado está no relatório de release.
+
+### O build multi-arch e a imagem de produção
+
+- **`docker build` do stage `production` foi executado** (exit 0). Antes disso
+  só havia inspeção, o que não é evidência.
+- **Dentro da imagem, verificado:** o `@node-rs/argon2` nativo carrega e faz
+  hash/verify corretos. Isso era o ponto sensível — `npm ci --omit=dev` precisa
+  trazer o binário **musl** certo, e um stage de produção com dependência nativa
+  errada só quebra em runtime, nunca em build.
+- **O risco do `src/` não copiado foi checado:** o `swagger-jsdoc` lê as rotas
+  em disco, e a imagem traz só `dist/`. O glob tem dois layouts e, compilado,
+  aponta para `dist/application/routes/*.js` — gerar **21 endpoints** dentro da
+  imagem. Se isto estivesse quebrado, `/api-docs` seria uma página bonita e
+  vazia — o tipo de defeito que ninguém percebe até alguém tentar usar a API a
+  partir da documentação.
+- **O boot da imagem de produção já era coberto:** `scripts/deploy.sh` faz
+  `docker build` (stage padrão = produção) e espera `/health` antes de dar
+  sucesso, e `test:deploy` passou.
+- **O que não deu para provar: `linux/arm64`.** O `image` job publica
+  `--platform linux/amd64,linux/arm64`, e a máquina local não tem QEMU
+  registrado (`exec format error`). Risco baixo e reduzido por inspeção: o único
+  nativo da árvore de produção é o `@node-rs/argon2`, e o `linux-arm64-musl`
+  está no lock com `resolved` e `integrity`, ou seja, binário pré-compilado sem
+  toolchain. Mas baixo risco não é verificado — se o arm64 quebrar, quebra no
+  build da release, depois da tag reescrita.
+
 ### Tag `v1.0.0` já publicada
 
 - **Estado:** `v1.0.0` existe local e no remote apontando para `e29032f`, 91 commits
