@@ -145,15 +145,17 @@ platforms:       linux/amd64
 ## Git
 
 ```text
-commit:      o commit que carrega este relatório — ou seja, o próprio commit de
-             freeze. O SHA não pode estar escrito dentro do arquivo que ele
-             carrega; consulte `git rev-parse v1.0.0^{commit}`.
+commit:      dedea92 — e a tag aponta para ele, verificado por
+             git rev-parse v1.0.0^{commit}
 tag:         v1.0.0 (movida de e29032f — ver abaixo)
 release URL: (preenchida pelo workflow)
 ```
 
-Push da revisão de documentação: `4ba1e85..fe488b1` na `main`. O commit de
-freeze é o que a tag `v1.0.0` passa a apontar.
+Commits enviados nesta passagem de freeze, todos na `main`:
+`fe488b1` (revisão de documentação), `12a4b95` (RTO e intermitência do
+`test:ddos`), `d15c562` (gate `npm audit` removido do release), `8445b36`
+(preflight de DDoS documentado e imagem de produção exercitada) e `dedea92`
+(build só em `linux/amd64`). O tag de freeze aponta para o último.
 
 ### Decisão da tag — `v1.0.0` já existia
 
@@ -162,8 +164,17 @@ nem digest associados. **Decisão: mover a tag para o commit de freeze.** A
 alternativa `v1.0.1` foi descartada porque `release.yml` exige que a tag e o
 `package.json` concordem, e o checklist inteiro já declara `1.0.0`.
 
-**O que isso custa:** `e29032f` deixa de ser recuperável por tag. O commit
-continua no histórico, alcançável pelo SHA.
+**Executado:** a tag aponta para `dedea92`, local e no remote. Confirmado por
+`git ls-remote --tags origin`, que resolve `refs/tags/v1.0.0^{}` para
+`dedea92edc838c4ad1cba8f1d09c45fdc5176349`, e por `git rev-parse v1.0.0^{commit}`.
+A tag é anotada; o objeto tag tem SHA próprio (`9d1919d`) e o commit, outro.
+`on: push: tags: 'v*.*.*'` casa com `v1.0.0`, então o `Release` foi disparado pelo
+push.
+
+**O que isso custou:** `e29032f` deixou de ser recuperável **por tag**. O commit
+continua no histórico e é ancestral de `main`, então a reversão
+(`git tag -f -a v1.0.0 -m "..." e29032f && git push --force origin v1.0.0`)
+continua disponível. A operação é destrutiva, mas não irrecuperável.
 
 **Efeito no changelog do pipeline:** `release.yml:120` resolve a tag anterior com
 `git describe --tags --abbrev=0 "${TAG}^"`. Depois do movimento não sobra nenhuma

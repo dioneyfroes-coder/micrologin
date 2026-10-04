@@ -2272,6 +2272,31 @@ Marque somente depois de todas as etapas acima:
 - [x] Nenhum TODO restante classificado como blocker. (O que resta aberta está
   listado em "O que falta, em ordem" abaixo, e cada item tem o motivo.)
 
+## Decisões tomadas sem verificação possível
+
+Esta seção existe porque um checklist que só registra o que deu certo serve
+para nada quando alguém precisa saber em que ponto o registro é paroleiro.
+
+- **A tag `v1.0.0` foi movida sem CI verificado.** O gate "CI verde" do item 3
+  do estado final **não foi checado** nesta máquina: sem token, sem `gh` CLI, e
+  a API do GitHub sem autenticação responde rate limit. A decisão foi tomada
+  pelo owner após a informação estar disponível e exposta duas vezes, e a
+  operação é reversível (`e29032f` é ancestral de `main`). O registro fica
+  explícito: **quem confirmar o CI agora confirma depois do fato.**
+- **O `Release` não foi observado em execução.** O push da tag disparou o
+  workflow, e o gatilho casa (`on: push: tags: 'v*.*.*'`), mas nenhuma execução
+  foi vista. Consequência prática: os achados desta passagem — o gate `npm
+  audit` que reprovava sempre, o preflight de DDoS que não verifica nada, o
+  arm64 sem consumidor no caminho crítico — foram todos encontrados por
+  **pre-flight local**, não por falha observada. Não há execução real do
+  `release.yml` end-to-end que valha como evidência.
+- **A etapa de release que falta confirmar é o `image`.** Foi a única que não
+  pôde ser reproduzida: exige `buildx --push` contra registry e token do GHCR.
+  A parte local foi verificada (build do stage `production`, argon2 nativo,
+  OpenAPI com 21 endpoints dentro da imagem, boot via `test:deploy`).
+- **Nada de staging ou produção foi exercitado, e continua valendo:** não há
+  `STAGING_DEPLOY_HOST`, `PRODUCTION_DEPLOY_HOST` nem secrets correspondentes.
+
 ## Achados durante a execução
 
 Problemas que apareceram enquanto os itens eram executados e que não são
@@ -2438,20 +2463,29 @@ causados pelos itens em si.
   passaria no amd64. Universalidade que depende de qual pacote você escolheu não
   é universalidade.
 
-### Tag `v1.0.0` já publicada
+### Tag `v1.0.0` movida para o commit de freeze
 
-- **Estado:** `v1.0.0` existe local e no remote apontando para `e29032f`, 91 commits
-  atrás de `main` no momento da decisão. A tag nunca teve release, imagem nem
-  digest: é uma tag plantada antes de o projeto existir como produto.
-- **Decisão (2026-10-04): mover a tag `v1.0.0` para o commit de freeze.** A
-  alternativa — publicar `v1.0.1` — foi descartada porque o checklist inteiro, o
+- **Estado:** **executado.** `v1.0.0` aponta para `dedea92`, local e no remote.
+  Confirmado por `git ls-remote --tags origin`, que mostra `refs/tags/v1.0.0^{}`
+  resolvendo para `dedea92edc838c4ad1cba8f1d09c45fdc5176349`, e por
+  `git rev-parse v1.0.0^{commit}`. A tag é anotada (`git cat-file -t v1.0.0`
+  devolve `tag`); o objeto tag tem SHA próprio (`9d1919d`) e o commit, outro.
+- **Antes disso:** `v1.0.0` apontava para `e29032f`, 91 commits atrás de `main`,
+  sem release, imagem nem digest. Era uma tag plantada antes de o projeto
+  existir como produto.
+- **Decisão (2026-10-04): mover a tag para o commit de freeze.** A alternativa —
+  publicar `v1.0.1` — foi descartada porque o checklist inteiro, o
   `package.json`, o `/health` e o README já declaram `1.0.0`, e `release.yml`
   exige que a tag e o `package.json` concordem. Duas tags apontando para versões
   diferentes do mesmo código é pior que reescrever uma tag que nunca foi publicada.
-- **O que isso custa:** `e29032f` deixa de ser recuperável por tag. O commit não
-  some — continua no histórico, alcançável pelo SHA —, mas `git pull v1.0.0` passa
-  a devolver o freeze. O `--force` no push da tag é o passo destrutivo, e é
+- **O que isso custou:** `e29032f` deixou de ser recuperável **por tag**. O commit
+  não some — continua no histórico e é ancestral de `main` —, mas `git pull
+  v1.0.0` devolve o freeze. O `--force` no push da tag é o passo destrutivo, e é
   intencional.
+- **Reversão, se for preciso:** `git tag -f -a v1.0.0 -m "..." e29032f &&
+  git push --force origin v1.0.0`. Registrado porque `e29032f` é ancestral de
+  `main` e, portanto, alcançável — a operação é destrutiva, mas não é
+  irrecuperável.
 - **Efeito colateral no changelog do pipeline:** `release.yml` resolve a tag
   anterior com `git describe --tags --abbrev=0 "${TAG}^"` (linha 120). Depois do
   movimento, não sobra nenhuma outra tag no repositório, então essa resolução
@@ -2460,39 +2494,50 @@ causados pelos itens em si.
   repositório". Isso é **exato** — depois do movimento, é a primeira. O
   `CHANGELOG.md` versionado no repositório é outro arquivo, com o histórico
   completo, e não é sobrescrito pelo pipeline (que só o usa como `body_path`).
-- **Comando do freeze**, no lugar de `git tag -a v1.0.0`:
+- **Comando executado**, no lugar de `git tag -a v1.0.0`:
 
 ```bash
-git tag -f -a v1.0.0 -m "Release v1.0.0"
+git tag -f -a v1.0.0 -m "Release v1.0.0" dedea92
 git push origin main
 git push --force origin v1.0.0
 ```
+
+- **Disparo:** `on: push: tags: 'v*.*.*'` casa com `v1.0.0`, então o `Release`
+  foi disparado pelo push. Se não aparecer no GitHub, o caminho é
+  `workflow_dispatch` com `tag: v1.0.0` — o dispatch não cria tag, usa a que já
+  existe.
 
 ## Estado final
 
 ```text
 [x] NÃO PRONTO            <- estado em 2026-10-04, ver abaixo
-[ ] CANDIDATO A RELEASE
-[ ] 1.0.0 LANÇADA
+[x] CANDIDATO A RELEASE
+[ ] 1.0.0 LANÇADA          <- depende de o workflow terminar; ver item 5
 ```
 
-**Por que ainda não é candidato a release, em uma linha:** falta o freeze
-(commit + CI + tag) e falta qualquer prova em servidor real — não existe staging
-nem produção configurados. Nenhum item de código, teste ou documentação está
-pendente.
+**Candidato a release desde 2026-10-04:** o freeze local está fechado (lockfile
+congelado, 18 gates reexecutados, tag apontando para o commit de freeze). O que
+falta é o que depende de rede: o workflow não pode ser observado nem reversido
+nesta máquina. Nenhum item de código, teste ou documentação está pendente.
 
 ### O que falta, em ordem
 
-1. ~~**Commit** das alterações desta revisão.~~ **Feito:** `fe488b1` na `main`.
+1. ~~**Commit** das alterações desta revisão.~~ **Feito:** `fe488b1`, e mais
+   `12a4b95`, `d15c562`, `8445b36` e `dedea92` — todos na `main`.
 2. ~~**Congelar o lockfile** (`npm ci`).~~ **Feito:** `npm ci` exit 0,
    `package.json`/`package-lock.json` intactos, `npm ls --all` sem `invalid`,
    e os 18 gates reexecutados depois dele — todos verdes, exceto a
    intermitência do `test:ddos` registrada acima.
-3. **CI verde** em `fe488b1`. **Não verificado**: sem token e sem `gh` CLI, e a
-   API do GitHub sem autenticação responde rate limit. **Este é o próximo
-   gate, e ele precisa de alguém com acesso.**
-4. **Mover a tag** `v1.0.0` para o commit de freeze e fazer push forçado.
+3. ~~**CI verde**~~. **Não verificado por esta máquina** (sem token, sem `gh` CLI,
+   API sem autenticação com rate limit), mas **a tag foi movida sem essa
+   confirmação**, e é preciso registrar isso com clareza: quem confirma o CI
+   agora confirma *depois* do fato. Ver "Decisões tomadas sem verificação
+   possível" acima.
+4. ~~**Mover a tag** `v1.0.0` para o commit de freeze.~~ **Feito:** a tag aponta
+   para `dedea92`, verificado por `git ls-remote --tags origin`.
 5. **Release real**: `buildx build --push`, digest, SARIF, GitHub Release.
+   Disparada pelo push da tag (`on: push: tags: 'v*.*.*'`), em execução no
+   GitHub. Se não aparecer, o caminho é `workflow_dispatch` com `tag: v1.0.0`.
 6. **Smoke pós-release** contra a imagem publicada.
 7. **Provas de staging/produção** (`workflow_dispatch` com `environment=staging`),
    que dependem de `STAGING_DEPLOY_HOST`/`PRODUCTION_DEPLOY_HOST` e secrets
