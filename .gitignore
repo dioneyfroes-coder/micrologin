@@ -2,6 +2,7 @@ node_modules
 server.crt
 server.key
 .env
+.env.dev
 .env.test
 .env.prod
 .env.docker
@@ -33,6 +34,9 @@ deploy-drill.env
 .deploy-drill.lock
 backups/
 *.pem
+# `*.pem` acima não cobre `server.key`, então o diretório inteiro é ignorado:
+# certificado de dev não vai para o git, e a chave privada muito menos.
+certs/
 
 dist
 build

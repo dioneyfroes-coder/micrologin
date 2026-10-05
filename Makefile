@@ -2,10 +2,10 @@
 # Makefile - Authentication Service
 # ======================================
 
-.PHONY: help install setup dev dev-watch stop logs build build-docker build-docker-prod \
+.PHONY: help install setup dev dev-watch dev-tls tls-certs stop logs build build-docker build-docker-prod \
  test test-unit test-integration test-coverage test-watch lint lint-fix typecheck audit \
  deploy-local deploy-staging deploy-prod smoke-test docker-up docker-down docker-rebuild docker-logs docker-clean \
- health observability docs shell redis-cli mongo-shell pre-commit secrets backup-test redis-test \
+ health health-tls docs docs-tls observability shell redis-cli mongo-shell pre-commit secrets backup-test redis-test \
  config-backup-test backup-config restore-config status watch reset clean
 
 # Porta pública do app: lida de .env (fonte da verdade); default 3000.
@@ -15,6 +15,21 @@ APP_PORT:=$(shell grep -E '^APP_PORT=[0-9]+' .env 2>/dev/null | cut -d= -f2-)
 METRICS_TOKEN:=$(shell grep -E '^METRICS_TOKEN=' .env 2>/dev/null | cut -d= -f2-)
 ifeq ($(strip $(APP_PORT)),)
 APP_PORT:=3000
+endif
+
+# Fonte da verdade do modo HTTPS local: .env.dev. A porta e os caminhos dos
+# certificados são lidos de lá, então o alvo e o arquivo não divergem.
+TLS_PORT:=$(shell grep -E '^PORT=[0-9]+' .env.dev 2>/dev/null | cut -d= -f2-)
+TLS_CERT:=$(shell grep -E '^SSL_CERT_PATH=' .env.dev 2>/dev/null | cut -d= -f2-)
+TLS_KEY:=$(shell grep -E '^SSL_KEY_PATH=' .env.dev 2>/dev/null | cut -d= -f2-)
+ifeq ($(strip $(TLS_PORT)),)
+TLS_PORT:=3443
+endif
+ifeq ($(strip $(TLS_CERT)),)
+TLS_CERT:=./certs/localhost.pem
+endif
+ifeq ($(strip $(TLS_KEY)),)
+TLS_KEY:=./certs/localhost-key.pem
 endif
 
 NODE_ENV ?= development
@@ -43,6 +58,28 @@ dev: ## Iniciar em modo desenvolvimento (tsx watch)
 
 dev-watch: ## Iniciar com hot reload (alias de dev)
 	npm run dev
+
+dev-tls: ## Iniciar em HTTPS local usando o .env.dev (cert da CA do mkcert)
+	@if [ ! -f "$(TLS_CERT)" ] || [ ! -f "$(TLS_KEY)" ]; then \
+		echo "Certificados ausentes em $(TLS_CERT) / $(TLS_KEY). Rode: make tls-certs"; \
+		exit 1; \
+	fi
+	@npx tsx --env-file=.env.dev src/app.ts
+
+tls-certs: ## (Re)gerar o certificado HTTPS local assinado pela CA do mkcert
+	@command -v mkcert >/dev/null 2>&1 || { \
+		echo "mkcert não encontrado. Instale em https://github.com/FiloSottile/mkcert"; \
+		echo "e depois: make tls-certs"; exit 1; }
+	@mkdir -p "$$(dirname "$(TLS_CERT)")" "$$(dirname "$(TLS_KEY)")"
+	@hosts="localhost 127.0.0.1 ::1"; \
+	lan=$$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.' | head -1); \
+	if [ -n "$$lan" ]; then hosts="$$hosts $$lan"; fi; \
+	mkcert -cert-file "$(TLS_CERT)" -key-file "$(TLS_KEY)" $$hosts >/dev/null && \
+	chmod 600 "$(TLS_KEY)" && \
+	echo "Certificado gerado para: $$hosts"
+	@echo "Se o navegador ainda avisar, falta o trust store do SO (mkcert usa o NSS db no Linux):"
+	@echo "  sudo apt install libnss3-tools && mkcert -install"
+	@echo "Sem isso, curl ainda valida com: curl --cacert \"\$$(mkcert -CAROOT)/rootCA.pem\" https://localhost:$(TLS_PORT)/health"
 
 stop: ## Parar aplicação (PM2)
 	npm run stop
@@ -160,6 +197,12 @@ docker-clean: ## Limpar containers e volumes
 
 health: ## Verificar saúde da aplicação (porta do .env)
 	curl -fsS "http://localhost:$(APP_PORT)/health"
+
+health-tls: ## Verificar saúde da aplicação em HTTPS (porta do .env.dev)
+	curl -fsS "https://localhost:$(TLS_PORT)/health"
+
+docs-tls: ## Abrir a documentação da API em HTTPS
+	@echo "Documentação disponível em: https://localhost:$(TLS_PORT)/api-docs"
 
 observability: ## Ver o manifesto de observabilidade (porta do .env)
 	@curl -fsS -H "x-metrics-token: $(METRICS_TOKEN)" "http://localhost:$(APP_PORT)/observability"
