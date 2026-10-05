@@ -217,8 +217,13 @@ describe('Trivy: a severidade é uma política, não o default', () => {
     // que dá para corrigir" e "reprovar para sempre".
     expect(trivy().with?.['ignore-unfixed']).toBe(true);
 
-    const readme = readFileSync(resolve(process.cwd(), 'README.md'), 'utf8');
-    expect(readme).toMatch(/ignore-unfixed[\s\S]{0,300}?(sem corre[cç][aã]o|sem corre[cç][aã]oes)/i);
+    const runbook = readFileSync(
+      resolve(process.cwd(), 'docs/OPERACOES.md'),
+      'utf8'
+    );
+    expect(runbook).toMatch(
+      /ignore-unfixed[\s\S]{0,300}?(sem corre[cç][aã]o|sem corre[cç][aã]oes)/i
+    );
   });
 
   it('as permissões de SARIF existem no job que publica o relatório', () => {
@@ -229,9 +234,36 @@ describe('Trivy: a severidade é uma política, não o default', () => {
     expect(permissions).toMatch(/contents:\s*read/);
   });
 
-  it('o README descreve a política de imagem em HIGH/CRITICAL', () => {
-    const readme = readFileSync(resolve(process.cwd(), 'README.md'), 'utf8');
-    expect(readme).toMatch(/Trivy[\s\S]{0,400}?HIGH[,/\s-]*CRITICAL/);
+  it('a documentação do runbook declara a mesma severidade que o workflow aplica', () => {
+    // O teste anterior procurava /Trivy…HIGH…CRITICAL/ em qualquer lugar do
+    // documento, e a busca casava com a linha do sumário do pipeline — a duas
+    // palavras de distância —, não com a seção de política. Trocar a política
+    // inteira por `MEDIUM` deixava 944/944 verdes. Aqui a severidade
+    // documentada é extraída e comparada com a do workflow, como o threshold do
+    // audit-ci faz com o dele.
+    const runbook = readFileSync(
+      resolve(process.cwd(), 'docs/OPERACOES.md'),
+      'utf8'
+    );
+
+    // Só a seção "Política de imagem (Trivy)" conta: o sumário do pipeline
+    // menciona Trivy e HIGH/CRITICAL numa linha, e é justamente ali que a
+    // busca anterior casava por engano.
+    const section = runbook.split('### Política de imagem (Trivy)')[1];
+    expect(section).toBeDefined();
+
+    const documented = section?.match(/`severity: '([A-Z,]+)'`/);
+    expect(documented).not.toBeNull();
+
+    const applied = String(trivy().with?.severity ?? '')
+      .split(',')
+      .sort();
+    const declared = documented?.[1].split(',').sort();
+
+    expect(declared).toEqual(applied);
+    // E a política continua não sendo o default da action, que reprovaria por
+    // qualquer coisa — o que tornaria o gate ruído.
+    expect(applied).not.toEqual(ACTION_DEFAULTS.severity.split(',').sort());
   });
 });
 

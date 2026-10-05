@@ -122,13 +122,20 @@ describe('audit-ci - a configuração declara uma política', () => {
     expect(enabled).toEqual(['moderate']);
   });
 
-  it('o README documenta o mesmo threshold que a config aplica', () => {
-    const readme = readFileSync(resolve(process.cwd(), 'README.md'), 'utf8');
+  it('a documentação do runbook registra o mesmo threshold que a config aplica', () => {
+    // A política mora em `docs/OPERACOES.md`, ao lado dos gates que a executam —
+    // não no README, que é leitura de 60 segundos e não um manual de pipeline.
+    const runbook = readFileSync(
+      resolve(process.cwd(), 'docs/OPERACOES.md'),
+      'utf8'
+    );
 
     // Extrai o threshold documentado e compara com o que está ligado no arquivo.
     // Um teste que só procurasse a palavra "moderate" num raio de 400 caracteres
-    // aceitaria um README que descreve a política antiga e erra em cima.
-    const documented = readme.match(/threshold \*\*(low|moderate|high|critical)\*\*/);
+    // aceitaria um runbook que descreve a política antiga e erra em cima.
+    const documented = runbook.match(
+      /threshold \*\*(low|moderate|high|critical)\*\*/
+    );
     expect(documented).not.toBeNull();
 
     const cfg = config();
