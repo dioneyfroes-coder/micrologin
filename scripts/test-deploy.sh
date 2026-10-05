@@ -96,6 +96,32 @@ DEPS_DIR="${WORK_DIR}/deps"
 BACKUPS_DIR="${WORK_DIR}/cfg-backups"
 PASSPHRASE_FILE="${WORK_DIR}/passphrase"
 IMAGE_PREFIX="deploy-drill"
+# Remove as imagens do drill.
+#
+# O jeito óbvio é `--filter "reference=${IMAGE_PREFIX}*"`, e ele não apaga nada.
+# O glob do filtro `reference` do Docker segue o `filepath.Match` do Go, em que
+# `*` NÃO atravessa `/`. Ele compara contra `repo:tag` — que tem barra — então
+# `deploy-drill*` casa `deploy-drill:v1` mas nunca `deploy-drill/v1-estavel:tag`.
+# Medido: `deploy-drill*` devolve 0 imagens com 10 delas existindo;
+# `deploy-drill/*` devolve 7.
+#
+# Sem `2>/dev/null` e sem `|| true` escondendo: o filtro devolvendo vazio era
+# exatamente o que fazia o vazio parecer um "já estava limpo". O `grep` no
+# repositório é a verificação, e ela não depende do glob do Docker.
+remove_drill_images() {
+    local id
+    # Ordena por ID e não por tag: uma imagem pode ter várias tags e sair uma vez
+    # só. `docker rmi` sai com erro se algo a usa, e o erro é descartado de
+    # propósito — o próximo `docker image prune` do operador resolve, e abortar o
+    # cleanup por causa disso esconderia as imagens que dá para remover.
+    docker images --format '{{.ID}} {{.Repository}}' 2>/dev/null \
+        | awk -v p="${IMAGE_PREFIX}/" '$2 ~ "^"p {print $1}' \
+        | sort -u \
+        | while read -r id; do
+            [ -n "$id" ] || continue
+            docker rmi -f "$id" >/dev/null 2>&1 || true
+        done
+}
 # Marcadores de versão. `KID_*` vai para o ENVIRONMENT do container e é a prova
 # de configuração em runtime; `MARKER_*` é gravado DENTRO da imagem e é a prova
 # de que a imagem em execução é a anterior.
@@ -153,8 +179,7 @@ cleanup() {
     # Os logs de deploy são preservados: um drill que reprova e apaga a única
     # evidência do motivo obriga a toda falha a ser reproduzida de novo.
     rm -f "$ENV_FILE" 2>/dev/null || true
-    docker image ls --filter "reference=${IMAGE_PREFIX}*" -q 2>/dev/null | sort -u \
-        | while read -r id; do docker rmi -f "$id" >/dev/null 2>&1 || true; done
+    remove_drill_images
 }
 
 
