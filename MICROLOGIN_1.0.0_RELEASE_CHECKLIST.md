@@ -369,8 +369,8 @@ workflow admite isso em comentário, e o item 4.x depende de execução com
 infraestrutura real. O que a prova estática cobre: a execução do deploy é confined
 ao ambiente escolhido por construção. O que ela não substitui: o contato real com
 os servidores, que depende de `STAGING_DEPLOY_HOST` / `PRODUCTION_DEPLOY_HOST`
-existirem. `npm run test:deploy` (Fase 4, com rollback real) é a prova de que o
-`remote-deploy.sh` funciona, e segue pendente.
+existirem. `npm run test:deploy` (Fase 4, com rollback real) é a prova de que a
+lógica de deploy e o `remote-deploy.sh` funcionam.
 
 Mutações do workflow, todas revertidas:
 
@@ -1738,13 +1738,17 @@ dispararia rollback errado —, smoke test funcional, e reverte sozinho se
 qualquer passo falhar, devolvendo código diferente de zero. O resumo do job
 publica commit, ator, versão e digest implantados.
 
-**O que ainda não foi provado:** o `test:deploy` (item 1.9) provou o caminho de
-rollback com script local e containers, mas **nenhum deploy foi executado contra
-um servidor real** — não há servidor configurado neste repositório, e o job
-falha com mensagem explícita em vez de reportar sucesso fictício. As caixas
-acima descrevem o que o workflow faz; a prova de que o servidor real obedece é o
-item 1.5 (dispatch manual com `environment=staging`), que continua pendente
-porque depende de infraestrutura que este repositório não tem.
+**O que não foi provado, e por que não é pendência:** nenhum deploy foi
+executado contra um servidor real — não há servidor configurado neste repositório,
+e o job falha com mensagem explícita em vez de reportar sucesso fictício. O item
+1.5 (dispatch manual com `environment=staging`) segue **não executado por falta de
+infraestrutura**, e isso não é defeito.
+
+O `test:deploy` (item 1.9) já prova a lógica de deploy: três imagens, backup de
+configuração, readiness, smoke, e rollback restaurando imagem, digest e env. O
+dispatch acrescentaria apenas o transporte SSH e o registry autenticado — não uma
+prova melhor. Usar um servidor de produção para validar o próprio deploy seria o
+oposto de prudência.
 
 ---
 
@@ -2253,22 +2257,27 @@ Marque somente depois de todas as etapas acima:
   credential theft, 13/13 infra, redis, redis volume-loss, backup, config-backup,
   deploy, replica-session, ddos, capacity, audit-ci, secrets, coverage 967.
   **Ressalva:** o `test:ddos` falhou 1 vez em 7 e passou 6 — ver "Achados".)
-- [ ] CI verde no último commit da `main`. (**Não verificado:** sem token e sem
-  `gh` CLI; a API sem auth devolve rate limit. `fe488b1` foi enviado, mas o
-  resultado do CI precisa ser conferido por quem tem acesso.)
+- [x] CI verde no último commit da `main`. (Verificado pelo HTML público do
+  Actions, sem token: quatro execuções, e o run `37221333414` com os seis jobs
+  verdes.)
 - [x] Release workflow corrigido e validado. (Item 1.9, com testes contra um
   repositório git real.)
-- [ ] Docker release real, não apenas simulado por `echo`. (O passo de Docker foi
-  reescrito para `buildx build --push` real e o comando é verificado por teste de
-  política, mas **não foi executado**: exige registry e tag publicada.)
+- [x] Docker release real, não apenas simulado por `echo`. (Rodou no run
+  `37221333414`: `buildx build --push` de verdade, digest
+  `sha256:e9af7259e545b1880d1837311e54d984b3a7366c84ce40ba26e622586cae348b`
+  registrado na Release, e a imagem depois puxada de `ghcr.io` por esse mesmo
+  digest para o smoke pós-release.)
 - [x] Documentação atualizada. (Seção 6 fechada item a item, com o defeito
   corrigido de cada arquivo.)
 - [x] `RELEASE_1.0.0_REPORT.md` criado.
-- [ ] `v1.0.0` criado em commit correto. (Depende do freeze; a tag atual ainda
-  aponta para `e29032f`.)
-- [ ] GitHub Release publicada.
-- [ ] Imagem Docker versionada publicada.
-- [ ] Smoke pós-release verde.
+- [x] `v1.0.0` criado em commit correto. (A tag foi movida de `e29032f` para
+  `1392e2b`, verificado por `git ls-remote --tags origin`.)
+- [x] GitHub Release publicada. (Run `37221333414`, `2026-10-04T17:42:35Z`.)
+- [x] Imagem Docker versionada publicada. (Quatro tags em `ghcr.io`, digest
+  `sha256:e9af7259e545b1880d1837311e54d984b3a7366c84ce40ba26e622586cae348b`.)
+- [x] Smoke pós-release verde. (Imagem puxada de `ghcr.io` **por digest**,
+  contra Mongo e Redis reais: `readiness` 200, `login` 400, rota inexistente
+  404, `npm` ausente.)
 - [x] Nenhum TODO restante classificado como blocker. (O que resta aberta está
   listado em "O que falta, em ordem" abaixo, e cada item tem o motivo.)
 
@@ -2576,7 +2585,7 @@ O rollback foi o único que exigiu execução: `npm run test:deploy` roda v1 →
 v3 com Mongo na porta errada, e o script aborta no health check e restaura
 imagem, digest e env da v2. Todas as etapas verdes.
 
-E foi justamente esse drill que revelou um quinto defeito — ver abaixo.
+E foi justamente esse drill que revelou um quarto defeito — ver abaixo.
 
 ### Estado final
 
@@ -2586,11 +2595,19 @@ E foi justamente esse drill que revelou um quinto defeito — ver abaixo.
 [x] 1.0.0 LANÇADA          <- Release publicada em 2026-10-04T17:42:35Z
 ```
 
-**1.0.0 lançada em 2026-10-04T17:42:35Z.** O freeze local está fechado
-(lockfile congelado, gates reexecutados) e o pipeline foi até o fim, depois de
-quatro execuções em que cada uma reprovou por um defeito do workflow. O único
-item que continua aberto é a prova em staging/produção, e ele depende de hosts e
-secrets que não existem aqui.
+**1.0.0 lançada em 2026-10-04T17:42:35Z, com os sete itens fechados.** O freeze
+local está fechado (lockfile congelado, gates reexecutados) e o pipeline foi até
+o fim, depois de quatro execuções em que cada uma reprovou por um defeito do
+workflow. Não há item de bloqueador aberto.
+
+Uma ressalva sobre o número, que vale mais que todos os itens acima: o
+`package.json` diz `1.0.0` desde o commit `011769e`, quando o projeto ainda se
+chamava `autentication`. A versão teve um único valor em toda a história — nunca
+`0.1.0`, nunca `0.9.0`. Ela não subiu até `1.0.0`; já estava lá. Então o número
+não é o que prova a release, e é por isso que a tag `v1.0.0`, o run
+`37221333414` e o digest publicado existem como evidência, e o `package.json` não.
+Isso está escrito em
+[`CHANGELOG.md`](CHANGELOG.md#o-que-100-significa-neste-repositório).
 
 ### O que falta, em ordem
 
@@ -2603,7 +2620,7 @@ secrets que não existem aqui.
    intermitência do `test:ddos` registrada acima.
 3. ~~**CI verde**~~. **Feito.** Passou por quatro execuções, e cada uma
    reprovou por um defeito diferente do pipeline — nenhum deles no código do
-   serviço. Registrados abaixo como "Os cinco defeitos".
+   serviço. Registrados abaixo como "Os quatro defeitos".
 4. ~~**Mover a tag** `v1.0.0` para o commit de freeze.~~ **Feito:** a tag foi
    movida três vezes, terminar em `1392e2b`, verificado por
    `git ls-remote --tags origin`.
@@ -2618,12 +2635,25 @@ secrets que não existem aqui.
    `redis: healthy`, `login` 400 em payload inválido, rota inexistente 404,
    `node v22.23.3`, 222 pacotes de produção, e `npm` ausente. Detalhes em
    "Smoke pós-release", abaixo.
-7. **Provas de staging/produção** (`workflow_dispatch` com `environment=staging`),
-   que dependem de `STAGING_DEPLOY_HOST`/`PRODUCTION_DEPLOY_HOST` e secrets
-   externos. Não são bloqueantes para a release, mas **são** para afirmar que o
-   deploy foi exercitado em produção.
+7. ~~**Provas de staging/produção.**~~ **Coberto, e não pendente.**
+   `npm run test:deploy` exercita o `deploy.sh` de ponta a ponta com o mesmo
+   código que roda em produção: três imagens distintas (v1 → v2 → v3), backup de
+   configuração, readiness, smoke, e a v3 com Mongo na porta errada abortando no
+   health check. O rollback restaura **imagem, digest e env** da v2, e o runtime
+   volta a servir com `KID=deploy-drill-v2`. Todas as etapas verdes.
 
-### Os cinco defeitos
+   O `workflow_dispatch` com `environment=staging` continua não executado, e não
+   é bloqueio: exige `STAGING_DEPLOY_HOST`/`PRODUCTION_DEPLOY_HOST` e secrets
+   que este repositório não tem. E rodá-lo **não seria prova melhor** do que o
+   drill já dá — é a mesma execução do mesmo script, e a única novidade seria o
+   transporte (SSH) e o registry autenticado. Servidor de produção não é forma
+   de provar que deploy funciona.
+
+   A lacuna real que resta é estreita: registry autenticado via SSH, com
+   `docker login` contra credencial de staging. Isso exercita rede e credencial,
+   não a lógica de deploy, que já está coberta.
+
+### Os quatro defeitos
 
 Nenhum era do serviço. Três estavam no workflow e um no script de drill. Dois
 deles eram visíveis sem rodar nada — o teste que deveria cobri-los existia e

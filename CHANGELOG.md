@@ -19,6 +19,48 @@ em [`docs/SEGURANCA.md`](docs/SEGURANCA.md).
 O item a item, com a evidência de cada um, está em
 [`MICROLOGIN_1.0.0_RELEASE_CHECKLIST.md`](MICROLOGIN_1.0.0_RELEASE_CHECKLIST.md).
 
+### O que `1.0.0` significa neste repositório
+
+**A semântica do número começa aqui, e não no primeiro commit.**
+
+O `package.json` deste projeto diz `1.0.0` desde o commit `011769e` — o primeiro
+que o contém, quando o projeto ainda se chamava `autentication` e o código não
+tinha nenhuma das garantias listadas abaixo. A versão teve **um único valor em
+toda a história do repositório**: nunca `0.1.0`, nunca `0.9.0`. Ela não subiu até
+`1.0.0`; ela já estava lá.
+
+Isso importa para como se lê este changelog. Um número de versão escrito antes de
+o código existir não é promessa cumprida, é texto de arquivo. Então:
+
+- **Não** leia `1.0.0` no `package.json` como afirmação de prontidão. Ele estava
+  lá antes de qualquer coisa estar pronta.
+- Leia a **tag** `v1.0.0` e a **release**. Elas existem porque o pipeline rodou
+  de verdade e passou: imagem construída e publicada por digest em
+  `ghcr.io`, gate do Trivy verde, SARIF enviada, e a release gerada pelo
+  workflow.
+
+O que tornou esta `1.0.0` verdadeira foi o trabalho, não o número:
+
+- **O pipeline roda e barra de verdade.** Quatro defeitos de workflow foram
+  encontrados **pelo próprio pipeline**, não por revisão: `JWT_SECRET` curto nos
+  jobs, quatro tags num `--tag` só (que o buildx recusa), 10 vulnerabilidades
+  HIGH vindas do npm que a imagem base embarca, e um cleanup de drill que nunca
+  removeu uma imagem. Cada um corrigido com teste que reprova se o defeito
+  voltar.
+- **944 testes** em 65 suítes, e o `test:deploy` prova backup, readiness, smoke
+  e **rollback** de imagem e configuração.
+- **A imagem publicada foi exercitada**, não só construída: puxada de `ghcr.io`
+  por digest, containers de Mongo e Redis reais, `readiness` 200 com ambos
+  healthy.
+
+A consequência prática: este repositório não tem track record de versões
+estáveis. Esta é a primeira, e nenhuma `0.x` foi publicada. A partir daqui a
+semântica é a do [SemVer](https://semver.org/lang/pt-BR/) — `0.x` para
+instável, e um próximo `1.1.0` vai ser a primeira versão que **ganhou** o sinal
+de estabilidade em vez de herdá-lo.
+
+### Correção de segurança
+
 ### Correção de segurança
 
 - **Enumeração de usuários por timing mitigada** no login e no registro: respostas

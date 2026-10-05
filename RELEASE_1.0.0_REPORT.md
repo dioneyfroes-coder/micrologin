@@ -25,13 +25,14 @@ números de capacidade e de DDoS abaixo são desta máquina, não do runner do C
 
 ## Testes
 
-Tudo executado em 2026-10-04, nesta árvore.
+Executados nesta árvore. Unit reexecutado em 2026-10-05, depois dos 19 testes
+de regressão do pipeline; as demais categorias são de 2026-10-04.
 
 | Categoria | Comando | Resultado | Observação |
 |---|---|---|---|
 | Lint | `npm run lint` | ✅ exit 0 | `eslint src/ tests/`, sem aviso |
 | Typecheck | `npm run typecheck` | ✅ exit 0 | `tsc --noEmit`, `strict` |
-| Unit | `npm run test:unit` | ✅ **925 passed / 925**, 64 suites | 51,6 s |
+| Unit | `npm run test:unit` | ✅ **944 passed / 944**, 65 suites | 45,2 s |
 | Integration | `npm run test:integration` | ✅ **42 passed / 42**, 7 suites | 5,2 s |
 | E2E | `npm run test:e2e` | ✅ **16 passed / 16** | Mongo + Redis reais do compose, portas 27020/6380 |
 | Credential theft | `npm run test:credential-theft` | ✅ **14 passed / 14** | inclui `real-redis`: revogação gravada no Redis real, não em memória |
@@ -201,7 +202,7 @@ funcionando corretamente.
 aborta no health check e o rollback restaura imagem, digest e env da v2. Todas as
 etapas verdes.
 
-Rodar esse drill depois da release rendeu o quinto defeito do processo: **o
+Rodar esse drill depois da release rendeu o quarto defeito do processo: **o
 cleanup do drill nunca removeu uma imagem sequer.** Ele terminava com
 `--filter "reference=deploy-drill*"`, e o glob do filtro `reference` do Docker
 segue o `filepath.Match` do Go, em que `*` **não** atravessa `/`, enquanto o
@@ -248,7 +249,7 @@ real do pipeline — nenhuma delas no código do serviço:
 
 O detalhe de cada defeito está em
 [`MICROLOGIN_1.0.0_RELEASE_CHECKLIST.md`](MICROLOGIN_1.0.0_RELEASE_CHECKLIST.md),
-seção "Os cinco defeitos".
+seção "Os quatro defeitos".
 
 O ponto que importa registrar: **o segundo defeito tinha teste, e o teste
 passava.** Ele executava o `run:` de verdade com docker stubado e conferia
@@ -358,28 +359,39 @@ Honestidade vale mais que uma tabela toda verde.
   `g++`, que o Alpine não tem — o projeto escapa disso por usar `@node-rs`, não
   o `argon2` do node-gyp. Universalidade que depende de qual pacote você
   escolheu não é universalidade.
-- **O pipeline de release nunca foi executado de ponta a ponta.** É a causa raiz  dos dois problemas acima: um gate que ninguém executou não é evidência, é
-  hipótese. Os gates que rodam foram conferidos um a um contra a árvore local
-  (`npm audit --audit-level=moderate` foi medido e reprovado; `build`,
-  `audit-ci` e `test:secrets` foram medidos e passaram), mas o encadeamento
-  completo — `validate → quality → tests → image → security → release` — não tem
-  execução registrada.
+- **~~O pipeline de release nunca foi executado de ponta a ponta.~~ Resolvido.**
+  Era a causa raiz dos dois problemas acima: um gate que ninguém executou não é
+  evidência, é hipótese. Rodou quatro vezes, e cada execução reprovou por um
+  defeito distinto — `JWT_SECRET` curto, um `--tag` para quatro tags, 10 HIGH do
+  npm da imagem base. O run `37221333414` fechou o encadeamento completo —
+  `validate → quality → tests → image → security → release` — com os seis jobs
+  verdes, e a release existe em `ghcr.io` com digest registrado.
 - **O RTO do backup não é constante.** Duas execuções no mesmo dia, na mesma
   máquina: **1s e 2s**. A documentação passou a dizer 1–2s. Um número único
   seria apresentar uma medição como se fosse especificação.
-- **Staging e produção: nada foi executado.** Não existe `STAGING_DEPLOY_HOST`
-  nem `PRODUCTION_DEPLOY_HOST` configurado, nem secrets correspondentes. Os itens
-  1.5, 2.4, 4.3 e todos os de pós-release que dependem de servidor real seguem
-  **pendentes por falta de infraestrutura**, não por defeito.
-- **CI não foi verificado.** Sem token e sem `gh` CLI, e a API do GitHub sem
-  autenticação responde com rate limit. O gate "CI verde no último commit da
-  `main`" **não foi checado** — precisa ser conferido por quem tem acesso antes
-  de mover a tag.
-- **`workflow_dispatch` de staging: não executado** (mesma razão).
-- **Release completa: não executada.** `buildx build --push`, digest, upload de
-  SARIF e criação da GitHub Release exigem tag real e registry. O comando de build
-  foi **verificado por inspeção e por teste de política**, não executado.
-- **Trivy em imagem real: não executado** localmente.- **`npm audit` cru continua falhando** (30 high, 3 deles em produção), conforme
+- **Staging e produção: o `workflow_dispatch` não foi executado**, porque não
+  existe `STAGING_DEPLOY_HOST` nem `PRODUCTION_DEPLOY_HOST` configurado. Isso
+  **não** é pendência de release, e é importante não apresentar como se fosse:
+  `npm run test:deploy` já exercita o `deploy.sh` de ponta a ponta com o mesmo
+  código de produção — três imagens, backup de configuração, readiness, smoke, e
+  uma v3 com Mongo na porta errada abortando no health check, com rollback
+  restaurando imagem, digest e env da v2. Rodar o dispatch adicionaria apenas o
+  transporte SSH e o registry autenticado, não uma prova melhor da lógica de
+  deploy. Usar um servidor de produção para provar que deploy funciona seria o
+  oposto de prudência.
+- **~~CI não foi verificado.~~ Resolvido.** O limitador era a API sem
+  autenticação; a verificação foi feita pelo HTML público do Actions. Quatro
+  execuções, cada uma reprovando por um defeito distinto, e o run
+  `37221333414` com os seis jobs verdes.
+- **~~Release completa: não executada.~~ Resolvido.** `buildx build --push`, o
+  digest, o upload de SARIF e a criação da GitHub Release rodaram no run
+  `37221333414`. Digest publicado
+  `sha256:e9af7259e545b1880d1837311e54d984b3a7366c84ce40ba26e622586cae348b`,
+  Release `v1.0.0` publicada em `2026-10-04T17:42:35Z`.
+- **~~Trivy em imagem real: não executado.~~ Resolvido** pelo job `security` do
+  mesmo run, contra a imagem recém-construída. Foi ele que reprovou nos 10 HIGH
+  do npm da imagem base — a execução que faltava era a que acharia o defeito.
+- **`npm audit` cru continua falhando** (30 high, 3 deles em produção), conforme
   detalhado na Security Note. O que passa é o `audit-ci` com exceção datada — e
   o `npm audit` deixou de ser gate do release por isso.
 - **`tests/integration/login-throttle.test.ts` é dependente de tempo.** Passa em
