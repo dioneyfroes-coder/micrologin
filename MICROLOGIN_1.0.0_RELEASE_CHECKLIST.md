@@ -2551,6 +2551,35 @@ git push --force origin v1.0.0
 
 ## Estado final
 
+### Pós-release, item a item
+
+Verificado contra a imagem **publicada**, puxada de `ghcr.io` por digest, com o
+Mongo e o Redis reais:
+
+| Item | Estado | Evidência |
+|---|---|---|
+| GitHub Release `v1.0.0` existe | ✅ | HTTP 200, marcada `Latest` |
+| Não está como draft/prerelease | ✅ | sem marcador `Draft` nem `Pre-release` |
+| Changelog correto | ✅ | "Primeira versão publicada a partir deste repositório" |
+| Assets esperados presentes | ✅ | nenhum asset — a imagem é a release |
+| Imagem `1.0.0` existe | ✅ | `1.0.0`, `v1.0.0`, `1392e2b`, `latest` |
+| Digest bate com o do workflow | ✅ | `sha256:e9af7259e…` no corpo e em execução |
+| Pull da imagem funciona | ✅ | `docker pull` anônimo, sem login |
+| Container sobe da imagem publicada | ✅ | sobe e fica `healthy` |
+| `/health` responde | ✅ | 200, `mongodb: connected`, `redis: healthy` |
+| `/readiness` responde | ✅ | 200, `ready: true`, `degraded: false` |
+| Smoke funcional | ✅ | login 400 validando, 404 em rota inexistente |
+| Rollback funcional | ✅ | `npm run test:deploy` verde |
+| Commit/tag documentados | ✅ | `1392e2b` |
+
+O rollback foi o único que exigiu execução: `npm run test:deploy` roda v1 → v2 →
+v3 com Mongo na porta errada, e o script aborta no health check e restaura
+imagem, digest e env da v2. Todas as etapas verdes.
+
+E foi justamente esse drill que revelou um quinto defeito — ver abaixo.
+
+### Estado final
+
 ```text
 [x] NÃO PRONTO            <- estado em 2026-10-04, ver abaixo
 [x] CANDIDATO A RELEASE
@@ -2574,7 +2603,7 @@ secrets que não existem aqui.
    intermitência do `test:ddos` registrada acima.
 3. ~~**CI verde**~~. **Feito.** Passou por quatro execuções, e cada uma
    reprovou por um defeito diferente do pipeline — nenhum deles no código do
-   serviço. Registrados abaixo como "Os quatro defeitos do pipeline".
+   serviço. Registrados abaixo como "Os cinco defeitos".
 4. ~~**Mover a tag** `v1.0.0` para o commit de freeze.~~ **Feito:** a tag foi
    movida três vezes, terminar em `1392e2b`, verificado por
    `git ls-remote --tags origin`.
@@ -2594,10 +2623,10 @@ secrets que não existem aqui.
    externos. Não são bloqueantes para a release, mas **são** para afirmar que o
    deploy foi exercitado em produção.
 
-### Os quatro defeitos do pipeline
+### Os cinco defeitos
 
-Nenhum era do serviço. Todos quatro estavam no workflow, e três deles eram
-visíveis sem rodar nada no GitHub — o teste que deveria cobri-los existia e
+Nenhum era do serviço. Três estavam no workflow e um no script de drill. Dois
+deles eram visíveis sem rodar nada — o teste que deveria cobri-los existia e
 passava.
 
 1. **`JWT_SECRET` curto nos jobs `quality` e `tests`** (run `37214687216`).
@@ -2624,9 +2653,30 @@ passava.
    é a correção verdadeira: o código vulnerável sai em vez de o scanner ser
    silenciado.
 
-Os três foram corrigidos com teste que falha se o defeito voltar, inclusive o
-segundo — verificado reintroduzindo a vírgula e vendo o teste reprovar com a
-mensagem do buildx.
+4. **O cleanup do drill de deploy nunca removeu uma imagem** (`f4dbf69`).
+   Achado depois da release, ao rodar `npm run test:deploy` para fechar o item
+   "rollback funcional" do pós-release. Termina com
+   `--filter "reference=deploy-drill*"`; o glob do filtro `reference` do Docker
+   segue o `filepath.Match` do Go, em que `*` **não** atravessa `/`, e o filtro
+   compara contra `repo:tag`, que tem barra. Medido com as 10 imagens do drill
+   existindo: `deploy-drill*` → 0, `deploy-drill/*` → 7. Cada execução vazava
+   ~3,4 GB, e o drill roda em CI.
+
+   O detalhe que escondeu: filtro que não casa nada devolve vazio, e vazio parece
+   "já estava limpo". Com `2>/dev/null`, `|| true` e o pipeline sem `pipefail`, o
+   zero parecia um sucesso silencioso. Em revisão,
+   `docker image rm $(docker image ls --filter ... -q)` parece obviamente correto
+   — eu escrevi isso e não duvidei.
+
+Todos foram corrigidos com teste que falha se o defeito voltar. Nos dois casos em
+que o teste antigo era insuficiente, verifiquei reintroduzindo o defeito:
+
+- **item 2:** restaurada a vírgula, o teste reprova com a mensagem do buildx.
+- **item 4:** restaurado o `--filter`, 5 dos 7 testes reprovam.
+
+O teste do item 4 executa o `awk` do próprio script, trocando só a fonte
+(`docker images` → `cat`). Reescrever a lógica no teste faria o teste passar com
+o mesmo defeito — que é exatamente o modo de falha do item 2.
 
 ### Smoke pós-release
 

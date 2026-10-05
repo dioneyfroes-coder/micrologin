@@ -194,7 +194,25 @@ Mongo e Redis, e o teste não tinha passado. A validação de configuração est
 funcionando corretamente.
 
 `docker-compose.prod.yml` consome `IMAGE_REF` por digest, com a tag como fallback.
-**Nada foi publicado**: digest e URL da release só existem depois do push da tag.
+
+### Rollback
+
+`npm run test:deploy` — v1 → v2 → v3 com Mongo na porta errada. O deploy da v3
+aborta no health check e o rollback restaura imagem, digest e env da v2. Todas as
+etapas verdes.
+
+Rodar esse drill depois da release rendeu o quinto defeito do processo: **o
+cleanup do drill nunca removeu uma imagem sequer.** Ele terminava com
+`--filter "reference=deploy-drill*"`, e o glob do filtro `reference` do Docker
+segue o `filepath.Match` do Go, em que `*` **não** atravessa `/`, enquanto o
+filtro compara contra `repo:tag` — que tem barra. Medido com as 10 imagens do
+drill existindo: `deploy-drill*` → 0, `deploy-drill/*` → 7. Cada execução vazava
+~3,4 GB, e o drill roda em CI.
+
+O que escondeu o defeito: filtro que não casa nada devolve vazio, e vazio parece
+"já estava limpo". Com `2>/dev/null`, `|| true` e o pipeline sem `pipefail`, o
+zero parecia um sucesso silencioso. Depois da correção, o mesmo drill termina com
+0 imagens `deploy-drill/*` e 0 containers.
 
 ## Git
 
@@ -230,7 +248,7 @@ real do pipeline — nenhuma delas no código do serviço:
 
 O detalhe de cada defeito está em
 [`MICROLOGIN_1.0.0_RELEASE_CHECKLIST.md`](MICROLOGIN_1.0.0_RELEASE_CHECKLIST.md),
-seção "Os quatro defeitos do pipeline".
+seção "Os cinco defeitos".
 
 O ponto que importa registrar: **o segundo defeito tinha teste, e o teste
 passava.** Ele executava o `run:` de verdade com docker stubado e conferia
