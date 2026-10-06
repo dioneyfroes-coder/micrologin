@@ -9,6 +9,13 @@
         "expiry": "2027-01-01",
         "notes": "braces <=3.0.3 (ReDoS por stack exhaustion em glob profundamente aninhado). A faixa vulneravel inclui a ultima versao publicada, portanto nao ha versao corrigida a instalar. Tres caminhos de chegada: jest/micromatch e lint-staged/micromatch (devDependencies) e pm2/chokidar, onde pm2 e dependencia de PRODUCAO — `npm audit --omit=dev --audit-level=high` reporta as 3 high dessa arvore, e as demais 27 do total de 30 sao devDependencies. O padrao compilado vem de globs do proprio repositorio em tempo de teste/lint e, no caso do pm2, do arquivo de ecosystem e dos arquivos de processo monitorados no host: nenhuma entrada de requisicao HTTP alcanca esse codigo. Reavaliar quando micromatch ou braces publicarem correcao. Decisao registrada na secao 'Politica de dependencias' de docs/OPERACOES.md e no log de decisoes de docs/SEGURANCA.md."
       }
+    },
+    {
+      "GHSA-hp3w-g68c-fv3c": {
+        "active": true,
+        "expiry": "2027-01-01",
+        "notes": "sprintf-js (DoS por precision specifier sem limite em mensagem formatada). A faixa vulneravel e todas as versoes publicadas: nao existe correcao a instalar. O unico caminho de chegada e devDependency de teste: jest -> babel-plugin-istanbul -> @istanbuljs/load-nyc-config -> js-yaml@3 -> argparse@1 -> sprintf-js. Nao entra na arvore de runtime nem na imagem final, e o specifier alcancado e o texto estatico do proprio programa em mensagem de erro do argparse, nao entrada HTTP. Reavaliar quando a cadeia js-yaml@3/argparse@1 sair da arvore de teste. Decisao registrada na secao 'Politica de dependencias' de docs/OPERACOES.md."
+      }
     }
   ],
   "skip-dev": false,

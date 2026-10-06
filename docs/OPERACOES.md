@@ -343,11 +343,12 @@ valor é `{ active, expiry, notes }`. Foi o que a allowlist deste repositório
 passou a usar, e `tests/unit/audit-ci-gate.test.ts` falha se a lista voltar ao
 formato ignorado.
 
-Hoje existe **uma** exceção, e ela é datada:
+Hoje existem **duas** exceções, ambas datadas:
 
 | advisory | pacote | validade | por quê |
 | --- | --- | --- | --- |
 | `GHSA-vfj7-8cjw-p6xm` | `braces <=3.0.3` | 2027-01-01 | ReDoS por stack exhaustion. A faixa vulnerável **inclui a última versão publicada**, então não há versão corrigida a instalar. Todo caminho é de `devDependencies` (`jest`/`micromatch`, `lint-staged`/`micromatch`, `pm2`/`chokidar`) e o padrão vem de globs do próprio repositório em tempo de teste/lint, não de entrada de requisição. |
+| `GHSA-hp3w-g68c-fv3c` | `sprintf-js` | 2027-01-01 | DoS por precision specifier sem limite. A faixa vulnerável é **todas as versões publicadas** (pacote sem manutenção), então não há correção a instalar. O único caminho é de `devDependencies`: `jest` → `babel-plugin-istanbul` → `@istanbuljs/load-nyc-config` → `js-yaml@3` → `argparse@1` → `sprintf-js`; não entra na árvore de runtime nem na imagem final, e o alcançável é o texto estático do próprio programa em mensagem de erro do `argparse`. |
 
 A exceção é por **advisory**, nunca por pacote: allowlist por nome de pacote
 esconderia advisory nova do mesmo pacote, inclusive uma que já tivesse correção.
@@ -355,11 +356,10 @@ E o teste compara o conjunto `moderate+` da árvore com o conjunto allowlisted �
 nem mais, nem menos — então advisory nova reprova e exceção que o tempo já
 resolveu aparece como sobra a remover.
 
-`npm audit --audit-level=moderate` roda no mesmo job. Ele é mais fraco que o
-`audit-ci` (não tem mecanismo de exceção), então é o `audit-ci` que decide; ele
-fica como relatório direto do registry. Por isso ele ainda sai vermelho com
-`braces`, e isso é esperado: a única advisory `moderate+` da árvore é a que está
-na tabela acima.
+O `npm audit --audit-level=moderate` **não** roda mais no job. Ele não tem
+mecanismo de exceção e reprovava sempre por causa das advisories já
+allowlistadas — um pipeline vermelho por uma decisão já tomada não é sinal, é
+ruído. O gate é só o `audit-ci`, que é quem aplica a política acima.
 
 ---
 

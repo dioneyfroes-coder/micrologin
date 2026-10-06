@@ -1128,3 +1128,33 @@ exige sessão válida — quem enumera já tem conta — e a decisão de projeto
 atualização de perfil reporte conflito de username explicitamente. Corrigir o
 tempo sem mudar a resposta HTTP seria trabalho invisível; mudar a resposta é
 decisão de API. Registrado como pendência, não esquecido.
+
+### D35 — O gate de dependências é o `audit-ci`, e a allowlist tem duas exceções
+
+O CI rodava `npm audit --audit-level=moderate` **e** `audit-ci` no mesmo job. O
+`npm audit` cru não tem mecanismo de exceção: ele reprova por qualquer advisory
+`moderate+`, inclusive as que o projeto já decidiu aceitar. Com `braces` na
+allowlist, o job ficava vermelho por uma decisão já tomada — sinal virou ruído. O
+step cru foi removido; o `audit-ci` é o gate único, porque é ele que aplica a
+política.
+
+Cada exceção é por **advisory** (nunca por pacote), no formato `NSPRecord` que o
+`audit-ci` de fato honra (`{ active, expiry, notes }`), com validade datada. São
+duas:
+
+- `GHSA-vfj7-8cjw-p6xm` (`braces <=3.0.3`): sem versão corrigida publicada.
+- `GHSA-hp3w-g68c-fv3c` (`sprintf-js`): sem versão corrigida publicada, e o único
+  caminho é de `devDependencies` (`jest` → `babel-plugin-istanbul` →
+  `@istanbuljs/load-nyc-config` → `js-yaml@3` → `argparse@1` → `sprintf-js`), fora
+  da árvore de runtime e da imagem final.
+
+*Recusado:* allowlistar a advisory `critical` `GHSA-jqcg-44mw-7w3h`
+(`proxy-addr@2.0.7`, IP spoofing via IPv6 mapeado), transitiva do `express`.
+Havia correção (`2.0.8`) e o código é de **runtime**: aceitar seria escolher uma
+falha com conserto pronto. Foi corrigida por bump pontual do `proxy-addr`,
+mantendo `express@5.1.0` e sem o churn de um `npm audit fix` completo.
+Critical com correção não é exceção, é trabalho.
+
+`tests/unit/audit-ci-gate.test.ts` compara o conjunto `moderate+` da árvore com o
+conjunto allowlisted — **nem mais, nem menos** — então advisory nova reprova e
+exceção que o tempo resolveu aparece como sobra a remover.
