@@ -258,8 +258,8 @@ export function createAuthRoutes() {
    * @swagger
    * /logout:
    *   post:
-   *     summary: Encerrar sessão e revogar tokens
-   *     description: Revoga o access token (Authorization) e o refresh token informado no corpo
+*     summary: Encerrar sessão e revogar tokens
+    *     description: Revoga o access token, o refresh token informado e invalida TODAS as sessões do usuário (a user_session_version é incrementada). Logout é por usuário, não por dispositivo.
    *     tags: [Autenticação]
    *     security:
    *       - BearerAuth: []

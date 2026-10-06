@@ -412,6 +412,41 @@ describe('AuthService - encerramento de sessão (POST /logout)', () => {
     // A sessão inteira do dono do refresh cai, não só o par apresentado.
     expect(tokenPort.revokeUserTokens).toHaveBeenCalledWith('u-77');
   });
+
+  it('o logout de um par derruba o refresh de outro par do mesmo usuário (política: todas as sessões)', async() => {
+    // Simula o adapter real: `revokeUserTokens` incrementa a sessionVersion,
+    // e a checagem de refresh lê essa versão. Logout é por usuário, não por
+    // dispositivo — o par de OUTRO dispositivo do mesmo dono morre junto.
+    const revoked = new Set<string>();
+    const userRevoked = new Set<string>();
+    const tokenPort = {
+      revokeToken: jest.fn(async(token: string) => {
+        revoked.add(token);
+        return true;
+      }),
+      revokeUserTokens: jest.fn(async(userId: string) => {
+        userRevoked.add(userId);
+        return true;
+      }),
+      verifyRefreshToken: jest.fn(async(token: string) => {
+        if (userRevoked.has('u-1')) {
+          throw new Error('Refresh token foi revogado');
+        }
+        if (revoked.has(token)) {
+          throw new Error('Refresh token foi revogado');
+        }
+        return { id: 'u-1', username: 'alice' };
+      })
+    };
+    const service = new AuthService({}, {}, tokenPort, makeLogger());
+
+    // Dois "dispositivos" do mesmo usuário; logout do primeiro par.
+    await service.endSession({ refreshToken: 'rt-dispositivo-a' });
+
+    // Policy documentada: invalidação é de TODAS as sessões do usuário.
+    expect(tokenPort.revokeUserTokens).toHaveBeenCalledWith('u-1');
+    await expect(tokenPort.verifyRefreshToken('rt-dispositivo-b')).rejects.toThrow('Refresh token foi revogado');
+  });
 });
 
 describe('AuthService - troca de senha (step-up + histórico + sessões)', () => {

@@ -106,8 +106,9 @@ revogado voltar a valer. As duas saídas (Redis com réplica, ou gravar o carimb
 também no Mongo) mudam o modelo de operação e estão descritas em
 [`docs/SEGURANCA.md`](docs/SEGURANCA.md#d20--revogação-em-nó-único-o-limite-aceito-e-o-que-fecha-a-lacuna).
 
-| limitação | por quê |
+| Limitação | Por quê |
 | --- | --- |
+| **Logout é por usuário, não por dispositivo** | o logout incrementa a `user_session_version`, então derruba **todas** as sessões do usuário, não só o par enviado. Logout individual exigiria estado por sessão (`sessionId`/`deviceId`/`jti`), fora do escopo da 1.0.0 |
 | MongoDB single-node | escala da API não transforma o banco em HA; RPO 24h pelo backup cifrado |
 | Rate limit em memória quando o Redis cai | vira **por processo**: com PM2 em cluster, N workers dão N vezes o limite |
 | Auditoria e observabilidade em memória | cap de 1000 eventos; perdem no restart. Sinalização, não registro de conformidade |
