@@ -367,7 +367,7 @@ grep -R "verifyRefreshToken" src tests
 
 ---
 
-## P1.3 — Formalizar a política de logout
+## ✅ P1.3 — Formalizar a política de logout (concluído — commit `86f67fd`)
 
 ### Situação
 
@@ -385,9 +385,9 @@ Se no futuro for necessário logout individual, introduzir estado por sessão (`
 
 ### Critério
 
-- [ ] Comportamento documentado.
-- [ ] Teste correspondente.
-- [ ] README/API docs refletem o comportamento real.
+- [x] Comportamento documentado.
+- [x] Teste correspondente.
+- [x] README/API docs refletem o comportamento real.
 
 ---
 
@@ -884,7 +884,7 @@ git push origin v1.0.0
 
 - [x] Node e `@types/node` alinhados.
 - [x] `verifyRefreshToken()` obrigatório.
-- [ ] Semântica de logout documentada.
+- [x] Semântica de logout documentada.
 - [ ] Limitação do Redis documentada.
 - [ ] Testes de segurança atualizados.
 
