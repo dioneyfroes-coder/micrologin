@@ -55,3 +55,9 @@ artifacts/
 # Nao e fonte: versionar .pyc guarda artefato de build no repositorio.
 __pycache__/
 *.pyc
+
+# Persistencia local do Redis em execucao na maquina de dev: o dump fica ao
+# lado do diretorio de trabalho e nao e fonte. Em producao a persistencia e
+# controlada pelo compose/runbook, nao por um arquivo versionado.
+*.rdb
+*.aof

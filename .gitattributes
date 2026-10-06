@@ -1,0 +1,29 @@
+# Normaliza o fim de linha para LF no repositório inteiro.
+#
+# O projeto é desenvolvido/rodado em Linux (CI) e assumia LF. Um checkout no
+# Windows com `core.autocrlf=true` (padrão do Git for Windows) traz CRLF para o
+# working tree, e testes que casam `\n` em conteúdo de arquivo passam a falhar
+# localmente sem que o comportamento do CI mude. Este arquivo elimina a
+# divergência: `text=auto eol=lf` grava LF no working tree em qualquer SO.
+* text=auto eol=lf
+
+# Binários: nunca normalizar.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.tgz binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+
+# Material de chave/certificado: bytes opacos, sem conversão de fim de linha.
+*.pem binary
+*.key binary
+*.crt binary
+*.pfx binary
