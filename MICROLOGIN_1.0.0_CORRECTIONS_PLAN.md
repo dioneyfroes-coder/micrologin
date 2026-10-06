@@ -957,3 +957,26 @@ Depois da tag `v1.0.0`, qualquer mudança que altere comportamento deve ir para 
 ```
 
 A `1.0.0` deve ser tratada como baseline estável, não como o começo de uma fila infinita de melhorias.
+
+---
+
+## Nota — execução local no Windows
+
+O projeto é feito para Linux (CI e runtime). Para rodar na máquina de
+desenvolvimento sem Docker, o `.env` aponta para Mongo/Redis nativos e o gate
+`npx audit-ci --config .audit-ci.json` sai 0.
+
+Sete suítes unitárias **não passam no Windows** por incompatibilidade de
+plataforma, e isso é esperado — o CI (Linux) é a fonte da verdade:
+
+- `jwt-key-provisioning`, `dependency-secrets-provisioning`,
+  `dependency-secrets-rotation` — checam modo `600`; o NTFS não honra modo POSIX
+  (lê `0o666`), e o `jwt-key-provisioning` ainda chama `openssl` por binário.
+- `capacity-gc-parser`, `ddos-survival-driver`, `replica-session-driver` — passam
+  caminho absoluto do Windows a `import()`/loader ESM, que exige `file://`
+  (`ERR_UNSUPPORTED_ESM_URL_SCHEME`).
+- `openapi-spec` — casa glob com `/`; no Windows o separador é `\`.
+
+O resto da suíte (58 suítes, 916 testes) passa. As suítes Windows-dependentes
+ficam como caveat: corrigi-las não é adaptação local, é portabilidade, e muda o
+código por uma plataforma que não é a de produção.
