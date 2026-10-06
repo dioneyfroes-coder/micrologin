@@ -59,7 +59,7 @@ done
 # uid do `nodeuser` no Dockerfile; 999 e o `mongodb`/`redis` das imagens oficiais.
 APP_UID="${DEPS_APP_UID:-1001}"
 DEP_UID="${DEPS_DEP_UID:-999}"
-CHOWN_IMAGE="${DEPS_CHOWN_IMAGE:-node:22-alpine}"
+CHOWN_IMAGE="${DEPS_CHOWN_IMAGE:-node:24-alpine}"
 REDIS_IMAGE="${DEPS_REDIS_IMAGE:-redis:7-alpine}"
 
 # Nome do usuario da aplicacao nos dois lados. Nao e "root", "admin" nem

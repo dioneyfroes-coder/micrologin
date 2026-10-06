@@ -49,7 +49,7 @@ services:
       #
       # O valor NAO e um palpite: e o que a medicao de 400 VUs supports, com
       # folga explicita sobre o conjunto vivo e dentro do teto de 1 GiB do
-      # container. Sem esta linha o Node escolhe sozinho (524 MB no Node 22
+      # container. Sem esta linha o Node escolhe sozinho (524 MB no Node 24
       # sob este cgroup), e essa escolha e heuristica do V8, nao um contrato:
       # ela muda de versao para versao e sobe junto com o limite do container.
       # Fixada, a memoria do processo passa a ter dono declarado -- e o modo de

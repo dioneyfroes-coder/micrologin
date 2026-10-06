@@ -132,7 +132,7 @@ const makeRepo = (): void => {
   sh('git config user.email release@test.local && git config user.name "Release Test"', repoDir);
 
   writeFileSync(join(repoDir, 'package.json'), JSON.stringify({ name: 'x', version: '0.9.0' }, null, 2));
-  writeFileSync(join(repoDir, 'Dockerfile'), 'FROM node:22-alpine\n');
+  writeFileSync(join(repoDir, 'Dockerfile'), 'FROM node:24-alpine\n');
   sh('git add -A && git commit -q -m "chore: base"', repoDir);
   sh('git tag -a v0.9.0 -m "v0.9.0"', repoDir);
 

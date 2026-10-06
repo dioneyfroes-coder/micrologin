@@ -83,7 +83,7 @@ fi
 
 APP_UID="${DEPS_APP_UID:-1001}"
 DEP_UID="${DEPS_DEP_UID:-999}"
-CHOWN_IMAGE="${DEPS_CHOWN_IMAGE:-node:22-alpine}"
+CHOWN_IMAGE="${DEPS_CHOWN_IMAGE:-node:24-alpine}"
 REDIS_IMAGE="${DEPS_REDIS_IMAGE:-redis:7-alpine}"
 
 if [ ! -d "$OUT_DIR" ]; then

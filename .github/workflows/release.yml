@@ -24,7 +24,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  NODE_VERSION: '22.x'
+  NODE_VERSION: '24.x'
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 

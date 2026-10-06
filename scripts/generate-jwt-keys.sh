@@ -43,7 +43,7 @@ done
 # uid do `nodeuser` no Dockerfile. Ajuste aqui se a imagem mudar de uid — é o
 # mesmo número que o compose precisa montar legível.
 APP_UID="${JWT_KEYS_APP_UID:-1001}"
-CHOWN_IMAGE="${JWT_KEYS_CHOWN_IMAGE:-node:22-alpine}"
+CHOWN_IMAGE="${JWT_KEYS_CHOWN_IMAGE:-node:24-alpine}"
 
 if ! command -v openssl >/dev/null 2>&1; then
   echo "ERRO: openssl nao encontrado. Instale openssl para gerar chaves ES256." >&2

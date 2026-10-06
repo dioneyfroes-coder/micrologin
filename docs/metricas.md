@@ -23,7 +23,7 @@ Comando:
 node scripts/benchmark-password-hash.mjs --iterations 20 --concurrency 1,2,4
 
 # no orçamento real de produção: 2.0 CPU e 512 MB
-docker run --rm --cpus 2.0 --memory 512m -v "$PWD/scripts:/bench:ro" node:22-alpine \
+docker run --rm --cpus 2.0 --memory 512m -v "$PWD/scripts:/bench:ro" node:24-alpine \
   sh -c 'cd /tmp && npm i @node-rs/argon2 --no-audit --no-fund --silent \
   && cp /bench/benchmark-password-hash.mjs /tmp/ \
   && node /tmp/benchmark-password-hash.mjs --iterations 20 --concurrency 1,2,4'

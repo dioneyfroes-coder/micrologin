@@ -30,7 +30,7 @@
  *
  * Rodar dentro do container (é o número que vale):
  *   docker run --rm --cpus 2.0 --memory 512m -v "$PWD/scripts:/bench:ro" \
- *     node:22-alpine sh -c 'cd /tmp && npm i @node-rs/argon2 \
+ *     node:24-alpine sh -c 'cd /tmp && npm i @node-rs/argon2 \
  *     --no-audit --no-fund --silent && node /bench/benchmark-password-hash.mjs'
  *
  * O script mede só argon2id: o bcrypt saiu do projeto depois de a decisão D16,

@@ -47,7 +47,7 @@ deles está logo abaixo.
 
 ## Stack
 
-Node.js 22+ · Express · MongoDB (Mongoose) · Redis (node-redis 5) · JWT
+Node.js 24+ · Express · MongoDB (Mongoose) · Redis (node-redis 5) · JWT
 (jsonwebtoken / jose) · argon2id (`@node-rs/argon2`) · Jest · Docker Compose ·
 GitHub Actions
 
