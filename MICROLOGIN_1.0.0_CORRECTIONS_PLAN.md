@@ -31,7 +31,7 @@ A prioridade é:
 
 # FASE 0 — BLOQUEADORES DA 1.0.0
 
-## P0.1 — Remover o `npm audit` que conflita com a política de allowlist
+## ✅ P0.1 — Remover o `npm audit` que conflita com a política de allowlist (concluído — commit `cb54d04`)
 
 ### Problema
 
@@ -85,14 +85,14 @@ Resultado esperado: `exit code 0`.
 
 ### Critério de conclusão
 
-- [ ] `npm audit` cru removido do CI.
-- [ ] `audit-ci` permanece como política oficial.
-- [ ] Allowlist documentada.
-- [ ] CI passa.
+- [x] `npm audit` cru removido do CI.
+- [x] `audit-ci` permanece como política oficial.
+- [x] Allowlist documentada.
+- [x] CI passa.
 
 ---
 
-## P0.2 — Impedir publicação de imagens Docker em Pull Requests
+## ✅ P0.2 — Impedir publicação de imagens Docker em Pull Requests (concluído — commit `e0778ae`)
 
 ### Problema
 
@@ -153,14 +153,14 @@ PR → nenhum push ao GHCR
 
 ### Critério de conclusão
 
-- [ ] PR não publica imagem.
-- [ ] PR ainda executa build.
-- [ ] PR ainda executa security scan.
-- [ ] Main/release continuam publicando.
+- [x] PR não publica imagem.
+- [x] PR ainda executa build.
+- [x] PR ainda executa security scan.
+- [x] Main/release continuam publicando.
 
 ---
 
-## P0.3 — Não mover `latest` antes do security gate
+## ✅ P0.3 — Não mover `latest` antes do security gate (concluído — commit `5d957e4`)
 
 ### Problema
 
@@ -235,14 +235,14 @@ latest
 
 ### Critério de conclusão
 
-- [ ] Trivy ocorre antes de `latest`.
-- [ ] Imagem reprovada nunca vira `latest`.
-- [ ] O mesmo artefato/digest é promovido entre as tags.
-- [ ] GitHub Release só ocorre após todos os gates.
+- [x] Trivy ocorre antes de `latest`.
+- [x] Imagem reprovada nunca vira `latest`.
+- [x] O mesmo artefato/digest é promovido entre as tags.
+- [x] GitHub Release só ocorre após todos os gates.
 
 ---
 
-## P0.4 — Corrigir o SHA utilizado em `workflow_dispatch`
+## ✅ P0.4 — Corrigir o SHA utilizado em `workflow_dispatch` (concluído — commit `965bea9`)
 
 ### Problema
 
@@ -282,15 +282,17 @@ Comparar com o SHA exibido pelo workflow.
 
 ### Critério de conclusão
 
-- [ ] Tag e commit são sempre correspondentes.
-- [ ] Execução manual não cria metadata enganosa.
-- [ ] Teste automatizado cobre o caso.
+- [x] Tag e commit são sempre correspondentes.
+- [x] Execução manual não cria metadata enganosa.
+- [x] Teste automatizado cobre o caso.
 
 ---
 
 # FASE 1 — CORREÇÕES IMPORTANTES
 
-## P1.1 — Alinhar Node.js com `@types/node`
+## ✅ P1.1 — Alinhar Node.js com `@types/node` (concluído — commit `2040933`)
+
+> Node 24 LTS em `@types/node` (`^24.7.0`), `NODE_VERSION: '24.x'` no CI, `node:24-alpine` no Dockerfile/scripts e docs atualizadas. Typecheck, lint, build e `npm test` validados (caveat Windows permanece).
 
 ### Problema
 
@@ -870,17 +872,17 @@ git push origin v1.0.0
 
 ## P0 — Obrigatório
 
-- [ ] `npm audit` conflitante removido.
-- [ ] `audit-ci` funcionando.
-- [ ] PR não publica imagens.
-- [ ] Trivy executa antes de `latest`.
-- [ ] `latest` só aponta para imagem aprovada.
-- [ ] `workflow_dispatch` usa o SHA real da tag/ref.
-- [ ] Release só nasce após todos os gates.
+- [x] `npm audit` conflitante removido.
+- [x] `audit-ci` funcionando.
+- [x] PR não publica imagens.
+- [x] Trivy executa antes de `latest`.
+- [x] `latest` só aponta para imagem aprovada.
+- [x] `workflow_dispatch` usa o SHA real da tag/ref.
+- [x] Release só nasce após todos os gates.
 
 ## P1 — Muito importante
 
-- [ ] Node e `@types/node` alinhados.
+- [x] Node e `@types/node` alinhados.
 - [ ] `verifyRefreshToken()` obrigatório.
 - [ ] Semântica de logout documentada.
 - [ ] Limitação do Redis documentada.
