@@ -60,10 +60,11 @@ jobs:
       - name: 🧪 TypeScript typecheck
         run: npm run typecheck
 
-      - name: 🔒 Security audit
-        run: npm audit --audit-level=moderate
-
-      - name: 📊 Dependency check
+      - name: 🔒 Dependency security audit
+        # O gate oficial é o `audit-ci`, que honra a allowlist do projeto.
+        # O `npm audit --audit-level=moderate` cru foi removido: ele não tem
+        # mecanismo de exceção e reprovava sempre por causa do advisory
+        # allowlisted em `.audit-ci.json` (ver docs/OPERACOES.md).
         run: npx audit-ci --config .audit-ci.json
 
   # ========================
