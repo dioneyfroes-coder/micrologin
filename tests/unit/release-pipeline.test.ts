@@ -83,7 +83,8 @@ const sh = (command: string, cwd: string, env: NodeJS.ProcessEnv = {}): string =
 const shellPath = (path: string): string => path.replace(/\\/g, '/');
 
 const RESOLVE_SCRIPT = scriptOf('validate', '🏷️ Resolve and validate tag');
-const IMAGE_SCRIPT = scriptOf('image', '🐳 Build and push image');
+const IMAGE_SCRIPT = scriptOf('image', '🐳 Build and push candidate image');
+const PROMOTE_SCRIPT = scriptOf('promote', '🏷️ Promote candidate to release tags');
 
 /**
  * Os três defeitos abaixo eram invisíveis para os testes deste arquivo, e
@@ -355,7 +356,7 @@ describe('release: o changelog tem range', () => {
 });
 
 describe('release: a imagem é construída de verdade', () => {
-  it('o script do workflow executa buildx com --push e as três tags', () => {
+  it('o build publica só a tag candidata, sem tocar nas tags oficiais', () => {
     // Roda o `run:` real com docker stubado, para o teste ser rápido e não
     // precisar de registry. O que se verifica é o comando que sai.
     //
@@ -419,55 +420,146 @@ fi
 
     expect(calls).toMatch(/buildx build/);
     expect(calls).toMatch(/--push/);
-    expect(calls).toMatch(/:1\.0\.0/);
-    expect(calls).toMatch(/:v1\.0\.0/);
-    expect(calls).toMatch(/:abc123def456/);
+    expect(calls).toMatch(/:candidate-abc123def456/);
+    // As tags oficiais nascem na promoção, depois do scan. Publicá-las aqui é o
+    // defeito que este item fecha: um Trivy reprovado deixaria `latest` na
+    // imagem rejeitada.
+    expect(calls).not.toMatch(/:latest/);
+    expect(calls).not.toMatch(/:1\.0\.0\b/);
+    expect(calls).not.toMatch(/:v1\.0\.0\b/);
     // Só `linux/amd64`, por decisão e não por esquecimento. O arm64 entrou no
     // caminho crítico da release sem nenhum consumidor — nenhum compose pinando
     // plataforma, nenhum alvo de deploy — e sem ter sido verificado: a máquina
     // do build não tem QEMU, então `linux/arm64` só era prova por inspeção do
-    // lock. O problema é que `buildx` constrói as duas plataformas numa única
-    // invocação: se o arm64 falhasse, a release inteira cairia, inclusive para
-    // quem só puxa amd64. Numa release o caminho crítico deve conter só o que
-    // foi verificado de fato.
+    // lock. Publicar plataforma sem consumidor só compra um modo de falha.
     expect(calls).toMatch(/--platform linux\/amd64\b/);
     expect(calls).not.toMatch(/linux\/arm64/);
 
+    const outputs = readFileSync(output, 'utf8');
+    expect(outputs).toContain('digest=sha256:deadbeef');
+
     const summaryText = readFileSync(summary, 'utf8');
-    expect(summaryText).toMatch(/digest/);
     expect(summaryText).toMatch(/sha256:deadbeef/);
 
     rmSync(stub, { recursive: true, force: true });
   });
 
+  it('a promoção move as tags oficiais para o digest escaneado', () => {
+    // A promoção não reconstrói: ela replica o digest aprovado. `--prefer-index
+    // =false` é o que mantém o manifesto single-platform no lugar de embrulhá-lo
+    // num índice (o que trocaria o digest).
+    const stub = mkdtempSync(join(tmpdir(), 'docker-stub-'));
+    const log = join(stub, 'calls.log');
+    writeFileSync(
+      join(stub, 'docker'),
+      `#!/usr/bin/env bash
+echo "$@" >> "${shellPath(log)}"
+if [ "$1" = "buildx" ] && [ "$2" = "imagetools" ] && [ "$3" = "inspect" ]; then
+  echo "sha256:deadbeef"
+fi
+`,
+      { mode: 0o755 }
+    );
+
+    try {
+      runScript(PROMOTE_SCRIPT, repoDir, {
+        PATH: `${stub}${delimiter}${process.env.PATH}`,
+        REGISTRY: 'ghcr.io',
+        IMAGE_NAME: 'ghcr-image',
+        TAG: 'v1.0.0',
+        VERSION: '1.0.0',
+        IS_PRERELEASE: 'false',
+        DIGEST: 'sha256:deadbeef',
+        SHA: 'abc123def456',
+        GITHUB_STEP_SUMMARY: join(stub, 's.md')
+      });
+
+      const calls = readFileSync(log, 'utf8');
+
+      expect(calls).toMatch(/imagetools create/);
+      expect(calls).toMatch(/--prefer-index=false/);
+      expect(calls).toMatch(/--tag ghcr\.io\/ghcr-image:1\.0\.0\b/);
+      expect(calls).toMatch(/--tag ghcr\.io\/ghcr-image:v1\.0\.0\b/);
+      expect(calls).toMatch(/--tag ghcr\.io\/ghcr-image:abc123def456\b/);
+      expect(calls).toMatch(/--tag ghcr\.io\/ghcr-image:latest\b/);
+      // A fonte da promoção é o digest aprovado, nunca uma tag mutável.
+      expect(calls).toMatch(/ghcr\.io\/ghcr-image@sha256:deadbeef/);
+    } finally {
+      rmSync(stub, { recursive: true, force: true });
+    }
+  });
+
+  it('a promoção reprova se uma tag não apontar para o digest aprovado', () => {
+    // Stub que responde `inspect` com outro digest: promover o artefato errado é
+    // o modo de falha que este item existe para impedir, então tem que reprovar.
+    const stub = mkdtempSync(join(tmpdir(), 'docker-stub-'));
+    writeFileSync(
+      join(stub, 'docker'),
+      `#!/usr/bin/env bash
+if [ "$1" = "buildx" ] && [ "$2" = "imagetools" ] && [ "$3" = "inspect" ]; then
+  echo "sha256:outro"
+fi
+`,
+      { mode: 0o755 }
+    );
+
+    try {
+      let code = 0;
+      try {
+        runScript(PROMOTE_SCRIPT, repoDir, {
+          PATH: `${stub}${delimiter}${process.env.PATH}`,
+          REGISTRY: 'ghcr.io',
+          IMAGE_NAME: 'ghcr-image',
+          TAG: 'v1.0.0',
+          VERSION: '1.0.0',
+          IS_PRERELEASE: 'false',
+          DIGEST: 'sha256:deadbeef',
+          SHA: 'abc123def456',
+          GITHUB_STEP_SUMMARY: join(stub, 's.md')
+        });
+      } catch (error) {
+        code = (error as { status: number }).status;
+      }
+
+      expect(code).not.toBe(0);
+    } finally {
+      rmSync(stub, { recursive: true, force: true });
+    }
+  });
+
   it('latest só entra em versão estável', () => {
-    const buildTags = (isPrerelease: string): string => {
+    const promoteTags = (isPrerelease: string): string => {
       const stub = mkdtempSync(join(tmpdir(), 'docker-stub-'));
       const log = join(stub, 'calls.log');
       writeFileSync(
         join(stub, 'docker'),
-        `#!/usr/bin/env bash\necho "$@" >> "${shellPath(log)}"\n`,
+        `#!/usr/bin/env bash
+echo "$@" >> "${shellPath(log)}"
+if [ "$1" = "buildx" ] && [ "$2" = "imagetools" ] && [ "$3" = "inspect" ]; then
+  echo "sha256:deadbeef"
+fi
+`,
         { mode: 0o755 }
       );
-      runScript(IMAGE_SCRIPT, repoDir, {
+      runScript(PROMOTE_SCRIPT, repoDir, {
         PATH: `${stub}${delimiter}${process.env.PATH}`,
         REGISTRY: 'ghcr.io',
         IMAGE_NAME: 'x/y',
         TAG: 'v1.1.0-rc.1',
         VERSION: '1.1.0-rc.1',
         IS_PRERELEASE: isPrerelease,
+        DIGEST: 'sha256:deadbeef',
         SHA: 'deadbeef',
-        GITHUB_STEP_SUMMARY: join(stub, 's.md'),
-        GITHUB_OUTPUT: join(stub, 'o.txt')
+        GITHUB_STEP_SUMMARY: join(stub, 's.md')
       });
       const text = readFileSync(log, 'utf8');
       rmSync(stub, { recursive: true, force: true });
       return text;
     };
 
-    expect(buildTags('false')).toMatch(/:latest/);
+    expect(promoteTags('false')).toMatch(/:latest/);
     // Um RC que toma `latest` faz quem puxa `latest` receber pré-release.
-    expect(buildTags('true')).not.toMatch(/:latest/);
+    expect(promoteTags('true')).not.toMatch(/:latest/);
   });
 
   it('não sobrou nenhum echo de sucesso sem operação por trás', () => {
@@ -527,6 +619,21 @@ describe('release: os gates do item 1.9 estão todos lá', () => {
     expect(releaseJob).toMatch(/needs:.*security/);
   });
 
+  it('a promoção só move as tags depois do scan, e a release só depois dela', () => {
+    // A ordem é o item P0.3: `latest` não pode existir antes do gate. A
+    // promoção depende do `security`, e a GitHub Release depende da promoção —
+    // sem esta última, a release poderia sair antes das tags oficiais.
+    expect(blockOf('promote')).toMatch(/needs:.*security/);
+    expect(WORKFLOW.slice(WORKFLOW.indexOf('\n  release:'))).toMatch(/needs:.*promote/);
+  });
+
+  it('o build não conhece a tag `latest`', () => {
+    // O build só publica a tag candidata; quem move `latest` é a promoção, e só
+    // em versão estável. Se `latest` reaparecer no `image`, o gate voltou a ser
+    // contornável.
+    expect(blockOf('image')).not.toMatch(/:latest/);
+  });
+
   it('a release usa a tag validada, não github.ref_name', () => {
     // `tag_name: ${{ github.ref_name }}` é o bug original.
     expect(WORKFLOW).not.toMatch(/tag_name:\s*\$\{\{\s*github\.ref_name\s*\}\}/);
@@ -572,7 +679,7 @@ describe('release: o workflow sobrevive à fronteira entre steps', () => {
   it('nenhum step usa uma variável que ele mesmo não define', () => {
     const offenders: string[] = [];
 
-    for (const job of ['validate', 'quality', 'tests', 'image', 'release', 'security']) {
+    for (const job of ['validate', 'quality', 'tests', 'image', 'promote', 'release', 'security']) {
       for (const step of stepsOf(blockOf(job))) {
         if (!step.run.includes('set -u')) {
           continue;

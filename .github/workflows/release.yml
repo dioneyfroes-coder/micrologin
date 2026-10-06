@@ -237,7 +237,7 @@ jobs:
   # IMAGEM
   # ========================
   image:
-    name: 🐳 Build & Publish Image
+    name: 🐳 Build & Publish Candidate Image
     runs-on: ubuntu-latest
     needs: [validate, quality, tests]
     permissions:
@@ -250,6 +250,7 @@ jobs:
     outputs:
       digest: ${{ steps.build.outputs.digest }}
       image: ${{ steps.build.outputs.image }}
+      candidate: ${{ steps.build.outputs.candidate }}
 
     steps:
       - name: 📥 Checkout the tagged tree
@@ -267,44 +268,25 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 🐳 Build and push image
+      - name: 🐳 Build and push candidate image
         id: build
         env:
-          TAG: ${{ needs.validate.outputs.tag }}
-          VERSION: ${{ needs.validate.outputs.version }}
-          IS_PRERELEASE: ${{ needs.validate.outputs.is-prerelease }}
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
 
           IMAGE="${REGISTRY}/${IMAGE_NAME}"
 
-          # Cada tag vira um `--tag` próprio. A versão anterior juntava as quatro
-          # numa string separada por vírgula e passava isso em UM `--tag`, e o
-          # buildx recusa: `invalid tag "a:1,b:2": invalid reference format`. Um
-          # `--tag` aceita uma referência, não uma lista — o build inteiro falha
-          # antes de tocar no registry. Foi a causa da falha do Release 1.0.0 no
-          # job `image`, depois de `quality` e `tests` já terem passado.
-          TAGS=("${IMAGE}:${VERSION}" "${IMAGE}:${TAG}" "${IMAGE}:${SHA}")
+          # Aqui publica-se **só** a tag candidata. As tags oficiais (versão, tag,
+          # SHA, `latest`) só nascem no job `promote`, depois que o Trivy aprova o
+          # digest. Antes desta correção o build empurrava as quatro de uma vez, e
+          # um Trivy reprovado deixava `latest` apontando para a imagem rejeitada.
+          CANDIDATE="${IMAGE}:candidate-${SHA}"
 
-          # `latest` é movido só em versão estável. Um RC que toma `latest` faz
-          # consumidor pulling em `latest` receber pré-release.
-          if [ "$IS_PRERELEASE" = "false" ]; then
-            TAGS+=("${IMAGE}:latest")
-            echo "→ latest será movido (versão estável)" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "→ latest NÃO será movido (prerelease)" >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-          echo "Tags: ${TAGS[*]}" >> "$GITHUB_STEP_SUMMARY"
-
-          TAG_ARGS=()
-          for image_tag in "${TAGS[@]}"; do
-            TAG_ARGS+=(--tag "${image_tag}")
-          done
-
-          # `buildx build --push` de verdade. O workflow anterior imprimia
-          # "✅ Docker images tagged" sem tocar em registry nenhum.
+          # Um `--tag` por referência. Juntar as tags numa string com vírgula
+          # (como a versão anterior fazia) derruba o `buildx` com
+          # `invalid tag "a:1,b:2": invalid reference format` antes de tocar no
+          # registry — foi a falha do Release 1.0.0 no job `image`.
           #
           # Só `linux/amd64`. O arm64 saiu por decisão, e o motivo é o caminho
           # crítico: um arm64 quebrado derrubaria a release inteira — inclusive
@@ -318,31 +300,32 @@ jobs:
           docker buildx build \
             --platform linux/amd64 \
             --provenance=false \
-            "${TAG_ARGS[@]}" \
+            --tag "${CANDIDATE}" \
             --push \
             .
 
-          # buildx grava o digest de cada tag em metadata; a primeira é o digest
-          # efetivamente publicado.
-          DIGEST=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{ .Manifest.Digest }}')
+          # `buildx build --push` de verdade. O workflow anterior imprimia
+          # "✅ Docker images tagged" sem tocar em registry nenhum.
+          DIGEST=$(docker buildx imagetools inspect "${CANDIDATE}" --format '{{ .Manifest.Digest }}')
 
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
           echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
           {
-            echo "### 🐳 Imagem publicada"
+            echo "### 🐳 Imagem candidata"
             echo ""
             echo "- registry: \`${REGISTRY}\`"
-            echo "- image: \`${IMAGE}\`"
-            echo "- tags: \`${VERSION}\`, \`${TAG}\`, \`${SHA}\`"
+            echo "- candidata: \`${CANDIDATE}\`"
             echo "- platforms: \`linux/amd64\`"
             echo "- **digest**: \`${DIGEST}\`"
+            echo ""
+            echo "As tags oficiais são promovidas só após o security scan."
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ========================
-  # SCAN DA IMAGEM PUBLICADA
+  # SCAN DA IMAGEM CANDIDATA
   # ========================
   security:
-    name: 🛡️ Scan published image
+    name: 🛡️ Scan candidate image
     runs-on: ubuntu-latest
     needs: [validate, image]
     permissions:
@@ -350,11 +333,13 @@ jobs:
       security-events: write
 
     steps:
-      - name: 🔍 Trivy gate on the published digest
+      - name: 🔍 Trivy gate on the candidate digest
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          # Scan por digest: é a mesma imagem que a release vai referenciar,
-          # não uma tag que pode ter sido movida entre o build e o scan.
+          # Scan por digest: é a mesma imagem que a promoção vai etiquetar, não
+          # uma tag que pode ter sido movida entre o build e o scan. As tags
+          # oficiais ainda não existem neste ponto — é isto que garante que uma
+          # imagem reprovada nunca vira `latest`.
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.image.outputs.digest }}
           format: 'sarif'
           output: 'trivy-results.sarif'
@@ -370,12 +355,89 @@ jobs:
           sarif_file: 'trivy-results.sarif'
 
   # ========================
+  # PROMOÇÃO DAS TAGS
+  # ========================
+  promote:
+    name: 🏷️ Promote candidate to release tags
+    runs-on: ubuntu-latest
+    # Só depois do scan: a promoção é o que move `latest`, e move-lo antes do
+    # gate é exatamente o defeito que este job fecha.
+    needs: [validate, image, security]
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: 🐳 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 🔑 Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🏷️ Promote candidate to release tags
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          IS_PRERELEASE: ${{ needs.validate.outputs.is-prerelease }}
+          DIGEST: ${{ needs.image.outputs.digest }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          IMAGE="${REGISTRY}/${IMAGE_NAME}"
+
+          REFS=("${IMAGE}:${VERSION}" "${IMAGE}:${TAG}" "${IMAGE}:${SHA}")
+
+          # `latest` é movido só em versão estável. Um RC que toma `latest` faz
+          # consumidor pulling em `latest` receber pré-release.
+          if [ "$IS_PRERELEASE" = "false" ]; then
+            REFS+=("${IMAGE}:latest")
+            echo "→ latest será promovido (versão estável)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "→ latest NÃO será promovido (prerelease)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          TAG_ARGS=()
+          for ref in "${REFS[@]}"; do
+            TAG_ARGS+=(--tag "$ref")
+          done
+
+          # `--prefer-index=false` preserva o manifesto de origem. Sem ele o
+          # buildx embrulha a imagem single-platform num índice, e as tags
+          # oficiais passariam a apontar para outro digest — não o que o Trivy
+          # aprovou.
+          docker buildx imagetools create --prefer-index=false "${TAG_ARGS[@]}" "${IMAGE}@${DIGEST}"
+
+          # Prova de que cada tag aponta para o digest aprovado, e não para
+          # outro artefato: é a diferença entre "promoveu" e "promoveu o certo".
+          for ref in "${REFS[@]}"; do
+            promoted=$(docker buildx imagetools inspect "$ref" --format '{{ .Manifest.Digest }}')
+            if [ "$promoted" != "$DIGEST" ]; then
+              echo "::error::$ref aponta para $promoted, esperado $DIGEST"
+              exit 1
+            fi
+          done
+
+          {
+            echo "### 🏷️ Tags promovidas"
+            echo ""
+            echo "- digest: \`${DIGEST}\`"
+            for ref in "${REFS[@]}"; do
+              echo "- \`${ref}\`"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ========================
   # GITHUB RELEASE
   # ========================
   release:
     name: 🎉 Publish GitHub Release
     runs-on: ubuntu-latest
-    needs: [validate, image, security]
+    needs: [validate, image, security, promote]
     permissions:
       contents: write
 
