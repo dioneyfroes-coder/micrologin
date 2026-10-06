@@ -334,7 +334,7 @@ Node runtime = Node types = CI = Docker = documentação
 
 ---
 
-## P1.2 — Tornar `verifyRefreshToken()` obrigatório
+## ✅ P1.2 — Tornar `verifyRefreshToken()` obrigatório (concluído — commit `aa3b8d0`)
 
 ### Problema
 
@@ -361,9 +361,9 @@ grep -R "verifyRefreshToken" src tests
 
 ### Critério
 
-- [ ] Interface obrigatória.
-- [ ] Todas as implementações compilam.
-- [ ] Todos os testes passam.
+- [x] Interface obrigatória.
+- [x] Todas as implementações compilam.
+- [x] Todos os testes passam.
 
 ---
 
@@ -883,7 +883,7 @@ git push origin v1.0.0
 ## P1 — Muito importante
 
 - [x] Node e `@types/node` alinhados.
-- [ ] `verifyRefreshToken()` obrigatório.
+- [x] `verifyRefreshToken()` obrigatório.
 - [ ] Semântica de logout documentada.
 - [ ] Limitação do Redis documentada.
 - [ ] Testes de segurança atualizados.
