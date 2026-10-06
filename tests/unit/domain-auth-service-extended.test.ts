@@ -170,7 +170,8 @@ describe('AuthService - refresh e revogação', () => {
       type: 'Bearer'
     }),
     revokeToken: jest.fn().mockResolvedValue(true),
-    revokeUserTokens: jest.fn().mockResolvedValue(true)
+    revokeUserTokens: jest.fn().mockResolvedValue(true),
+    verifyRefreshToken: jest.fn().mockResolvedValue({})
   };
 
   it('renova tokens com rotação via refresh token', async() => {
@@ -188,7 +189,8 @@ describe('AuthService - refresh e revogação', () => {
     const bad = {
       refreshTokens: jest.fn().mockRejectedValue(
         Object.assign(new Error('Refresh token inválido: x'), { code: 'REFRESH_TOKEN_INVALID' })
-      )
+      ),
+      verifyRefreshToken: jest.fn().mockResolvedValue({})
     };
 
     const service = new AuthService({}, {}, bad, logger);
@@ -204,7 +206,8 @@ describe('AuthService - refresh e revogação', () => {
       refreshTokens: jest.fn().mockRejectedValue(
         Object.assign(new Error('refresh reutilizado'), { code: 'REFRESH_TOKEN_REUSED', userId: 'u-7' })
       ),
-      revokeUserTokens: jest.fn().mockResolvedValue(true)
+      revokeUserTokens: jest.fn().mockResolvedValue(true),
+      verifyRefreshToken: jest.fn().mockResolvedValue({})
     };
     const service = new AuthService({}, {}, tokenGenerator, logger);
 
@@ -220,7 +223,8 @@ describe('AuthService - refresh e revogação', () => {
       refreshTokens: jest.fn().mockRejectedValue(
         Object.assign(new Error('refresh reutilizado'), { code: 'REFRESH_TOKEN_REUSED', userId: 'u-8' })
       ),
-      revokeUserTokens: jest.fn().mockResolvedValue(true)
+      revokeUserTokens: jest.fn().mockResolvedValue(true),
+      verifyRefreshToken: jest.fn().mockResolvedValue({})
     };
     const service = new AuthService({}, {}, tokenGenerator, logger, false);
 
@@ -236,7 +240,8 @@ describe('AuthService - refresh e revogação', () => {
       refreshTokens: jest.fn().mockRejectedValue(
         Object.assign(new Error('refresh reutilizado'), { code: 'REFRESH_TOKEN_REUSED', userId: 'u-9' })
       ),
-      revokeUserTokens: jest.fn().mockResolvedValue(false)
+      revokeUserTokens: jest.fn().mockResolvedValue(false),
+      verifyRefreshToken: jest.fn().mockResolvedValue({})
     };
     const service = new AuthService({}, {}, tokenGenerator, logger);
 
@@ -332,17 +337,6 @@ describe('AuthService - encerramento de sessão (POST /logout)', () => {
     expect(result.success).toBe(true);
     expect(tokenPort.revokeToken).toHaveBeenCalledWith('token-ruim', 3600000);
     // Não há sessão conhecida a derrubar: mentir aqui revogaria a conta errada.
-    expect(tokenPort.revokeUserTokens).not.toHaveBeenCalled();
-  });
-
-  it('TokenService sem verifyRefreshToken ainda encerra o par apresentado', async() => {
-    const tokenPort = makeTokenPort({ verifyRefreshToken: undefined });
-    const service = new AuthService({}, {}, tokenPort, makeLogger());
-
-    const result = await service.endSession({ refreshToken: 'rt' });
-
-    expect(result.success).toBe(true);
-    expect(tokenPort.revokeToken).toHaveBeenCalledWith('rt', 3600000);
     expect(tokenPort.revokeUserTokens).not.toHaveBeenCalled();
   });
 

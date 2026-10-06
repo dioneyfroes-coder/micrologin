@@ -117,7 +117,7 @@ export interface TokenService {
   generateTokenPair(payload: { id: string; username: string }, options?: TokenGenerationOptions): Promise<TokenPair>;
   generateAccessToken?(payload: { id: string; username: string }, expiresIn?: string): Promise<string>;
   verifyAccessToken?(token: string): Promise<unknown>;
-  verifyRefreshToken?(token: string): Promise<unknown>;
+  verifyRefreshToken(token: string): Promise<unknown>;
   refreshTokens?(refreshToken: string, options?: TokenGenerationOptions): Promise<TokenPair>;
   revokeToken(token: string, expiresIn?: number): Promise<boolean>;
   revokeUserTokens(userId: string, expiresIn?: number): Promise<boolean>;
@@ -825,11 +825,7 @@ export class AuthService {
       // Checagem antes da rotação: girar o token de um usuário inexistente
       // gastaria a única credencial de renovação que ele tinha, para então
       // recusarmos a emissão.
-      //
-      // `verifyRefreshToken` é opcional na porta para os duplos de teste
-      // históricos; sem ele, a checagem é simplesmente pulada e o próximo par é
-      // emitido sem confirmar a existência do usuário.
-      const subject = await this.tokenGenerator.verifyRefreshToken?.(refreshToken) as { id?: string } | undefined;
+      const subject = await this.tokenGenerator.verifyRefreshToken(refreshToken) as { id?: string } | undefined;
       if (subject?.id) {
         const existing = await this.userRepository.findById(subject.id);
         if (!existing) {
@@ -913,7 +909,7 @@ export class AuthService {
     // até a expiração natural, que é exatamente o que este caso de uso promete
     // impedir.
     let userId = authenticatedUserId || null;
-    if (!userId && refreshToken && this.tokenGenerator.verifyRefreshToken) {
+    if (!userId && refreshToken) {
       try {
         const payload = await this.tokenGenerator.verifyRefreshToken(refreshToken) as { id?: string };
         userId = payload?.id || null;
