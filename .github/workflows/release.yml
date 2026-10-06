@@ -42,6 +42,7 @@ jobs:
       version: ${{ steps.resolve.outputs.version }}
       previous-tag: ${{ steps.resolve.outputs.previous }}
       is-prerelease: ${{ steps.resolve.outputs.is_prerelease }}
+      sha: ${{ steps.resolve.outputs.sha }}
 
     steps:
       - name: 📥 Checkout code
@@ -125,6 +126,9 @@ jobs:
           echo "previous=$PREV" >> "$GITHUB_OUTPUT"
           echo "previous_tag=${PREV:-<primeira versão deste repositório>}" >> "$GITHUB_STEP_SUMMARY"
           echo "✅ Tag '$TAG' válida (versão ${TAG#v}, prerelease=$IS_PRERELEASE, anterior=${PREV:-nenhuma})"
+
+          # SHA real do commit que a tag aponta (não é `github.sha` no dispatch)
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   # ========================
   # GATES DE QUALIDADE E SEGURANÇA
@@ -271,7 +275,7 @@ jobs:
       - name: 🐳 Build and push candidate image
         id: build
         env:
-          SHA: ${{ github.sha }}
+          SHA: ${{ needs.validate.outputs.sha }}
         run: |
           set -euo pipefail
 
@@ -384,7 +388,7 @@ jobs:
           VERSION: ${{ needs.validate.outputs.version }}
           IS_PRERELEASE: ${{ needs.validate.outputs.is-prerelease }}
           DIGEST: ${{ needs.image.outputs.digest }}
-          SHA: ${{ github.sha }}
+          SHA: ${{ needs.validate.outputs.sha }}
         run: |
           set -euo pipefail
 
@@ -497,7 +501,7 @@ jobs:
           {
             echo "### 🎉 Release $TAG"
             echo ""
-            echo "- commit: \`${GITHUB_SHA}\`"
+            echo "- commit: \`${{ needs.validate.outputs.sha }}\`"
             echo "- tag: \`$TAG\`"
             echo "- digest: \`$DIGEST\`"
             echo "- release: \`${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/$TAG\`"
