@@ -2,6 +2,9 @@ import { describe, it, expect, jest } from '@jest/globals';
 
 const loadEnv = async(dotenvConfigResult: Record<string, unknown>) => {
   jest.resetModules();
+  // Este é o teste do próprio carregamento: ele precisa exercitar o `dotenv`,
+  // então desliga o curto-circuito que `tests/env.setup.js` liga para os demais.
+  delete process.env.MICROLOGIN_SKIP_DOTENV;
   const configMock = jest.fn(() => dotenvConfigResult);
   await jest.unstable_mockModule('dotenv', () => ({ default: { config: configMock } }));
   return {
