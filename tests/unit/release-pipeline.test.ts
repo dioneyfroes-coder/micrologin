@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, jest } from '@jest/globals';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
 
 /**
  * O release pipeline é executável de verdade
@@ -71,6 +71,16 @@ const runScript = (script: string, cwd: string, env: NodeJS.ProcessEnv = {}): st
 
 const sh = (command: string, cwd: string, env: NodeJS.ProcessEnv = {}): string =>
   execFileSync('bash', ['-c', command], { cwd, env: { ...process.env, ...env }, encoding: 'utf8' });
+
+/**
+ * Caminho seguro para embutir num script bash.
+ *
+ * No Linux o `tmpdir()` já é POSIX e isto é um no-op. No Windows os stubs são
+ * executados pelo bash do Git, onde `\` é caractere de escape: um caminho
+ * `C:\Users\...` num `echo >> ${…}` vira `C:Users...` e o redirect some sem
+ * erro. A troca por `/` é o que o MSYS2 entende como o mesmo caminho.
+ */
+const shellPath = (path: string): string => path.replace(/\\/g, '/');
 
 const RESOLVE_SCRIPT = scriptOf('validate', '🏷️ Resolve and validate tag');
 const IMAGE_SCRIPT = scriptOf('image', '🐳 Build and push image');
@@ -361,7 +371,7 @@ describe('release: a imagem é construída de verdade', () => {
     writeFileSync(
       join(stub, 'docker'),
       `#!/usr/bin/env bash
-echo "$@" >> ${log}
+echo "$@" >> "${shellPath(log)}"
 
 # Mesmo critério do buildx para uma referência: sem vírgula, sem espaço, e com
 # uma parte apos os dois-pontos para a tag. A vírgula é o que reprovava.
@@ -394,7 +404,7 @@ fi
     const output = join(stub, 'out.txt');
 
     runScript(IMAGE_SCRIPT, repoDir, {
-      PATH: `${stub}:${process.env.PATH}`,
+      PATH: `${stub}${delimiter}${process.env.PATH}`,
       REGISTRY: 'ghcr.io',
       IMAGE_NAME: 'dioneyfroes-coder/micrologin',
       TAG: 'v1.0.0',
@@ -436,11 +446,11 @@ fi
       const log = join(stub, 'calls.log');
       writeFileSync(
         join(stub, 'docker'),
-        `#!/usr/bin/env bash\necho "$@" >> ${log}\n`,
+        `#!/usr/bin/env bash\necho "$@" >> "${shellPath(log)}"\n`,
         { mode: 0o755 }
       );
       runScript(IMAGE_SCRIPT, repoDir, {
-        PATH: `${stub}:${process.env.PATH}`,
+        PATH: `${stub}${delimiter}${process.env.PATH}`,
         REGISTRY: 'ghcr.io',
         IMAGE_NAME: 'x/y',
         TAG: 'v1.1.0-rc.1',
