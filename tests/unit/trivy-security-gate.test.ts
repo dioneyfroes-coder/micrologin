@@ -283,17 +283,23 @@ describe('o workflow continua sendo YAML válido com o gate no lugar', () => {
   });
 
   it('o gate roda em pull_request, não só depois do merge', () => {
-    // Sem isto, um PR com dependência ou imagem vulnerável era aprovado pelo
-    // pipeline e só aparecia no `push` seguinte. A única proteção era tarde.
-    const condition = jobBlock('security').match(/^ {4}if: (.+)$/m)?.[1] ?? '';
+    // O PR não publica imagem, então o scan de PR roda no job `build`, contra a
+    // tag local que ele carrega com `load: true`. O job `security` cobre o
+    // digest publicado, em `push`/dispatch.
+    const prScan = stepNamed('build', '🔍 Run Trivy (PR, imagem local)');
 
-    expect(condition).toContain('github.event_name == \'pull_request\'');
-    // E o objeto do scan precisa existir no PR: o digest vem do job `build`,
-    // que roda nos três eventos.
-    expect(jobBlock('build')).not.toMatch(/^ {4}if:.*push_request/);
+    expect(prScan.if).toBe('github.event_name == \'pull_request\'');
+    // O scan de PR julga a imagem local, não o digest — que não existe em PR.
+    expect(String(prScan.with?.['image-ref'])).toContain(':pr-${{ github.event.pull_request.number }}');
+
+    // O gate do digest continua valendo em `push`/dispatch.
+    const condition = jobBlock('security').match(/^ {4}if: (.+)$/m)?.[1] ?? '';
+    expect(condition).toContain('github.event_name == \'push\'');
     expect(trivy().with?.['image-ref']).toContain(
       'needs.build.outputs.image-ref'
     );
+    // O build roda nos três eventos: não tem `if` de job que o confine.
+    expect(jobBlock('build')).not.toMatch(/^ {4}if:.*push_request/);
   });
 
   it('o upload de SARIF não reprova o job em PR de fork', () => {

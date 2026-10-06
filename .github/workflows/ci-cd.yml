@@ -139,6 +139,13 @@ jobs:
     name: 🏗️ Build & Package
     runs-on: ubuntu-latest
     needs: tests
+    # `packages: write` só é de fato usado no `push` (main/dispatch); em PR de
+    # fork o GitHub já rebaixa o token, então a publicação é impossível por duas
+    # vias. `security-events: write` é para o SARIF do scan de PR abaixo.
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
     outputs:
       # `image-url` nunca existiu como output do docker/build-push-action, então
       # o job de deploy recebia string vazia e imprimia um "deploy" sem imagem.
@@ -166,6 +173,10 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: 🔑 Login to Container Registry
+        # PR não publica imagem, então o login é desnecessário nele — e em PR de
+        # fork o token é somente-leitura. Pular o login mantém o PR sem tocar o
+        # registry.
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -191,11 +202,40 @@ jobs:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64
-          push: true
+          # PR constrói e carrega na VM do runner (para o scan logo abaixo), sem
+          # publicar no GHCR. main e dispatch publicam. `packages: write` em PR
+          # de fork já é rebaixado pelo GitHub — defesa em profundidade.
+          push: ${{ github.event_name != 'pull_request' }}
+          load: ${{ github.event_name == 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: 🔍 Run Trivy (PR, imagem local)
+        # Em PR a imagem não é publicada; o scan roda aqui, contra a tag local
+        # que o passo acima carregou na VM. Espelha a política do job `security`.
+        if: github.event_name == 'pull_request'
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          # `type=ref,event=pr` do metadata-action publica/carrega a tag `pr-<n>`.
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:pr-${{ github.event.pull_request.number }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          exit-code: '1'
+          severity: 'HIGH,CRITICAL'
+          ignore-unfixed: true
+          version: 'v0.75.0'
+
+      - name: 📤 Upload Trivy scan results (PR)
+        uses: github/codeql-action/upload-sarif@v4
+        # PR de fork roda com token somente-leitura: `security-events: write` é
+        # rebaixado e o upload é rejeitado. Reprovar por isso seria reprovar por
+        # um relatório que o GitHub não deixa gravar; o gate é o scan.
+        if: always() && github.event_name == 'pull_request'
+        continue-on-error: true
+        with:
+          sarif_file: 'trivy-results.sarif'
 
   # ========================
   # SECURITY SCANNING
@@ -204,12 +244,11 @@ jobs:
     name: 🛡️ Security Scanning
     runs-on: ubuntu-latest
     needs: build
-    # Roda também em `pull_request`. Sem isto o gate só existia depois do merge:
-    # um PR que adicionasse dependência ou imagem vulnerável era aprovado pelo
-    # pipeline e só era reprovado no `push` seguinte — ou seja, tarde demais para
-    # a decisão de revisão. O objeto do scan é o digest que o `build` acabou de
-    # publicar, que existe nos três eventos.
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request'
+    # Escaneia o digest que o `build` publicou. Roda em `push` (main) e em
+    # `workflow_dispatch`; NÃO em `pull_request`, porque PR não publica imagem
+    # (ver `push`/`load` no job `build`). O gate de PR acontece dentro do próprio
+    # `build`, sobre a imagem local carregada na VM do runner.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       # Upload de SARIF em evento `push` é rejeitado sem esta permissão.
