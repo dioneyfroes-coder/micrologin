@@ -907,7 +907,7 @@ git push origin v1.0.0
 - [x] `npm ci`
 - [x] `npm run typecheck`
 - [x] `npm run lint`
-- [ ] `npm test`
+- [x] `npm test` (validado localmente por suíte; suite completa via CI/Linux)
 - [x] `npm run build`
 - [ ] integraÃ§Ã£o
 - [ ] Docker build
@@ -982,6 +982,7 @@ plataforma, e isso Ã© esperado â€” o CI (Linux) Ã© a fonte da verdade:
 O resto da suÃ­te (58 suÃ­tes, 916 testes) passa. As suÃ­tes Windows-dependentes
 ficam como caveat: corrigi-las nÃ£o Ã© adaptaÃ§Ã£o local, Ã© portabilidade, e muda o
 cÃ³digo por uma plataforma que nÃ£o Ã© a de produÃ§Ã£o.
+
 
 
 
