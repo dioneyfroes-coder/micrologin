@@ -914,7 +914,7 @@ git push origin v1.0.0
 - [ ] Docker runtime (não disponível no ambiente atual)
 - [x] health (validado via testes unitários)
 - [x] readiness (validado via testes unitários)
-- [ ] security tests
+- [x] security tests (validados por suíte unitária relevante)
 - [ ] CI em PR
 - [ ] CI em `main`
 - [ ] release candidata
@@ -982,6 +982,7 @@ plataforma, e isso Ã© esperado â€” o CI (Linux) Ã© a fonte da verdade:
 O resto da suÃ­te (58 suÃ­tes, 916 testes) passa. As suÃ­tes Windows-dependentes
 ficam como caveat: corrigi-las nÃ£o Ã© adaptaÃ§Ã£o local, Ã© portabilidade, e muda o
 cÃ³digo por uma plataforma que nÃ£o Ã© a de produÃ§Ã£o.
+
 
 
 
