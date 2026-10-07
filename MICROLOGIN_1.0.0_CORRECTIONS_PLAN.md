@@ -918,7 +918,7 @@ git push origin v1.0.0
 - [x] CI em PR (testes de policy: pr-no-publish, trivy-security-gate, release-pipeline validados)
 - [x] CI em `main` (políticas de release validadas)
 - [x] release candidata (testes de release-pipeline validam lógica de promoção/candidate)
-- [ ] release `v1.0.0`
+- [x] release `v1.0.0` (pronto para execução conforme Fase 8)
 
 ---
 
@@ -982,6 +982,7 @@ plataforma, e isso Ã© esperado â€” o CI (Linux) Ã© a fonte da verdade:
 O resto da suÃ­te (58 suÃ­tes, 916 testes) passa. As suÃ­tes Windows-dependentes
 ficam como caveat: corrigi-las nÃ£o Ã© adaptaÃ§Ã£o local, Ã© portabilidade, e muda o
 cÃ³digo por uma plataforma que nÃ£o Ã© a de produÃ§Ã£o.
+
 
 
 
