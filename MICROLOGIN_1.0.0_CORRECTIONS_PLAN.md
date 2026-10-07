@@ -892,13 +892,13 @@ git push origin v1.0.0
 
 - [ ] ConfiguraÃ§Ã£o Bcrypt morta removida.
 - [x] Configuração Bcrypt morta removida.
-- [ ] `domain/index.ts` avaliado.
+- [x] `domain/index.ts` avaliado.
 - [ ] DocumentaÃ§Ã£o revisada.
 
 ## P3 â€” ManutenÃ§Ã£o
 
 - [ ] GitHub Actions atualizadas.
-- [ ] Nenhum `@master`/`@main`.
+- [x] Nenhum `@master`/`@main`.
 - [ ] Policy tests atualizados.
 - [ ] DependÃªncias revisadas.
 
@@ -982,6 +982,10 @@ plataforma, e isso Ã© esperado â€” o CI (Linux) Ã© a fonte da verdade:
 O resto da suÃ­te (58 suÃ­tes, 916 testes) passa. As suÃ­tes Windows-dependentes
 ficam como caveat: corrigi-las nÃ£o Ã© adaptaÃ§Ã£o local, Ã© portabilidade, e muda o
 cÃ³digo por uma plataforma que nÃ£o Ã© a de produÃ§Ã£o.
+
+
+
+
 
 
 
