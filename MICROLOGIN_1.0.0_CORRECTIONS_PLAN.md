@@ -983,3 +983,4 @@ O resto da suÃ­te (58 suÃ­tes, 916 testes) passa. As suÃ­tes Windows-depen
 ficam como caveat: corrigi-las nÃ£o Ã© adaptaÃ§Ã£o local, Ã© portabilidade, e muda o
 cÃ³digo por uma plataforma que nÃ£o Ã© a de produÃ§Ã£o.
 
+
