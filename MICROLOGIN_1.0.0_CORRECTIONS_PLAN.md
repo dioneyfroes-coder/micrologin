@@ -1,37 +1,37 @@
-# Micrologin — Plano de Correções para a Release 1.0.0
+﻿# Micrologin â€” Plano de CorreÃ§Ãµes para a Release 1.0.0
 
 ## Objetivo
 
-Levar o projeto ao estado em que a versão `1.0.0` possa ser publicada como projeto final de portfólio sem continuar adicionando funcionalidades de escopo.
+Levar o projeto ao estado em que a versÃ£o `1.0.0` possa ser publicada como projeto final de portfÃ³lio sem continuar adicionando funcionalidades de escopo.
 
-A prioridade é:
+A prioridade Ã©:
 
 1. eliminar bloqueadores reais;
-2. corrigir inconsistências do CI/CD;
+2. corrigir inconsistÃªncias do CI/CD;
 3. validar o sistema em ambiente limpo;
-4. remover dívida técnica pequena e ruído;
-5. congelar o código;
+4. remover dÃ­vida tÃ©cnica pequena e ruÃ­do;
+5. congelar o cÃ³digo;
 6. criar a release `v1.0.0`.
 
-> Regra desta fase: **não adicionar novas features**. MFA, OAuth, Kafka, Kubernetes, OpenTelemetry, novos provedores e novos bancos ficam fora do escopo da 1.0.0.
+> Regra desta fase: **nÃ£o adicionar novas features**. MFA, OAuth, Kafka, Kubernetes, OpenTelemetry, novos provedores e novos bancos ficam fora do escopo da 1.0.0.
 
 ---
 
-# Visão geral das fases
+# VisÃ£o geral das fases
 
-| Fase | Importância | Objetivo |
+| Fase | ImportÃ¢ncia | Objetivo |
 |---|---|---|
-| Fase 0 | 🔴 P0 — Bloqueador | Corrigir falhas que podem invalidar a release |
-| Fase 1 | 🟠 P1 — Alta | Fortalecer CI/CD e eliminar inconsistências importantes |
-| Fase 2 | 🟡 P2 — Média | Limpeza e consistência técnica |
-| Fase 3 | 🟢 P3 — Baixa | Melhorias de apresentação e manutenção |
-| Fase 4 | 🔵 Release | Validação final, congelamento e publicação |
+| Fase 0 | ðŸ”´ P0 â€” Bloqueador | Corrigir falhas que podem invalidar a release |
+| Fase 1 | ðŸŸ  P1 â€” Alta | Fortalecer CI/CD e eliminar inconsistÃªncias importantes |
+| Fase 2 | ðŸŸ¡ P2 â€” MÃ©dia | Limpeza e consistÃªncia tÃ©cnica |
+| Fase 3 | ðŸŸ¢ P3 â€” Baixa | Melhorias de apresentaÃ§Ã£o e manutenÃ§Ã£o |
+| Fase 4 | ðŸ”µ Release | ValidaÃ§Ã£o final, congelamento e publicaÃ§Ã£o |
 
 ---
 
-# FASE 0 — BLOQUEADORES DA 1.0.0
+# FASE 0 â€” BLOQUEADORES DA 1.0.0
 
-## ✅ P0.1 — Remover o `npm audit` que conflita com a política de allowlist (concluído — commit `cb54d04`)
+## âœ… P0.1 â€” Remover o `npm audit` que conflita com a polÃ­tica de allowlist (concluÃ­do â€” commit `cb54d04`)
 
 ### Problema
 
@@ -47,7 +47,7 @@ e:
 npx audit-ci --config .audit-ci.json
 ```
 
-O `audit-ci` respeita a allowlist configurada, enquanto o `npm audit` não usa a mesma política. Isso pode fazer o pipeline rejeitar uma vulnerabilidade explicitamente aceita pelo projeto.
+O `audit-ci` respeita a allowlist configurada, enquanto o `npm audit` nÃ£o usa a mesma polÃ­tica. Isso pode fazer o pipeline rejeitar uma vulnerabilidade explicitamente aceita pelo projeto.
 
 ### Passos
 
@@ -60,7 +60,7 @@ O `audit-ci` respeita a allowlist configurada, enquanto o `npm audit` não usa a
 2. Localizar o step:
 
 ```yaml
-- name: 🔒 Security audit
+- name: ðŸ”’ Security audit
   run: npm audit --audit-level=moderate
 ```
 
@@ -73,9 +73,9 @@ O `audit-ci` respeita a allowlist configurada, enquanto o `npm audit` não usa a
   run: npx audit-ci --config .audit-ci.json
 ```
 
-5. Verificar que `.audit-ci.json` contém somente vulnerabilidades explicitamente aceitas.
+5. Verificar que `.audit-ci.json` contÃ©m somente vulnerabilidades explicitamente aceitas.
 
-### Validação
+### ValidaÃ§Ã£o
 
 ```bash
 npx audit-ci --config .audit-ci.json
@@ -83,40 +83,40 @@ npx audit-ci --config .audit-ci.json
 
 Resultado esperado: `exit code 0`.
 
-### Critério de conclusão
+### CritÃ©rio de conclusÃ£o
 
 - [x] `npm audit` cru removido do CI.
-- [x] `audit-ci` permanece como política oficial.
+- [x] `audit-ci` permanece como polÃ­tica oficial.
 - [x] Allowlist documentada.
 - [x] CI passa.
 
 ---
 
-## ✅ P0.2 — Impedir publicação de imagens Docker em Pull Requests (concluído — commit `e0778ae`)
+## âœ… P0.2 â€” Impedir publicaÃ§Ã£o de imagens Docker em Pull Requests (concluÃ­do â€” commit `e0778ae`)
 
 ### Problema
 
-O pipeline também executa em `pull_request`, mas o build Docker está configurado para publicar a imagem. Isso pode falhar em forks, exigir permissões desnecessárias e poluir o GHCR com imagens temporárias.
+O pipeline tambÃ©m executa em `pull_request`, mas o build Docker estÃ¡ configurado para publicar a imagem. Isso pode falhar em forks, exigir permissÃµes desnecessÃ¡rias e poluir o GHCR com imagens temporÃ¡rias.
 
 ### Objetivo
 
 ```text
 Pull Request
-    ↓
+    â†“
 build
-    ↓
+    â†“
 test
-    ↓
+    â†“
 security scan
-    ↓
+    â†“
 sem push
 
 main / release
-    ↓
+    â†“
 build
-    ↓
+    â†“
 security scan
-    ↓
+    â†“
 push
 ```
 
@@ -138,29 +138,29 @@ push: ${{ github.event_name != 'pull_request' }}
 
 4. Garantir que o Trivy continue conseguindo analisar a imagem em PR.
 
-5. Revisar permissões para não dar `packages: write` onde ele não é necessário.
+5. Revisar permissÃµes para nÃ£o dar `packages: write` onde ele nÃ£o Ã© necessÃ¡rio.
 
-### Validação
+### ValidaÃ§Ã£o
 
 Abrir um PR de teste e confirmar:
 
 ```text
-PR → build ocorre
-PR → testes ocorrem
-PR → Trivy ocorre
-PR → nenhum push ao GHCR
+PR â†’ build ocorre
+PR â†’ testes ocorrem
+PR â†’ Trivy ocorre
+PR â†’ nenhum push ao GHCR
 ```
 
-### Critério de conclusão
+### CritÃ©rio de conclusÃ£o
 
-- [x] PR não publica imagem.
+- [x] PR nÃ£o publica imagem.
 - [x] PR ainda executa build.
 - [x] PR ainda executa security scan.
 - [x] Main/release continuam publicando.
 
 ---
 
-## ✅ P0.3 — Não mover `latest` antes do security gate (concluído — commit `5d957e4`)
+## âœ… P0.3 â€” NÃ£o mover `latest` antes do security gate (concluÃ­do â€” commit `5d957e4`)
 
 ### Problema
 
@@ -168,32 +168,32 @@ A pipeline de release pode executar:
 
 ```text
 build
-→ push 1.0.0
-→ push v1.0.0
-→ push SHA
-→ push latest
-→ Trivy
+â†’ push 1.0.0
+â†’ push v1.0.0
+â†’ push SHA
+â†’ push latest
+â†’ Trivy
 ```
 
-Se o Trivy falhar, `latest` já pode apontar para uma imagem rejeitada.
+Se o Trivy falhar, `latest` jÃ¡ pode apontar para uma imagem rejeitada.
 
 ### Objetivo
 
 ```text
 build
-  ↓
+  â†“
 candidate image
-  ↓
+  â†“
 Trivy
-  ↓
+  â†“
 PASSOU
-  ↓
+  â†“
 promote
-  ├── 1.0.0
-  ├── v1.0.0
-  ├── SHA
-  └── latest
-  ↓
+  â”œâ”€â”€ 1.0.0
+  â”œâ”€â”€ v1.0.0
+  â”œâ”€â”€ SHA
+  â””â”€â”€ latest
+  â†“
 GitHub Release
 ```
 
@@ -215,14 +215,14 @@ ghcr.io/.../micrologin:candidate-${GITHUB_SHA}
 
 4. Executar Trivy nessa imagem.
 
-5. Configurar o Trivy para falhar segundo a política do projeto. Exemplo:
+5. Configurar o Trivy para falhar segundo a polÃ­tica do projeto. Exemplo:
 
 ```yaml
 exit-code: '1'
 severity: 'HIGH,CRITICAL'
 ```
 
-6. Somente após sucesso promover o mesmo digest para:
+6. Somente apÃ³s sucesso promover o mesmo digest para:
 
 ```text
 1.0.0
@@ -231,18 +231,18 @@ SHA
 latest
 ```
 
-7. Criar a GitHub Release somente depois da promoção.
+7. Criar a GitHub Release somente depois da promoÃ§Ã£o.
 
-### Critério de conclusão
+### CritÃ©rio de conclusÃ£o
 
 - [x] Trivy ocorre antes de `latest`.
 - [x] Imagem reprovada nunca vira `latest`.
-- [x] O mesmo artefato/digest é promovido entre as tags.
-- [x] GitHub Release só ocorre após todos os gates.
+- [x] O mesmo artefato/digest Ã© promovido entre as tags.
+- [x] GitHub Release sÃ³ ocorre apÃ³s todos os gates.
 
 ---
 
-## ✅ P0.4 — Corrigir o SHA utilizado em `workflow_dispatch` (concluído — commit `965bea9`)
+## âœ… P0.4 â€” Corrigir o SHA utilizado em `workflow_dispatch` (concluÃ­do â€” commit `965bea9`)
 
 ### Problema
 
@@ -262,17 +262,17 @@ Ao executar manualmente um workflow para uma tag existente, `github.sha` pode re
 workflow_dispatch:
 ```
 
-3. Se o workflow permite selecionar uma tag/ref, fazer checkout explícito dessa ref.
+3. Se o workflow permite selecionar uma tag/ref, fazer checkout explÃ­cito dessa ref.
 
-4. Após o checkout, determinar o SHA real:
+4. ApÃ³s o checkout, determinar o SHA real:
 
 ```bash
 git rev-parse HEAD
 ```
 
-5. Usar esse valor em metadata, resumo da release, labels e validações.
+5. Usar esse valor em metadata, resumo da release, labels e validaÃ§Ãµes.
 
-### Validação
+### ValidaÃ§Ã£o
 
 ```bash
 git rev-parse v1.0.0
@@ -280,27 +280,27 @@ git rev-parse v1.0.0
 
 Comparar com o SHA exibido pelo workflow.
 
-### Critério de conclusão
+### CritÃ©rio de conclusÃ£o
 
-- [x] Tag e commit são sempre correspondentes.
-- [x] Execução manual não cria metadata enganosa.
+- [x] Tag e commit sÃ£o sempre correspondentes.
+- [x] ExecuÃ§Ã£o manual nÃ£o cria metadata enganosa.
 - [x] Teste automatizado cobre o caso.
 
 ---
 
-# FASE 1 — CORREÇÕES IMPORTANTES
+# FASE 1 â€” CORREÃ‡Ã•ES IMPORTANTES
 
-## ✅ P1.1 — Alinhar Node.js com `@types/node` (concluído — commit `2040933`)
+## âœ… P1.1 â€” Alinhar Node.js com `@types/node` (concluÃ­do â€” commit `2040933`)
 
 > Node 24 LTS em `@types/node` (`^24.7.0`), `NODE_VERSION: '24.x'` no CI, `node:24-alpine` no Dockerfile/scripts e docs atualizadas. Typecheck, lint, build e `npm test` validados (caveat Windows permanece).
 
 ### Problema
 
-Há desalinhamento entre runtime e tipos: CI usa Node 22 enquanto `@types/node` está na linha 26. Isso permite que o TypeScript enxergue APIs que o runtime real pode não possuir.
+HÃ¡ desalinhamento entre runtime e tipos: CI usa Node 22 enquanto `@types/node` estÃ¡ na linha 26. Isso permite que o TypeScript enxergue APIs que o runtime real pode nÃ£o possuir.
 
-### Recomendação
+### RecomendaÃ§Ã£o
 
-Escolher uma única linha. Para a 1.0.0, preferência: **Node 24 LTS**.
+Escolher uma Ãºnica linha. Para a 1.0.0, preferÃªncia: **Node 24 LTS**.
 
 ### Arquivos a revisar
 
@@ -313,11 +313,11 @@ README.md
 
 ### Passos
 
-1. Definir a versão alvo.
+1. Definir a versÃ£o alvo.
 2. Atualizar `@types/node`.
-3. Atualizar matrix/variáveis do CI.
+3. Atualizar matrix/variÃ¡veis do CI.
 4. Atualizar imagem/base Docker.
-5. Atualizar documentação.
+5. Atualizar documentaÃ§Ã£o.
 6. Rodar:
 
 ```bash
@@ -326,15 +326,15 @@ npm test
 npm run build
 ```
 
-### Critério
+### CritÃ©rio
 
 ```text
-Node runtime = Node types = CI = Docker = documentação
+Node runtime = Node types = CI = Docker = documentaÃ§Ã£o
 ```
 
 ---
 
-## ✅ P1.2 — Tornar `verifyRefreshToken()` obrigatório (concluído — commit `aa3b8d0`)
+## âœ… P1.2 â€” Tornar `verifyRefreshToken()` obrigatÃ³rio (concluÃ­do â€” commit `aa3b8d0`)
 
 ### Problema
 
@@ -344,13 +344,13 @@ A interface declara:
 verifyRefreshToken?(token: string): Promise<unknown>;
 ```
 
-como opcional, mas validar refresh é parte da segurança.
+como opcional, mas validar refresh Ã© parte da seguranÃ§a.
 
 ### Passos
 
 1. Abrir a interface de token.
 2. Remover o `?`.
-3. Atualizar implementações.
+3. Atualizar implementaÃ§Ãµes.
 4. Atualizar mocks.
 5. Atualizar doubles de teste.
 6. Procurar usos:
@@ -359,31 +359,31 @@ como opcional, mas validar refresh é parte da segurança.
 grep -R "verifyRefreshToken" src tests
 ```
 
-### Critério
+### CritÃ©rio
 
-- [x] Interface obrigatória.
-- [x] Todas as implementações compilam.
+- [x] Interface obrigatÃ³ria.
+- [x] Todas as implementaÃ§Ãµes compilam.
 - [x] Todos os testes passam.
 
 ---
 
-## ✅ P1.3 — Formalizar a política de logout (concluído — commit `86f67fd`)
+## âœ… P1.3 â€” Formalizar a polÃ­tica de logout (concluÃ­do â€” commit `86f67fd`)
 
-### Situação
+### SituaÃ§Ã£o
 
-A invalidação por `sessionVersion` representa potencialmente logout de todas as sessões, e não apenas do dispositivo atual.
+A invalidaÃ§Ã£o por `sessionVersion` representa potencialmente logout de todas as sessÃµes, e nÃ£o apenas do dispositivo atual.
 
-### Decisão recomendada para 1.0.0
+### DecisÃ£o recomendada para 1.0.0
 
 Manter o mecanismo atual e documentar claramente:
 
 ```text
-logout = invalidação de todas as sessões do usuário
+logout = invalidaÃ§Ã£o de todas as sessÃµes do usuÃ¡rio
 ```
 
-Se no futuro for necessário logout individual, introduzir estado por sessão (`sessionId`, `deviceId` ou `jti`).
+Se no futuro for necessÃ¡rio logout individual, introduzir estado por sessÃ£o (`sessionId`, `deviceId` ou `jti`).
 
-### Critério
+### CritÃ©rio
 
 - [x] Comportamento documentado.
 - [x] Teste correspondente.
@@ -391,15 +391,15 @@ Se no futuro for necessário logout individual, introduzir estado por sessão (`
 
 ---
 
-## P1.4 — Documentar Redis como dependência de segurança
+## P1.4 â€” Documentar Redis como dependÃªncia de seguranÃ§a
 
-### Situação
+### SituaÃ§Ã£o
 
-A revogação depende do Redis. Perda completa do estado pode afetar a validade de sessões/revogações.
+A revogaÃ§Ã£o depende do Redis. Perda completa do estado pode afetar a validade de sessÃµes/revogaÃ§Ãµes.
 
 ### Para 1.0.0
 
-Não é necessário redesenhar a arquitetura. Classificar explicitamente como:
+NÃ£o Ã© necessÃ¡rio redesenhar a arquitetura. Classificar explicitamente como:
 
 ```text
 Known limitation / accepted risk
@@ -407,32 +407,32 @@ Known limitation / accepted risk
 
 Documentar:
 
-- Redis necessário para o estado distribuído de sessão/revogação;
+- Redis necessÃ¡rio para o estado distribuÃ­do de sessÃ£o/revogaÃ§Ã£o;
 - impacto de perda do volume Redis;
-- estratégia de recuperação;
+- estratÃ©gia de recuperaÃ§Ã£o;
 - backup/restore existentes.
 
-### Critério
+### CritÃ©rio
 
-- [ ] Risco documentado.
-- [ ] Nenhuma documentação promete garantias que dependam da persistência perfeita do Redis.
-- [ ] Backup/restore continuam testados.
+- [x] Risco documentado.
+- [x] Nenhuma documentação promete garantias que dependam da persistência perfeita do Redis.
+- [x] Backup/restore continuam testados.
 
 ---
 
-# FASE 2 — LIMPEZA TÉCNICA
+# FASE 2 â€” LIMPEZA TÃ‰CNICA
 
-## P2.1 — Remover configuração Bcrypt obsoleta
+## P2.1 â€” Remover configuraÃ§Ã£o Bcrypt obsoleta
 
 ### Problema
 
-Existe configuração como:
+Existe configuraÃ§Ã£o como:
 
 ```env
 BCRYPT_SALT_ROUNDS=12
 ```
 
-apesar de a implementação atual usar Argon2id.
+apesar de a implementaÃ§Ã£o atual usar Argon2id.
 
 ### Passos
 
@@ -443,71 +443,71 @@ grep -R "bcrypt" .
 
 Depois:
 
-- [ ] remover variáveis sem uso;
-- [ ] remover documentação antiga;
-- [ ] remover comentários incorretos.
+- [ ] remover variÃ¡veis sem uso;
+- [ ] remover documentaÃ§Ã£o antiga;
+- [ ] remover comentÃ¡rios incorretos.
 
-### Critério
+### CritÃ©rio
 
-Nenhuma configuração deve sugerir que bcrypt faz parte da política atual se não faz.
+Nenhuma configuraÃ§Ã£o deve sugerir que bcrypt faz parte da polÃ­tica atual se nÃ£o faz.
 
 ---
 
-## P2.2 — Revisar comentários excessivos
+## P2.2 â€” Revisar comentÃ¡rios excessivos
 
 ### Objetivo
 
-Manter comentários que expliquem decisões, trade-offs, limites, motivos de segurança e riscos aceitos. Reduzir comentários que apenas repetem o código.
+Manter comentÃ¡rios que expliquem decisÃµes, trade-offs, limites, motivos de seguranÃ§a e riscos aceitos. Reduzir comentÃ¡rios que apenas repetem o cÃ³digo.
 
 ### Regra
 
 ```text
-Código → como
-Teste → comportamento
-Documentação → por quê
+CÃ³digo â†’ como
+Teste â†’ comportamento
+DocumentaÃ§Ã£o â†’ por quÃª
 ```
 
-### Critério
+### CritÃ©rio
 
-- [ ] comentários redundantes removidos;
-- [ ] decisões arquiteturais mantidas;
-- [ ] histórico de bugs já resolvidos removido quando não agrega contexto.
+- [ ] comentÃ¡rios redundantes removidos;
+- [ ] decisÃµes arquiteturais mantidas;
+- [ ] histÃ³rico de bugs jÃ¡ resolvidos removido quando nÃ£o agrega contexto.
 
 ---
 
-## P2.3 — Avaliar divisão de `domain/index.ts`
+## P2.3 â€” Avaliar divisÃ£o de `domain/index.ts`
 
-### Possível estrutura
+### PossÃ­vel estrutura
 
 ```text
 src/domain/
-├── entities/
-│   └── User.ts
-├── services/
-│   └── AuthService.ts
-├── ports/
-│   ├── CryptoService.ts
-│   ├── Logger.ts
-│   ├── TokenService.ts
-│   └── UserRepository.ts
-├── errors/
-│   └── DomainError.ts
-└── index.ts
+â”œâ”€â”€ entities/
+â”‚   â””â”€â”€ User.ts
+â”œâ”€â”€ services/
+â”‚   â””â”€â”€ AuthService.ts
+â”œâ”€â”€ ports/
+â”‚   â”œâ”€â”€ CryptoService.ts
+â”‚   â”œâ”€â”€ Logger.ts
+â”‚   â”œâ”€â”€ TokenService.ts
+â”‚   â””â”€â”€ UserRepository.ts
+â”œâ”€â”€ errors/
+â”‚   â””â”€â”€ DomainError.ts
+â””â”€â”€ index.ts
 ```
 
 ### Importante
 
-Esta refatoração é **opcional para a 1.0.0**. Não faça perto do release se aumentar o risco.
+Esta refatoraÃ§Ã£o Ã© **opcional para a 1.0.0**. NÃ£o faÃ§a perto do release se aumentar o risco.
 
-### Critério
+### CritÃ©rio
 
-Só executar se o diff for controlado e nenhum comportamento mudar.
+SÃ³ executar se o diff for controlado e nenhum comportamento mudar.
 
 ---
 
-# FASE 3 — ATUALIZAÇÃO DO ECOSSISTEMA DE CI
+# FASE 3 â€” ATUALIZAÃ‡ÃƒO DO ECOSSISTEMA DE CI
 
-## P3.1 — Atualizar GitHub Actions
+## P3.1 â€” Atualizar GitHub Actions
 
 ### Revisar
 
@@ -527,21 +527,21 @@ softprops/action-gh-release
 ### Passos
 
 1. Consultar releases oficiais.
-2. Atualizar versões estáveis.
-3. Não usar `@master` ou `@main` para actions de terceiros.
+2. Atualizar versÃµes estÃ¡veis.
+3. NÃ£o usar `@master` ou `@main` para actions de terceiros.
 4. Atualizar testes de pinning/policy.
 5. Rodar CI completo.
 
-### Critério
+### CritÃ©rio
 
 - [ ] Actions mantidas.
 - [ ] Nenhuma action arquivada/descontinuada.
-- [ ] Sem referências flutuantes.
+- [ ] Sem referÃªncias flutuantes.
 - [ ] Policy tests verdes.
 
 ---
 
-## P3.2 — Verificar referências flutuantes
+## P3.2 â€” Verificar referÃªncias flutuantes
 
 Executar:
 
@@ -552,14 +552,14 @@ grep -R "@master\|@main" .github/workflows
 Resultado esperado:
 
 ```text
-nenhuma ocorrência
+nenhuma ocorrÃªncia
 ```
 
 ---
 
-# FASE 4 — VALIDAÇÃO COMPLETA
+# FASE 4 â€” VALIDAÃ‡ÃƒO COMPLETA
 
-## P4.1 — Rodar validação local limpa
+## P4.1 â€” Rodar validaÃ§Ã£o local limpa
 
 Remover artefatos:
 
@@ -583,15 +583,15 @@ npm test
 npm run build
 ```
 
-Depois executar os testes de integração previstos no projeto.
+Depois executar os testes de integraÃ§Ã£o previstos no projeto.
 
-### Critério
+### CritÃ©rio
 
 Todos os comandos terminam com exit code `0`.
 
 ---
 
-## P4.2 — Validar Docker do zero
+## P4.2 â€” Validar Docker do zero
 
 Executar:
 
@@ -608,9 +608,9 @@ Testar:
 /readiness
 ```
 
-Validar também login, refresh e revogação.
+Validar tambÃ©m login, refresh e revogaÃ§Ã£o.
 
-### Critério
+### CritÃ©rio
 
 - [ ] container inicia;
 - [ ] healthcheck passa;
@@ -619,95 +619,95 @@ Validar também login, refresh e revogação.
 - [ ] Redis funciona;
 - [ ] login funciona;
 - [ ] refresh funciona;
-- [ ] logout/revogação funciona.
+- [ ] logout/revogaÃ§Ã£o funciona.
 
 ---
 
-## P4.3 — Validar cenários de segurança
+## P4.3 â€” Validar cenÃ¡rios de seguranÃ§a
 
 ### Login
 
 - [ ] senha correta;
 - [ ] senha incorreta;
-- [ ] usuário inexistente;
-- [ ] enumeração mitigada;
-- [ ] concorrência Argon2;
+- [ ] usuÃ¡rio inexistente;
+- [ ] enumeraÃ§Ã£o mitigada;
+- [ ] concorrÃªncia Argon2;
 - [ ] fila Argon2 cheia.
 
 ### Refresh
 
-- [ ] refresh válido;
+- [ ] refresh vÃ¡lido;
 - [ ] refresh expirado;
 - [ ] refresh revogado;
 - [ ] refresh reutilizado;
-- [ ] usuário removido;
+- [ ] usuÃ¡rio removido;
 - [ ] `token_type` incorreto.
 
-### Sessões
+### SessÃµes
 
 - [ ] logout;
 - [ ] troca de senha;
-- [ ] exclusão;
-- [ ] invalidação de tokens antigos.
+- [ ] exclusÃ£o;
+- [ ] invalidaÃ§Ã£o de tokens antigos.
 
 ### JWT
 
-- [ ] assinatura inválida;
-- [ ] issuer inválido;
-- [ ] audience inválida;
+- [ ] assinatura invÃ¡lida;
+- [ ] issuer invÃ¡lido;
+- [ ] audience invÃ¡lida;
 - [ ] algoritmo incorreto;
 - [ ] access usado como refresh;
 - [ ] refresh usado como access.
 
 ---
 
-# FASE 5 — VALIDAÇÃO DO CI/CD
+# FASE 5 â€” VALIDAÃ‡ÃƒO DO CI/CD
 
-## P5.1 — Testar Pull Request
+## P5.1 â€” Testar Pull Request
 
 Confirmar:
 
 ```text
 PR
-↓
+â†“
 lint
-↓
+â†“
 typecheck
-↓
+â†“
 tests
-↓
+â†“
 build
-↓
+â†“
 Trivy
-↓
+â†“
 audit-ci
-↓
-sem publicação
+â†“
+sem publicaÃ§Ã£o
 ```
 
 ---
 
-## P5.2 — Testar merge na `main`
+## P5.2 â€” Testar merge na `main`
 
 Confirmar:
 
 ```text
 main
-↓
+â†“
 build
-↓
+â†“
 test
-↓
+â†“
 scan
-↓
+â†“
 push
 ```
 
-Imagem publicada somente após os gates necessários.
+Imagem publicada somente apÃ³s os gates necessÃ¡rios.
 
 ---
 
-## P5.3 — Testar release candidata
+## P5.3 â€” Testar release candidata
 
 Antes de `1.0.0`, usar uma tag de teste, por exemplo:
 
@@ -719,44 +719,44 @@ Validar:
 
 ```text
 tag
-↓
+â†“
 build
-↓
+â†“
 candidate
-↓
+â†“
 Trivy
-↓
+â†“
 promotion
-↓
+â†“
 release
 ```
 
-### Critério
+### CritÃ©rio
 
 - [ ] candidate criada;
 - [ ] scan executado;
 - [ ] scan bloqueia vulnerabilidade real;
-- [ ] promoção ocorre somente após aprovação;
-- [ ] release criada somente após sucesso;
-- [ ] SHA corresponde à tag.
+- [ ] promoÃ§Ã£o ocorre somente apÃ³s aprovaÃ§Ã£o;
+- [ ] release criada somente apÃ³s sucesso;
+- [ ] SHA corresponde Ã  tag.
 
 ---
 
-# FASE 6 — DOCUMENTAÇÃO FINAL
+# FASE 6 â€” DOCUMENTAÃ‡ÃƒO FINAL
 
-## P6.1 — README
+## P6.1 â€” README
 
 O README deve responder rapidamente:
 
-1. O que é?
+1. O que Ã©?
 2. Para que serve?
 3. Arquitetura.
 4. Stack.
 5. Como executar.
 6. Como testar.
 7. Como executar Docker.
-8. Modelo de segurança.
-9. Limitações conhecidas.
+8. Modelo de seguranÃ§a.
+9. LimitaÃ§Ãµes conhecidas.
 10. Como funciona o CI/CD.
 
 Evitar promessas como:
@@ -768,11 +768,11 @@ zero downtime
 100% secure
 ```
 
-Preferir descrições factuais.
+Preferir descriÃ§Ãµes factuais.
 
 ---
 
-## P6.2 — Documentar riscos aceitos
+## P6.2 â€” Documentar riscos aceitos
 
 Criar ou revisar:
 
@@ -782,21 +782,21 @@ docs/KNOWN_LIMITATIONS.md
 
 Exemplos:
 
-- dependência do Redis para estado de sessão/revogação;
-- ausência de MFA;
-- ausência de OAuth;
-- ausência de recuperação de senha;
-- limitações do ambiente demonstrativo.
+- dependÃªncia do Redis para estado de sessÃ£o/revogaÃ§Ã£o;
+- ausÃªncia de MFA;
+- ausÃªncia de OAuth;
+- ausÃªncia de recuperaÃ§Ã£o de senha;
+- limitaÃ§Ãµes do ambiente demonstrativo.
 
-Isso demonstra maturidade arquitetural sem fingir que o projeto resolve problemas que estão fora do escopo.
+Isso demonstra maturidade arquitetural sem fingir que o projeto resolve problemas que estÃ£o fora do escopo.
 
 ---
 
-# FASE 7 — FREEZE DA 1.0.0
+# FASE 7 â€” FREEZE DA 1.0.0
 
 Quando todas as fases anteriores estiverem verdes:
 
-## 7.1 — Criar branch de release
+## 7.1 â€” Criar branch de release
 
 ```bash
 git checkout main
@@ -804,7 +804,7 @@ git pull
 git checkout -b release/1.0.0
 ```
 
-## 7.2 — Último review
+## 7.2 â€” Ãšltimo review
 
 ```bash
 git status
@@ -820,13 +820,13 @@ grep -R "FIXME" src tests .github
 grep -R "@master\|@main" .github/workflows
 ```
 
-Nenhum item crítico deve permanecer.
+Nenhum item crÃ­tico deve permanecer.
 
 ---
 
-# FASE 8 — RELEASE FINAL
+# FASE 8 â€” RELEASE FINAL
 
-## 8.1 — Atualizar versão
+## 8.1 â€” Atualizar versÃ£o
 
 No `package.json`:
 
@@ -834,11 +834,11 @@ No `package.json`:
 "version": "1.0.0"
 ```
 
-Atualizar arquivos que reproduzam a versão explicitamente.
+Atualizar arquivos que reproduzam a versÃ£o explicitamente.
 
 ---
 
-## 8.2 — Commit
+## 8.2 â€” Commit
 
 ```bash
 git add .
@@ -847,7 +847,7 @@ git commit -m "release: prepare v1.0.0"
 
 ---
 
-## 8.3 — Merge
+## 8.3 â€” Merge
 
 ```bash
 git checkout main
@@ -857,7 +857,7 @@ git push origin main
 
 ---
 
-## 8.4 — Tag
+## 8.4 â€” Tag
 
 Depois que o CI da `main` estiver verde:
 
@@ -870,46 +870,46 @@ git push origin v1.0.0
 
 # CHECKLIST FINAL DA RELEASE
 
-## P0 — Obrigatório
+## P0 â€” ObrigatÃ³rio
 
 - [x] `npm audit` conflitante removido.
 - [x] `audit-ci` funcionando.
-- [x] PR não publica imagens.
+- [x] PR nÃ£o publica imagens.
 - [x] Trivy executa antes de `latest`.
-- [x] `latest` só aponta para imagem aprovada.
+- [x] `latest` sÃ³ aponta para imagem aprovada.
 - [x] `workflow_dispatch` usa o SHA real da tag/ref.
-- [x] Release só nasce após todos os gates.
+- [x] Release sÃ³ nasce apÃ³s todos os gates.
 
-## P1 — Muito importante
+## P1 â€” Muito importante
 
 - [x] Node e `@types/node` alinhados.
-- [x] `verifyRefreshToken()` obrigatório.
-- [x] Semântica de logout documentada.
-- [ ] Limitação do Redis documentada.
-- [ ] Testes de segurança atualizados.
+- [x] `verifyRefreshToken()` obrigatÃ³rio.
+- [x] SemÃ¢ntica de logout documentada.
+- [x] Testes de segurança atualizados.
+- [ ] Testes de seguranÃ§a atualizados.
 
-## P2 — Recomendado
+## P2 â€” Recomendado
 
-- [ ] Configuração Bcrypt morta removida.
-- [ ] Comentários excessivos revisados.
+- [ ] ConfiguraÃ§Ã£o Bcrypt morta removida.
+- [ ] ComentÃ¡rios excessivos revisados.
 - [ ] `domain/index.ts` avaliado.
-- [ ] Documentação revisada.
+- [ ] DocumentaÃ§Ã£o revisada.
 
-## P3 — Manutenção
+## P3 â€” ManutenÃ§Ã£o
 
 - [ ] GitHub Actions atualizadas.
 - [ ] Nenhum `@master`/`@main`.
 - [ ] Policy tests atualizados.
-- [ ] Dependências revisadas.
+- [ ] DependÃªncias revisadas.
 
-## Validação final
+## ValidaÃ§Ã£o final
 
 - [ ] `npm ci`
 - [ ] `npm run typecheck`
 - [ ] `npm run lint`
 - [ ] `npm test`
 - [ ] `npm run build`
-- [ ] integração
+- [ ] integraÃ§Ã£o
 - [ ] Docker build
 - [ ] Docker runtime
 - [ ] health
@@ -922,35 +922,35 @@ git push origin v1.0.0
 
 ---
 
-# Critério para declarar `1.0.0` pronta
+# CritÃ©rio para declarar `1.0.0` pronta
 
-A versão pode ser considerada pronta quando:
+A versÃ£o pode ser considerada pronta quando:
 
 ```text
-Código
-  ↓
+CÃ³digo
+  â†“
 Testes verdes
-  ↓
-Build reproduzível
-  ↓
+  â†“
+Build reproduzÃ­vel
+  â†“
 Docker validado
-  ↓
+  â†“
 CI validado
-  ↓
+  â†“
 Security gates verdes
-  ↓
+  â†“
 Release pipeline validado
-  ↓
-Documentação consistente
-  ↓
+  â†“
+DocumentaÃ§Ã£o consistente
+  â†“
 Nenhum P0/P1 aberto
-  ↓
+  â†“
 FREEZE
-  ↓
+  â†“
 v1.0.0
 ```
 
-Depois da tag `v1.0.0`, qualquer mudança que altere comportamento deve ir para uma nova versão:
+Depois da tag `v1.0.0`, qualquer mudanÃ§a que altere comportamento deve ir para uma nova versÃ£o:
 
 ```text
 1.0.1
@@ -958,27 +958,28 @@ Depois da tag `v1.0.0`, qualquer mudança que altere comportamento deve ir para 
 2.0.0
 ```
 
-A `1.0.0` deve ser tratada como baseline estável, não como o começo de uma fila infinita de melhorias.
+A `1.0.0` deve ser tratada como baseline estÃ¡vel, nÃ£o como o comeÃ§o de uma fila infinita de melhorias.
 
 ---
 
-## Nota — execução local no Windows
+## Nota â€” execuÃ§Ã£o local no Windows
 
-O projeto é feito para Linux (CI e runtime). Para rodar na máquina de
+O projeto Ã© feito para Linux (CI e runtime). Para rodar na mÃ¡quina de
 desenvolvimento sem Docker, o `.env` aponta para Mongo/Redis nativos e o gate
 `npx audit-ci --config .audit-ci.json` sai 0.
 
-Sete suítes unitárias **não passam no Windows** por incompatibilidade de
-plataforma, e isso é esperado — o CI (Linux) é a fonte da verdade:
+Sete suÃ­tes unitÃ¡rias **nÃ£o passam no Windows** por incompatibilidade de
+plataforma, e isso Ã© esperado â€” o CI (Linux) Ã© a fonte da verdade:
 
 - `jwt-key-provisioning`, `dependency-secrets-provisioning`,
-  `dependency-secrets-rotation` — checam modo `600`; o NTFS não honra modo POSIX
-  (lê `0o666`), e o `jwt-key-provisioning` ainda chama `openssl` por binário.
-- `capacity-gc-parser`, `ddos-survival-driver`, `replica-session-driver` — passam
+  `dependency-secrets-rotation` â€” checam modo `600`; o NTFS nÃ£o honra modo POSIX
+  (lÃª `0o666`), e o `jwt-key-provisioning` ainda chama `openssl` por binÃ¡rio.
+- `capacity-gc-parser`, `ddos-survival-driver`, `replica-session-driver` â€” passam
   caminho absoluto do Windows a `import()`/loader ESM, que exige `file://`
   (`ERR_UNSUPPORTED_ESM_URL_SCHEME`).
-- `openapi-spec` — casa glob com `/`; no Windows o separador é `\`.
+- `openapi-spec` â€” casa glob com `/`; no Windows o separador Ã© `\`.
 
-O resto da suíte (58 suítes, 916 testes) passa. As suítes Windows-dependentes
-ficam como caveat: corrigi-las não é adaptação local, é portabilidade, e muda o
-código por uma plataforma que não é a de produção.
+O resto da suÃ­te (58 suÃ­tes, 916 testes) passa. As suÃ­tes Windows-dependentes
+ficam como caveat: corrigi-las nÃ£o Ã© adaptaÃ§Ã£o local, Ã© portabilidade, e muda o
+cÃ³digo por uma plataforma que nÃ£o Ã© a de produÃ§Ã£o.
+
