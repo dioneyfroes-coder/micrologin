@@ -85,8 +85,13 @@ module.exports = {
     // Configurações para balanceamento de carga real
     listen_timeout: 3000,
     kill_timeout: 5000,
-    watch: ['dist'],
-    ignore_watch: ['node_modules', 'logs', '.git'],
+    // Sem watch. O `tsc` do `npm run build` reescreve `dist/` arquivo a arquivo
+    // e o watch reiniciava os workers no meio da emissao: o import de
+    // `dist/app.js` falhava (`ERR_MODULE_NOT_FOUND`) e o PM2 so subia no
+    // retry seguinte — uma corrida build x restart que vira crash-loop com um
+    // build limpo. `dev:pm2` ja encadeia build -> startOrReload; mudanca
+    // manual apos editar fonte: `npm run restart`.
+    watch: false,
     log_file: './logs/combined.log',
     out_file: './logs/out.log',
     error_file: './logs/error.log',
