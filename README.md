@@ -55,8 +55,8 @@ deles está logo abaixo.
 ## Stack
 
 Node.js 24+ · Express · MongoDB (Mongoose) · Redis (node-redis 5) · JWT
-(jsonwebtoken / jose) · argon2id (`@node-rs/argon2`) · Jest · Docker Compose ·
-GitHub Actions
+(jsonwebtoken / jose) · argon2id (`@node-rs/argon2`) · PM2 (cluster) · Jest ·
+Docker Compose · GitHub Actions
 
 ---
 
@@ -126,7 +126,42 @@ também no Mongo) mudam o modelo de operação e estão descritas em
 | Nenhum deploy contra servidor real | o `test:deploy` prova a lógica; falta o transporte SSH e o registry autenticado, que precisam de um host |
 
 O detalhamento completo, com o porquê de cada uma e o que foi recusado, está em
-[`docs/SEGURANCA.md`](docs/SEGURANCA.md).
+[`docs/SEGURANCA.md`](docs/SEGURANCA.md) e
+[`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md).
+
+---
+
+## Versionamento e releases
+
+O número de versão segue **SemVer** (`MAJOR.MINOR.PATCH`) e aparece em dois
+lugares que têm de concordar: o `version` do `package.json` e uma tag
+`vMAJOR.MINOR.PATCH` no Git. **A versão atual é a `1.0.0`**, e é ela que a tag e
+a GitHub Release publicadas usam como fonte de verdade.
+
+| número | muda quando |
+| --- | --- |
+| `MAJOR` | quebra compatibilidade da API pública (rota, contrato, formato de token) |
+| `MINOR` | adiciona capacidade sem quebrar o que já existia |
+| `PATCH` | só corrige — bug, segurança, documentação, CI —, nada novo para o cliente |
+
+Cortar uma release:
+
+```bash
+# 1. escolher a versão no package.json, sem commit automático do npm
+npm version patch --no-git-tag-version   # ou minor / major
+# 2. commitar seguindo Conventional Commits (o hook commit-msg valida o formato)
+git commit -am "chore(release): 1.0.1"
+# 3. criar e enviar a tag — é o push da tag que dispara a release
+git tag -a v1.0.1 -m "1.0.1"
+git push origin main v1.0.1
+```
+
+O push da tag dispara [`.github/workflows/release.yml`](.github/workflows/release.yml),
+que valida tag e `package.json` como a mesma versão, exige que a tag esteja na
+`main`, roda os gates (lint, typecheck, `audit-ci`, secret scanning), publica a
+imagem no GHCR e cria a GitHub Release. A tag é a fonte de verdade: não existe
+caminho de dispatch que invente versão. Operação completa em
+[`docs/OPERACOES.md`](docs/OPERACOES.md).
 
 ---
 
@@ -136,6 +171,7 @@ O detalhamento completo, com o porquê de cada uma e o que foi recusado, está e
 | --- | --- |
 | [`docs/ARQUITETURA.md`](docs/ARQUITETURA.md) | camadas, ordem dos middlewares, fluxo de login/refresh/logout e onde o estado mora |
 | [`docs/SEGURANCA.md`](docs/SEGURANCA.md) | threat model, riscos aceitos e log de decisões (o que foi decidido e o que foi recusado) |
+| [`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md) | limitações assumidas da 1.0.0 em linguagem direta |
 | [`docs/OPERACOES.md`](docs/OPERACOES.md) | rodar, variáveis de ambiente, matriz de testes, CI/CD, deploy e rollback |
 | [`docs/ROTACAO.md`](docs/ROTACAO.md) | rotação da chave ES256, do pepper e das senhas de Mongo/Redis |
 | [`docs/BACKUP.md`](docs/BACKUP.md) | backup/restauração do Mongo: RPO/RTO medidos, retenção e o drill |
@@ -143,6 +179,7 @@ O detalhamento completo, com o porquê de cada uma e o que foi recusado, está e
 | [`docs/CONFIG.md`](docs/CONFIG.md) | backup/restauração da configuração em execução e rollback de imagem+config |
 | [`docs/metricas.md`](docs/metricas.md) | medições interpretadas: hashing, carga, capacidade, GC |
 | [`docs/DASHBOARD_SEGURANCA_GUIA.md`](docs/DASHBOARD_SEGURANCA_GUIA.md) | como usar `GET /security/*` e o dashboard, com exemplos em [`examples/`](examples) |
+| [`SECURITY.md`](SECURITY.md) | como reportar uma vulnerabilidade e o que está no escopo |
 
 ---
 

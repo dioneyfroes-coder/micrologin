@@ -390,6 +390,37 @@ mecanismo de exceção e reprovava sempre por causa das advisories já
 allowlistadas — um pipeline vermelho por uma decisão já tomada não é sinal, é
 ruído. O gate é só o `audit-ci`, que é quem aplica a política acima.
 
+### Política de Actions
+
+Toda action é fixada por **major**, e a major precisa ser a que declara o runtime
+suportado — nunca a que "funciona por acidente". O runner do GitHub já executa as
+actions declaradas em Node 20 com aviso de obsolescência, e o repositório tratava
+isso como dívida visível: `actions/checkout@v4`, `actions/setup-node@v4` e as
+quatro actions do Docker anunciavam `runs.using: node20`. A revisão de
+2026-10-08 moveu cada uma para a primeira major que declara `node24`:
+
+| action | antes | agora |
+| --- | --- | --- |
+| `actions/checkout` | `@v4` | `@v5` |
+| `actions/setup-node` | `@v4` | `@v5` |
+| `docker/setup-buildx-action` | `@v3` | `@v4` |
+| `docker/login-action` | `@v3` | `@v4` |
+| `docker/metadata-action` | `@v5` | `@v6` |
+| `docker/build-push-action` | `@v5` | `@v7` |
+
+`github/codeql-action/upload-sarif@v4` e `softprops/action-gh-release@v3` já
+rodavam em runtime suportado e não mudaram; o `aquasecurity/trivy-action`
+continua em versão **exata** (`@v0.36.0`), porque um gate de segurança não pode
+mudar de comportamento por release novo da action. O
+`tests/unit/github-actions-pinning.test.ts` fecha a lista em `REQUIRED_VERSIONS`
+e o `tests/unit/pr-no-publish.test.ts` guarda o `login-action@v4`: major que
+regride reprova o teste.
+
+Fica **um** aviso que o repositório não controla: o
+`actions/github-script@60a0d8` aparece aninhado dentro do
+`codecov/codecov-action@v5` (action composta). Como não é referência direta do
+workflow, não há tag para subir aqui — o ajuste é do upstream.
+
 ---
 
 ## 6. Deploy
@@ -473,8 +504,10 @@ scripts/remote-deploy.sh --image <imagem> --env-file .env.prod \
 que roda em produção: três imagens distintas (v1 → v2 → v3), backup de
 configuração, readiness, smoke, e a v3 com o Mongo na porta errada abortando no
 health check — o rollback restaura imagem, digest e env da v2 e o runtime volta a
-servir. Esse drill roda também no CI, e ele é o que garante que o cleanup das
-imagens do drill funciona (`deploy-drill/*` tem que terminar em zero).
+servir. Esse drill **não** roda no CI de propósito (ver §4): ele derruba e
+restaura serviço de verdade, e o pipeline fica com os gates de configuração. É
+rodando localmente que ele garante que o cleanup das imagens do drill funciona
+(`deploy-drill/*` tem que terminar em zero).
 
 O `workflow_dispatch` com `environment=staging` **não foi executado**: este
 repositório não tem servidor de staging nem de produção, e o job falha com

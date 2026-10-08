@@ -3,6 +3,17 @@
   "version": "1.0.0",
   "description": "API de autenticação em Node.js para estudo de arquitetura, segurança e organização de código",
   "main": "dist/app.js",
+  "engines": {
+    "node": ">=24"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dioneyfroes-coder/micrologin.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dioneyfroes-coder/micrologin/issues"
+  },
+  "homepage": "https://github.com/dioneyfroes-coder/micrologin#readme",
   "scripts": {
     "start": "cross-env NODE_ENV=production node dist/app.js",
     "dev": "npm run redis:start && cross-env NODE_ENV=development tsx src/app.ts",
