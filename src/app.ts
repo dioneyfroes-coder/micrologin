@@ -171,9 +171,16 @@ class AuthService {
   }
 }
 
-const isDirectExecution = process.argv[1]
-  ? import.meta.url === pathToFileURL(process.argv[1]).href
-  : false;
+// O PM2 envolve o app num container (ProcessContainer.js / ProcessContainerFork.js)
+// e nunca reescreve `argv[1]`: o processo nasce com `node <container>`, e o app é
+// carregado depois por `import()`/`require()`. Só por `argv[1]` o guard ficava
+// `false`, o bloco de entrada nunca executava e o processo ficava vivo porém
+// ocioso - online no PM2, sem logs e sem port. `pm_exec_path` é o caminho que o
+// PM2 aponta para executar, presente nos dois modos (cluster e fork); sem ele
+// (testes, imports) o candidato não existe e o guard continua caindo para false.
+const isDirectExecution = [process.argv[1], process.env.pm_exec_path]
+  .filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
+  .some((entry) => import.meta.url === pathToFileURL(entry).href);
 
 if (isDirectExecution) {
   // Configuração de clustering inteligente
