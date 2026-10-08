@@ -80,12 +80,27 @@ const isPinned = (ref: string): boolean => {
   return /^[0-9a-f]{40}$/.test(tag);
 };
 
-/** Versões exigidas pela política de 1.0.0, conferidas no upstream em 2026-10-02. */
+/**
+ * Versões exigidas pela política de 1.0.0, conferidas no upstream em 2026-10-02.
+ *
+ * As cinco últimas entram na revisão de 2026-10-08: `actions/checkout@v4`,
+ * `actions/setup-node@v4` e as quatro actions do Docker declaravam
+ * `runs.using: node20`, e o runner já as executava forçadas em Node 24
+ * ("Node.js 20 is deprecated..."). As majors abaixo são as primeiras que
+ * declaram `node24` no `action.yml` de cada upstream — a checagem é lida do
+ * próprio action, não da data de publicação.
+ */
 const REQUIRED_VERSIONS: Record<string, string> = {
   'aquasecurity/trivy-action': 'v0.36.0',
   'codecov/codecov-action': 'v5',
   'github/codeql-action/upload-sarif': 'v4',
-  'softprops/action-gh-release': 'v3'
+  'softprops/action-gh-release': 'v3',
+  'actions/checkout': 'v5',
+  'actions/setup-node': 'v5',
+  'docker/setup-buildx-action': 'v4',
+  'docker/login-action': 'v4',
+  'docker/metadata-action': 'v6',
+  'docker/build-push-action': 'v7'
 };
 
 /** Actions arquivadas ou sem continuidade: nunca podem entrar no caminho da release. */
@@ -126,6 +141,8 @@ describe('Actions de terceiros: versão pinada', () => {
     //   softprops/action-gh-release: nenhuma minor
     // Então major é a tag mais forte que existe para a maioria delas, e major é
     // exatamente o que a política de 1.0.0 pede. O que não pode é flutuante.
+    // A revisão de 2026-10-08 moveu as majors de node20 para node24; a lista
+    // fechada dessas majors está em REQUIRED_VERSIONS.
     const majors = allUses().filter(ref => /^\S+@v\d+$/.test(ref));
     for (const ref of majors) {
       expect(ref).not.toMatch(/@(master|main|latest)$/);

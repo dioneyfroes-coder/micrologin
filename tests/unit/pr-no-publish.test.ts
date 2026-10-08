@@ -61,7 +61,7 @@ describe('P0.2 — PR não publica imagem', () => {
   it('o login no registry não acontece em PR', () => {
     const build = jobBlock('build');
     const loginAt = build.indexOf('🔑 Login to Container Registry');
-    const loginStep = build.slice(loginAt, build.indexOf('uses: docker/login-action@v3', loginAt));
+    const loginStep = build.slice(loginAt, build.indexOf('uses: docker/login-action@v4', loginAt));
 
     expect(loginAt).toBeGreaterThan(-1);
     expect(loginStep).toContain('if: github.event_name != \'pull_request\'');

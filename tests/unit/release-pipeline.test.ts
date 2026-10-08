@@ -755,7 +755,7 @@ describe('release: os gates e o build rodam sobre a tag', () => {
   });
 
   it('nenhum gate depende do checkout padrão do action', () => {
-    // Um `uses: actions/checkout@v4` sem `ref:` no push funciona por acidente
+    // Um `uses: actions/checkout@v5` sem `ref:` no push funciona por acidente
     // (o ref do evento já é a tag) e falha no dispatch.
     for (const job of TAG_DEPENDENT_JOBS) {
       const uses = [...blockOf(job).matchAll(/uses: actions\/checkout@\S+/g)];
