@@ -88,8 +88,15 @@ describe('provisionamento do par ES256', () => {
     const dir = freshDir();
     expect(runGenerator([dir, 'permissoes']).status).toBe(0);
 
-    expect(statSync(join(dir, 'jwt-es256-private.pem')).mode & 0o777).toBe(0o600);
-    expect(statSync(join(dir, 'jwt-es256-public.pem')).mode & 0o777).toBe(0o644);
+    const privateStats = statSync(join(dir, 'jwt-es256-private.pem'));
+    const publicStats = statSync(join(dir, 'jwt-es256-public.pem'));
+    // Windows não tem permissões POSIX: o `stat().mode` reflete 0o666
+    // independentemente do `chmod`. O guard de 0o600/0o644 é verificado no CI
+    // (Linux); aqui a existência e a leitura dos artefatos seguem valendo.
+    if (process.platform !== 'win32') {
+      expect(privateStats.mode & 0o777).toBe(0o600);
+      expect(publicStats.mode & 0o777).toBe(0o644);
+    }
   });
 
   it('recusa sobrescrever um par existente: rotacionar é deliberado', () => {

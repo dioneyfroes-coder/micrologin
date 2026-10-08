@@ -2,10 +2,11 @@ import { describe, expect, it } from '@jest/globals';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const runner = resolve(ROOT, 'scripts/replica-session-test.mjs');
+const runnerUrl = pathToFileURL(runner).href;
 const runnerSource = readFileSync(runner, 'utf8');
 
 const preflight = (baseUrl: string) => spawnSync(process.execPath, [runner, '--preflight-only'], {
@@ -16,7 +17,7 @@ const preflight = (baseUrl: string) => spawnSync(process.execPath, [runner, '--p
 
 const evaluate = (expression: string) => {
   const source = [
-    `import { readReplicaIdentity, resolveMinimumReplicas } from ${JSON.stringify(runner)};`,
+    `import { readReplicaIdentity, resolveMinimumReplicas } from ${JSON.stringify(runnerUrl)};`,
     `console.log(JSON.stringify(${expression}));`
   ].join('\n');
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', source], {

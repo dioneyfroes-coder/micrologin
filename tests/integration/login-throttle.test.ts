@@ -10,6 +10,9 @@
  * `trust proxy` ligado, que é o cenário de produção atrás de um balanceador.
  * O armazenamento é o fallback em memória do próprio rate-limiter-flexible: o
  * que está sob teste é a decisão de chave e a resposta HTTP, não o Redis.
+ * `REDIS_ENABLED=false` no beforeAll força esse fallback — sem ele, e com um
+ * Redis real respondendo em localhost:6379, o middleware promove os limiters
+ * para Redis de forma assíncrona dentro dos próprios testes.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from '@jest/globals';
 import express from 'express';
@@ -42,6 +45,7 @@ describe('limite de login por conta (brute force distribuído)', () => {
     process.env.RATE_LIMIT_PROD_LOGIN_POINTS = String(LOGIN_POINTS);
     process.env.RATE_LIMIT_PROD_IP_POINTS = '1000';
     process.env.RATE_LIMIT_PROD_USER_POINTS = '1000';
+    process.env.REDIS_ENABLED = 'false';
     delete process.env.REDIS_URL;
 
     // Import dinâmico (sem resetModules): o limitador lê a configuração na

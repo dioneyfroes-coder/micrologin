@@ -97,6 +97,11 @@ describe('spoofing de X-Forwarded-For', () => {
     process.env.RATE_LIMIT_PROD_IP_POINTS = String(IP_POINTS);
     process.env.RATE_LIMIT_PROD_USER_POINTS = '1000';
     process.env.RATE_LIMIT_PROD_LOGIN_POINTS = '1000';
+    // Força o fallback em memória do próprio rate-limiter-flexible (o que está
+    // sob teste é a decisão de chave de origem e a resposta HTTP, não o Redis).
+    // Sem isto, um Redis real em localhost:6379 promove os limiters de forma
+    // assíncrona no meio dos testes e o orçamento depende de corrida.
+    process.env.REDIS_ENABLED = 'false';
     delete process.env.REDIS_URL;
 
     const limiterModule = await import('../../src/application/middleware/advancedRateLimit.js');

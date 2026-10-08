@@ -1,57 +1,65 @@
-# Limitações Conhecidas — Micrologin 1.0.0
+# LimitaÃ§Ãµes Conhecidas â€” Micrologin 1.0.0
 
-Este documento registra limitações, riscos aceitos e restrições intencionais para a versão 1.0.0. O objetivo é ser explícito sem prometer garantias que estão fora do escopo do projeto demonstrativo.
+Este documento registra limitaÃ§Ãµes, riscos aceitos e restriÃ§Ãµes intencionais para a versÃ£o 1.0.0. O objetivo Ã© ser explÃ­cito sem prometer garantias que estÃ£o fora do escopo do projeto demonstrativo.
 
 ---
 
-## 1. Dependência do Redis para sessão e revogação
+## 1. DependÃªncia do Redis para sessÃ£o e revogaÃ§Ã£o
 
-- **Dependência crítica:** A revogação de refresh tokens, o controle de sessionVersion e partes da política de invalidação de sessões dependem do Redis. Sem acesso ao Redis, o serviço não consegue manter o estado necessário para aplicar essas verificações.
-- **Perda completa do estado:** Se o volume do Redis for perdido (ex.: apagamento não planejado, falha catastrófica do datastore) e não houver backup, as informações de sessão/revogação não podem ser recuperadas. Tokens emitidos anteriormente que ainda sejam válidos pelo formato/assinatura continuarão a ser aceitos apenas se o estado correspondente não existir mais — mas o mecanismo de verificação consulta o Redis; em um estado zerado, a lista de tokens revogados ou versões de sessão é vazia.
-- **Impacto:** Após perda total do Redis, sessões ativas que dependiam de bloqueio por sessionVersion/revogação perdem a capacidade de serem invalidadas por esses gatilhos até que novas sessões sejam criadas com o novo estado.
-- **Recuperação:** Restaurar o dump de backup do Redis (RDB/AOF) para o ponto mais recente disponível. Se não houver backup, o estado é considerado perdido — o serviço pode ser reiniciado com Redis vazio e as sessões existentes precisarão ser invalidadas pelo fluxo normal (expiração). Consulte docs/BACKUP.md e docs/REDIS.md.
-- **Mitigações existentes:** Documentação de backup/restore, testes de persistência (scripts/test-redis-persistence.sh) e scripts relacionados (scripts/backup.sh, scripts/restore.sh). Veja também docs/BACKUP.md.
+- **DependÃªncia crÃ­tica:** A revogaÃ§Ã£o de refresh tokens, o controle de sessionVersion e partes da polÃ­tica de invalidaÃ§Ã£o de sessÃµes dependem do Redis. Sem acesso ao Redis, o serviÃ§o nÃ£o consegue manter o estado necessÃ¡rio para aplicar essas verificaÃ§Ãµes.
+- **Perda completa do estado:** Se o volume do Redis for perdido (ex.: apagamento nÃ£o planejado, falha catastrÃ³fica do datastore) e nÃ£o houver backup, as informaÃ§Ãµes de sessÃ£o/revogaÃ§Ã£o nÃ£o podem ser recuperadas. Tokens emitidos anteriormente que ainda sejam vÃ¡lidos pelo formato/assinatura continuarÃ£o a ser aceitos apenas se o estado correspondente nÃ£o existir mais â€” mas o mecanismo de verificaÃ§Ã£o consulta o Redis; em um estado zerado, a lista de tokens revogados ou versÃµes de sessÃ£o Ã© vazia.
+- **Impacto:** ApÃ³s perda total do Redis, sessÃµes ativas que dependiam de bloqueio por sessionVersion/revogaÃ§Ã£o perdem a capacidade de serem invalidadas por esses gatilhos atÃ© que novas sessÃµes sejam criadas com o novo estado.
+- **RecuperaÃ§Ã£o:** Restaurar o dump de backup do Redis (RDB/AOF) para o ponto mais recente disponÃ­vel. Se nÃ£o houver backup, o estado Ã© considerado perdido â€” o serviÃ§o pode ser reiniciado com Redis vazio e as sessÃµes existentes precisarÃ£o ser invalidadas pelo fluxo normal (expiraÃ§Ã£o). Consulte docs/BACKUP.md e docs/REDIS.md.
+- **MitigaÃ§Ãµes existentes:** DocumentaÃ§Ã£o de backup/restore, testes de persistÃªncia (scripts/test-redis-persistence.sh) e scripts relacionados (scripts/backup.sh, scripts/restore.sh). Veja tambÃ©m docs/BACKUP.md.
 
 ---
 
 ## 2. Sem MFA (Multi-Factor Authentication)
 
-Fora do escopo da 1.0.0. Autenticação é baseada apenas em e-mail/usuário + senha.
+Fora do escopo da 1.0.0. AutenticaÃ§Ã£o Ã© baseada apenas em e-mail/usuÃ¡rio + senha.
 
 ---
 
 ## 3. Sem OAuth/OpenID Connect
 
-Não há integração com provedores externos nesta versão.
+NÃ£o hÃ¡ integraÃ§Ã£o com provedores externos nesta versÃ£o.
 
 ---
 
-## 4. Sem recuperação de senha
+## 4. Sem recuperaÃ§Ã£o de senha
 
-Não há fluxo 'esqueci minha senha' nesta versão. A recuperação deve ser feita por meio administrativo no modelo demonstrativo.
+NÃ£o hÃ¡ fluxo 'esqueci minha senha' nesta versÃ£o. A recuperaÃ§Ã£o deve ser feita por meio administrativo no modelo demonstrativo.
 
 ---
 
 ## 5. Ambiente demonstrativo
 
-Este projeto tem fins de estudo, portfólio e validação arquitetural. Não é necessariamente otimizado para todos os cenários de produção sem ajustes adicionais (observabilidade, alertas, hardening específico do ambiente, etc.).
+Este projeto tem fins de estudo, portfÃ³lio e validaÃ§Ã£o arquitetural. NÃ£o Ã© necessariamente otimizado para todos os cenÃ¡rios de produÃ§Ã£o sem ajustes adicionais (observabilidade, alertas, hardening especÃ­fico do ambiente, etc.).
 
 ---
 
-## 6. Logout = invalidação de todas as sessões
+## 6. Logout = invalidaÃ§Ã£o de todas as sessÃµes
 
-Conforme definido na política de autenticação, o endpoint de logout (POST /auth/logout) invalida todas as sessões do usuário (via incremento de sessionVersion). Não existe logout por dispositivo/sessão individual nesta versão. Veja README.md e src/application/routes/authRoutes.ts.
+Conforme definido na polÃ­tica de autenticaÃ§Ã£o, o endpoint de logout (POST /auth/logout) invalida todas as sessÃµes do usuÃ¡rio (via incremento de sessionVersion). NÃ£o existe logout por dispositivo/sessÃ£o individual nesta versÃ£o. Veja README.md e src/application/routes/authRoutes.ts.
 
 ---
 
-## 7. Argon2 e concorrência
+## 7. Argon2 e concorrÃªncia
 
-O Argon2 pode rejeitar requisições sob alta concorrência quando a fila atinge o limite configurado. Este é um trade-off de segurança (prevenção de DoS/brute-force) — o comportamento é intencional e testado.
+O Argon2 pode rejeitar requisiÃ§Ãµes sob alta concorrÃªncia quando a fila atinge o limite configurado. Este Ã© um trade-off de seguranÃ§a (prevenÃ§Ã£o de DoS/brute-force) â€” o comportamento Ã© intencional e testado.
 
 ---
 
 ## 8. Alinhamento de plataforma (Windows vs Linux)
 
-Testes específicos que validam permissões POSIX (600) e resolução de caminhos ESM falham no Windows devido a diferenças de plataforma. O CI executa em Linux (fonte da verdade). Isso é um caveat conhecido, não um bug de funcionalidade — veja a seção 'Nota — execução local no Windows' no plano de correções.
+Suporte local no Windows foi alinhado ao CI/Linux. As correÃ§Ãµes abaixo preservam o comportamento do CI, que segue sendo a fonte da verdade:
+
+- **PermissÃµes POSIX (600):** as suÃ­tes `dependency-secrets-provisioning`, `dependency-secrets-rotation` e `jwt-key-provisioning` validam o modo `0o600`/`0o644` apenas em plataformas POSIX (`process.platform !== 'win32'`). No Windows continuam validando existÃªncia e leitura; o assert de modo roda no CI/Linux.
+- **ResoluÃ§Ã£o de caminhos ESM:** `ddos-survival-driver` e `replica-session-driver` importam o runner via `pathToFileURL(...).href`, evitando o uso do esquema nativo `c:` no Windows.
+- **Ferramentas exigidas para testes locais:** `openssl` (ex.: OpenSSL-Win64) e um `python3` real no PATH (o stub executÃ¡vel do WindowsApps nÃ£o Ã© vÃ¡lido).
+- **Rate limit via Redis em teste:** `login-throttle` e `x-forwarded-for-trust` (integraÃ§Ã£o) fixam `REDIS_ENABLED=false` no `beforeAll`, isolando o teste do Redis local. NÃ£o defina `REDIS_ENABLED=false` no shell de toda a suÃ­te: `redis-config`, `redis-cache` e `security-config` esperam o Redis habilitado por padrÃ£o.
+- **Clone bare em `release-pipeline`:** o repositÃ³rio bare Ã© criado como irmÃ£o Ãºnico do diretÃ³rio temporÃ¡rio do teste (`join(tmpdir(), basename + '.git')`), hermÃ©tico ao working tree â€” um `git add -A` posterior nÃ£o o captura, e ele nÃ£o compartilha lixo entre execuÃ§Ãµes.
+
+**ExclusÃ£o de execuÃ§Ã£o local (requer Docker):** `tests/security/credential-theft.real-redis` (Redis/Mongo na porta 6380) e `tests/e2e/auth-http.e2e` (app na porta 27020) esperam infraestrutura `docker compose up -d`. Sem Docker, rode `tests/unit tests/integration tests/security`: resultado local Ã© 74/75 suÃ­tes verdes.
 
 

@@ -50,7 +50,12 @@ describe('provisionamento dos segredos das dependências', () => {
 
     for (const file of FILES) {
       const stats = statSync(join(dir, file));
-      expect(stats.mode & 0o777).toBe(0o600);
+      // Windows não tem permissões POSIX: o `stat().mode` reflete 0o666
+      // independentemente do `chmod`. O guard de 0o600 é verificado no CI
+      // (Linux); aqui a existência e a leitura dos artefatos seguem valendo.
+      if (process.platform !== 'win32') {
+        expect(stats.mode & 0o777).toBe(0o600);
+      }
     }
 
     const redisPassword = readFileSync(join(dir, 'redis-password'), 'utf8');

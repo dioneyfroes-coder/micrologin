@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, jest } from '@jest/globals';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, join, resolve } from 'node:path';
+import { delimiter, join, resolve, basename } from 'node:path';
 
 /**
  * O release pipeline é executável de verdade
@@ -126,6 +126,14 @@ const stepsOf = (block: string): { name: string; env: string; with: string; run:
  * package.json coerente. É o cenário mínimo para o changelog ter range.
  */
 const repoDir = mkdtempSync(join(tmpdir(), 'release-pipeline-'));
+// O bare repo fica FORA do working tree (um clone dentro de `repoDir` seria
+// capturado por `git add -A` num teste posterior, e um `git checkout` de outra
+// tag removeria os arquivos — o fetch seguinte falharia com "does not appear
+// to be a git repository"). E fica em diretório ÚNICO por run (irmão do
+// `mkdtemp`), não em `../origin.git` fixo: numa execução abortada, o diretório
+// compartilhado do `%TEMP%` fica para trás e a próxima run reprova com
+// "already exists".
+const originDir = join(tmpdir(), `${basename(repoDir)}.git`);
 
 const makeRepo = (): void => {
   sh('git init -q --initial-branch=main .', repoDir);
@@ -143,8 +151,8 @@ const makeRepo = (): void => {
   sh('git tag -a v1.0.0 -m "v1.0.0"', repoDir);
 
   // `origin/main` é exigido pelo guard de merge. Um clone local serve.
-  sh('git clone -q --bare . ../origin.git', repoDir);
-  sh('git remote add origin ../origin.git', repoDir);
+  sh(`git clone -q --bare . ${shellPath(originDir)}`, repoDir);
+  sh(`git remote add origin ${shellPath(originDir)}`, repoDir);
   sh('git fetch -q origin main:refs/remotes/origin/main', repoDir);
 };
 
@@ -154,7 +162,7 @@ beforeAll(() => {
 
 afterAll(() => {
   rmSync(repoDir, { recursive: true, force: true });
-  rmSync(join(repoDir, '..', 'origin.git'), { recursive: true, force: true });
+  rmSync(originDir, { recursive: true, force: true });
 });
 
 /** Corre o script e captura saída + código, para os casos que devem reprovar. */
@@ -260,12 +268,17 @@ describe('release: semantic versioning e coerência com package.json', () => {
     // a versão da tag, e num repo compartilhado o resultado dependeria da ordem
     // em que os testes rodam.
     const dir = mkdtempSync(join(tmpdir(), 'release-offmain-'));
+    // Mesma regra do repo principal: bare repo FORA do working tree e em
+    // diretório único por run. Sem isto, um `./offmain-origin.git` interno
+    // seria capturado por `git add -A`, e um `../offmain-origin.git` fixo num
+    // `%TEMP%` compartilhado deixaria lixo de execução abortada.
+    const offmainOrigin = join(tmpdir(), `${basename(dir)}.git`);
     sh('git init -q --initial-branch=main .', dir);
     sh('git config user.email r@test.local && git config user.name R', dir);
     writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'x', version: '2.0.0' }));
     sh('git add -A && git commit -q -m base', dir);
-    sh('git clone -q --bare . ../offmain-origin.git', dir);
-    sh('git remote add origin ../offmain-origin.git', dir);
+    sh(`git clone -q --bare . ${shellPath(offmainOrigin)}`, dir);
+    sh(`git remote add origin ${shellPath(offmainOrigin)}`, dir);
     sh('git fetch -q origin main:refs/remotes/origin/main', dir);
 
     // A tag aponta para um commit que existe, tem versão correta e nunca foi
@@ -291,7 +304,7 @@ describe('release: semantic versioning e coerência com package.json', () => {
     }
 
     rmSync(dir, { recursive: true, force: true });
-    rmSync(join(dir, '..', 'offmain-origin.git'), { recursive: true, force: true });
+    rmSync(offmainOrigin, { recursive: true, force: true });
 
     expect(code).not.toBe(0);
     expect(out).toMatch(/não está na main/);

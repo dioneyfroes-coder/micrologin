@@ -342,7 +342,7 @@ describe('OpenAPI - o glob de rotas funciona em desenvolvimento e em produção'
 
     // Em execução via `tsx`, `import.meta.url` termina em `.ts`.
     expect(routeGlob()).toBe(routeGlobFor(false, root));
-    expect(routeGlob()).toMatch(/src\/application\/routes\/\*\.ts$/);
+    expect(routeGlob()).toMatch(/src[\\/]application[\\/]routes[\\/]\*\.ts$/);
     expect(routeGlobMatches()).toBe(true);
   });
 
@@ -354,7 +354,7 @@ describe('OpenAPI - o glob de rotas funciona em desenvolvimento e em produção'
     // teste passaria na máquina de quem conserta, que roda por `tsx`.
     const { routeGlobFor } = await import('../../src/interfaces/config/openapiSpec.js');
 
-    expect(routeGlobFor(true, root)).toMatch(/dist\/application\/routes\/\*\.js$/);
+    expect(routeGlobFor(true, root)).toMatch(/dist[\\/]application[\\/]routes[\\/]\*\.js$/);
   });
 
   it('os comentários @swagger sobrevivem à compilação', () => {
@@ -396,7 +396,7 @@ describe('OpenAPI - o glob de rotas funciona em desenvolvimento e em produção'
       /* webpackIgnore: true */ compiled
     ) as { routeGlob: () => string; routeGlobMatches: () => boolean };
 
-    expect(compiledGlob()).toMatch(/dist\/application\/routes\/\*\.js$/);
+    expect(compiledGlob()).toMatch(/dist[\\/]application[\\/]routes[\\/]\*\.js$/);
     expect(compiledMatches()).toBe(true);
   });
 });
