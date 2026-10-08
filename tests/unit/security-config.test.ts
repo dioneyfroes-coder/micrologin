@@ -272,14 +272,33 @@ describe('política de revogação com Redis indisponível', () => {
     expect(securityConfig.session.failOpen).toBe(true);
   });
 
-  it('respeita SESSION_FAIL_OPEN=true explícito em produção', async() => {
-    process.env.NODE_ENV = 'production';
+  it('SESSION_FAIL_OPEN=true em produção derruba o arranque', async() => {
+    configureProduction('a'.repeat(32));
     process.env.SESSION_FAIL_OPEN = 'true';
 
-    const { securityConfig, getConfigSummary } = await loadConfig();
+    const { securityConfig, validateConfiguration } = await loadConfig();
+
+    // O valor continua legível (quem lê a config vê a intenção), mas a
+    // validação recusa: produção é fail-closed por construção, não por default,
+    // e um default que protege não serve se um valor explícito desliga a
+    // proteção sem custo.
+    expect(securityConfig.session.failOpen).toBe(true);
+    expect(() => validateConfiguration()).toThrow(/SESSION_FAIL_OPEN=true não é permitido em produção/);
+  });
+
+  it('fora de produção o fail-open explícito continua sendo aceito', async() => {
+    process.env.NODE_ENV = 'development';
+    process.env.SESSION_FAIL_OPEN = 'true';
+    process.env.JWT_SECRET = 'test-secret-key-with-at-least-32-chars-123';
+    process.env.URI_MONGODB = 'mongodb://localhost:27017/test-db';
+    delete process.env.JWT_ALGORITHM;
+    delete process.env.JWT_ES256_PRIVATE_KEY;
+    delete process.env.JWT_ES256_PUBLIC_KEY;
+
+    const { securityConfig, validateConfiguration } = await loadConfig();
 
     expect(securityConfig.session.failOpen).toBe(true);
-    expect((getConfigSummary() as unknown as { session: { failOpen: boolean } }).session.failOpen).toBe(true);
+    expect(validateConfiguration()).toBe(true);
   });
 });
 

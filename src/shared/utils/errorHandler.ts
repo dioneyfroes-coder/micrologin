@@ -151,7 +151,6 @@ export const setupErrorHandlers = (server: NodeServer, timeoutMs = 10000) => {
     try {
       server.close(async() => {
         try {
-          // Fecha conexão do MongoDB com proteção
           if (mongoose.connection.readyState !== 0) {
             await mongoose.connection.close();
           }

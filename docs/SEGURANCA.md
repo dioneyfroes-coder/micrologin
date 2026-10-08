@@ -125,7 +125,10 @@ Cada entrada responde: o que foi decidido, por quê, e o que foi recusado.
 
 ### D1 — Falha de revogação é fail-closed em produção
 `SESSION_FAIL_OPEN=false` devolve `503 REVOCATION_UNAVAILABLE` em vez de aceitar
-token sem poder checar revogação.
+token sem poder checar revogação. A regra é imposta na validação de configuração:
+`SESSION_FAIL_OPEN=true` com `NODE_ENV=production` derruba o arranque, então
+fail-closed não é um default que uma variável desliga em produção. Fora de
+produção, `true` continua disponível (dev/teste).
 *Recusado:* aceitar token e logar o risco. A indisponibilidade do Redis passaria
 a ser uma janela de replay, e a janela não seria visível para quem precisa ver.
 

@@ -188,12 +188,14 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Só tags imutáveis (derivadas do SHA) e a tag do PR. As tags
+          # flutuantes (`main` e `latest`) nascem no job `promote`, depois do
+          # Trivy: publicá-las aqui faria `docker pull :latest` receber uma
+          # imagem que o security gate ainda não viu.
           tags: |
-            type=ref,event=branch
             type=ref,event=pr
             type=sha
             type=sha,prefix={{branch}}-
-            type=raw,value=latest,enable={{is_default_branch}}
 
       - name: 🐳 Build and push Docker image
         id: build
@@ -202,6 +204,12 @@ jobs:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64
+          # Sem provenance: o artefato publicado é um manifesto único, não um
+          # índice com attestation. É o mesmo default do build da release, e é
+          # o que faz o digest escaneado sobreviver à promoção com
+          # `--prefer-index=false` — com um índice, a tag promovida apontaria
+          # para outro digest e o `promote` reprovaria a própria verificação.
+          provenance: false
           # PR constrói e carrega na VM do runner (para o scan logo abaixo), sem
           # publicar no GHCR. main e dispatch publicam. `packages: write` em PR
           # de fork já é rebaixado pelo GitHub — defesa em profundidade.
@@ -308,6 +316,87 @@ jobs:
         continue-on-error: ${{ github.event_name == 'pull_request' }}
         with:
           sarif_file: 'trivy-results.sarif'
+
+  # ========================
+  # PROMOÇÃO DAS TAGS
+  # ========================
+  # O build publica só referências imutáveis (SHA) e o `security` escaneia o
+  # digest. Este job é o único que escreve tag flutuante: `main` e `latest`
+  # nascem aqui, depois do gate. Publicá-las no build — como o pipeline fazia —
+  # significa que um Trivy reprovado deixaria `latest` apontando para a imagem
+  # rejeitada, e quem puxasse `latest` durante o scan já teria a imagem que o
+  # gate ia barrar.
+  #
+  # PR não entra: não há imagem publicada para promover.
+  promote:
+    name: 🏷️ Promote image tags
+    runs-on: ubuntu-latest
+    needs: [build, security]
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: 🐳 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 🔑 Login to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🏷️ Promover o digest aprovado para as tags flutuantes
+        env:
+          DIGEST: ${{ needs.build.outputs.image-digest }}
+          BRANCH: ${{ github.ref_name }}
+          IS_DEFAULT_BRANCH: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+        run: |
+          set -euo pipefail
+
+          IMAGE="${REGISTRY}/${IMAGE_NAME}"
+          REFS=("${IMAGE}:${BRANCH}")
+
+          # `latest` só no branch padrão: um push em outro branch não pode
+          # decidir o que `docker pull :latest` entrega.
+          if [ "$IS_DEFAULT_BRANCH" = "true" ]; then
+            REFS+=("${IMAGE}:latest")
+            echo "→ latest será promovido (branch padrão)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "→ latest NÃO será promovido (${BRANCH} não é o branch padrão)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          TAG_ARGS=()
+          for ref in "${REFS[@]}"; do
+            TAG_ARGS+=(--tag "$ref")
+          done
+
+          # `--prefer-index=false` preserva o manifesto que o Trivy escaneou.
+          # Sem ele o buildx embrulha a imagem single-platform num índice, e as
+          # tags flutuantes passariam a apontar para outro digest — não para o
+          # que o gate aprovou.
+          docker buildx imagetools create --prefer-index=false "${TAG_ARGS[@]}" "${IMAGE}@${DIGEST}"
+
+          # Prova de que cada tag aponta para o digest aprovado, e não para
+          # outro artefato: é a diferença entre "promoveu" e "promoveu o certo".
+          for ref in "${REFS[@]}"; do
+            promoted=$(docker buildx imagetools inspect "$ref" --format '{{ .Manifest.Digest }}')
+            if [ "$promoted" != "$DIGEST" ]; then
+              echo "::error::$ref aponta para $promoted, esperado $DIGEST"
+              exit 1
+            fi
+          done
+
+          {
+            echo "### 🏷️ Tags promovidas após o security scan"
+            echo ""
+            echo "- digest: \`${DIGEST}\`"
+            for ref in "${REFS[@]}"; do
+              echo "- \`${ref}\`"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # ========================
   # DEPLOY (real, via SSH)

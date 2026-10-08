@@ -37,7 +37,6 @@ export class AuthWebMiddleware {
         ? authHeader.slice(7)
         : authHeader;
 
-      // Verificar token usando o adapter
       if (!this.tokenAdapter.verifyAccessToken) {
         next(new HttpError(500, 'TOKEN_SERVICE_ERROR', 'TokenService não implementa verifyAccessToken'));
         return;
@@ -45,14 +44,12 @@ export class AuthWebMiddleware {
 
       const decoded = await this.tokenAdapter.verifyAccessToken(token) as { id: string; username: string };
 
-      // Verificar se usuário ainda existe
       const user = await this.userRepository.findById(decoded.id);
       if (!user) {
         next(new HttpError(401, 'USER_NOT_FOUND', 'Usuário não encontrado'));
         return;
       }
 
-      // Adicionar contexto do usuário à requisição
       req.user = {
         id: decoded.id,
         username: decoded.username

@@ -2,7 +2,8 @@
 
 Microserviço de autenticação em Node.js: registro, login, JWT com rotação de
 refresh token, revogação, rate limiting com Redis e MongoDB. Arquitetura
-hexagonal, argon2id, Docker, e um pipeline de release que barra de verdade.
+hexagonal, argon2id, Docker, CI/CD com gates de segurança e limitações
+conhecidas declaradas.
 
 ```bash
 git clone https://github.com/dioneyfroes-coder/micrologin
@@ -17,7 +18,7 @@ Runbook completo — variáveis de ambiente, matriz de testes, deploy, rollback:
 
 ## Em 60 segundos
 
-Quatro coisas que este serviço faz de um jeito que a maioria não faz:
+Principais decisões técnicas:
 
 **Logout encerra todas as sessões, não só a atual.** O par enviado vai para a
 blacklist e a `user_session_version` do usuário é incrementada, o que invalida
@@ -30,15 +31,21 @@ com `SET NX` **antes** do par novo ser emitido. Dois `/refresh` simultâneos com
 mesmo token dão uma `200` e uma `401` — e detectar reuso revoga a sessão
 inteira, inclusive o par recém-emitido na disputa.
 
-**Argon2id tem limite de concorrência real, não um número no log.** Um semáforo
+**Argon2id tem limite de concorrência imposto em runtime.** Um semáforo
 com fila FIFO limita os hashes simultâneos por processo; o orçamento de memória
 do arranque valida os parâmetros contra o `mem_limit` do container. Saturação
 devolve `503`, nunca 401 — erro de capacidade não é erro de credencial.
 
-**O deploy tem rollback provado, não documentado.** `npm run test:deploy` sobe
+**O deploy tem rollback verificado por teste.** `npm run test:deploy` sobe
 três imagens, implanta a terceira com o Mongo na porta errada, deixa o health
 check abortar e exige que o rollback restaure imagem, digest e configuração da
-segunda. O mesmo drill roda no CI.
+segunda. É um drill local, fora do CI: o CI roda build, testes, `audit-ci` e o
+scan Trivy da imagem.
+
+**As decisões de segurança têm teste e registro.** As suítes em
+`tests/security/` cobrem roubo de credencial e sobrevivência a Redis fora do
+ar; `npm run test:secrets` roda o gitleaks, e o CI roda o Trivy a cada PR e
+publica o relatório SARIF.
 
 E o mais importante: **os limites estão escritos, não escondidos.** O maior
 deles está logo abaixo.

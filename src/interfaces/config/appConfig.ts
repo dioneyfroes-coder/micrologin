@@ -290,6 +290,8 @@ const isProductionEnv = (process.env.NODE_ENV || 'development') === 'production'
 //                               revogação, preservando segurança sobre disponibilidade.
 //   true  (padrão em dev/test) = fail-open: mantém disponibilidade, aceitando
 //                               que tokens revogados não sejam barrados.
+// Em produção o fail-open é recusado na validação (`SESSION_FAIL_OPEN=true`
+// derruba o arranque): a política é fail-closed por construção, não por default.
 const sessionFailOpenEnv = process.env.SESSION_FAIL_OPEN;
 
 // Algoritmo de assinatura dos tokens.
@@ -757,6 +759,16 @@ export function validateConfiguration(): boolean {
 
   if (environmentConfig.isProduction && securityConfig.dashboardToken && securityConfig.dashboardToken.length < 32) {
     errors.push('SECURITY_DASHBOARD_TOKEN deve ter pelo menos 32 caracteres em produção');
+  }
+
+  // --- Política de revogação ---------------------------------------------------
+  // Produção é fail-closed por construção, não por default. `SESSION_FAIL_OPEN=true`
+  // desliga a única barreira entre um Redis fora do ar e aceitação de token
+  // revogado, e um default que protege não adianta se um valor explícito
+  // desliga a proteção sem custo. Quem precisa de fail-open é dev/teste, onde
+  // ele já é o default.
+  if (environmentConfig.isProduction && securityConfig.session.failOpen) {
+    errors.push('SESSION_FAIL_OPEN=true não é permitido em produção: a política é fail-closed (remova a variável ou use SESSION_FAIL_OPEN=false)');
   }
 
   if (!databaseConfig.mongodb.uri) {

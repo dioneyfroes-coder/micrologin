@@ -72,7 +72,8 @@ versionada: só os exemplos (`.env.example`, `.env.prod.example`) são commitado
   validação de memória do arranque usa como multiplicador — o orçamento de
   memória e o limite aplicado não podem ser dois números diferentes
 - `SESSION_FAIL_OPEN` (política de revogação sem Redis; padrão `false` em
-  produção)
+  produção). `true` em produção **recusa o arranque**, na validação de
+  configuração: fail-closed é regra, não default
 - `ALLOWED_ORIGINS`
 - `METRICS_TOKEN` (em produção, configure um token: protege o manifesto de
   `/observability`)
@@ -168,6 +169,27 @@ npm run test:coverage       # cobertura (text + html + lcov)
 npm run test:capacity       # baseline de capacidade por endpoint (k6 + RSS/heap)
 npm run lint                # ESLint em src/ e tests/
 ```
+
+`npm test` cobre as 77 suítes. Duas delas falam com infraestrutura de verdade —
+`tests/e2e` e `tests/security/credential-theft.real-redis` — e por padrão esperam
+o stack da compose nas portas 27020 (Mongo) e 6380 (Redis). Sem Docker, basta
+apontá-las para serviços locais; as variáveis valem também quando as portas
+padrão estão presas por outra instância:
+
+```bash
+# bash
+E2E_MONGO_PORT=27017 E2E_REDIS_PORT=6380 \
+CREDENTIAL_THEFT_MONGO_PORT=27017 CREDENTIAL_THEFT_REDIS_PORT=6380 \
+npm test
+```
+
+O Redis dessas portas precisa atender dois clientes ao mesmo tempo: o da suíte,
+que conecta com a URL pura e usa o usuário `default` sem senha, e o do app, que
+autentica como `micrologin_local` com a senha de `REDIS_PASSWORD_PATH`. Um ACL
+com as duas linhas resolve — `secrets/redis-local.acl` com `user default on
+nopass` no topo é o que se quer copiar para o arquivo apontado por `--aclfile`.
+No Mongo local, `auth-e2e` e `auth-credential-theft-real` são bancos próprios
+das suítes: nenhum dos dois toca em `auth-service`.
 
 ### O que cada drill prova
 
@@ -268,13 +290,20 @@ falham se as invariantes forem desligadas.
 
 `.github/workflows/ci-cd.yml` executa:
 
-1. **code-quality**: ESLint, `npm audit` e `audit-ci` — **falham o pipeline**
+1. **code-quality**: ESLint, typecheck, secret scanning e `audit-ci` (único gate
+   de dependências) — **falham o pipeline**
    quando encontram erros reais (sem `continue-on-error`)
 2. **tests**: unitários rápidos, integração e upload de cobertura para Codecov
-3. **build**: build e push da imagem para GHCR (`linux/amd64`)
+3. **build**: build da imagem para GHCR (`linux/amd64`). Em PR ela é carregada
+   na VM e o Trivy roda dentro do próprio job, **sem push**; fora de PR é
+   publicada só com tags imutáveis (SHA) — `main` e `latest` não nascem aqui
 4. **security**: scan com Trivy, na mesma referência de imagem que será implantada
    (o digest) — **reprova o pipeline** em HIGH/CRITICAL
-5. **deploy**: deploy real por SSH, apenas em `workflow_dispatch`. Sem servidor
+5. **promote**: roda **depois** do scan e é o único job que escreve tag
+   flutuante: promove o digest aprovado para `main` e para `latest` (este só no
+   branch padrão), e confere que cada tag apontou para o digest escaneado. Uma
+   imagem reprovada nunca vira `latest`
+6. **deploy**: deploy real por SSH, apenas em `workflow_dispatch`. Sem servidor
    configurado, o job falha com mensagem explícita em vez de reportar sucesso
 
 O preflight DDoS no CI só verifica que o alvo default é loopback e que hosts

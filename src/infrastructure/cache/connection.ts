@@ -120,10 +120,8 @@ export const initRedis = async(): Promise<RedisClient | null> => {
         });
     });
 
-    // Conectar ao Redis
     await newClient.connect();
 
-    // ✅ HEALTH CHECK: Verificar conexão com PING
     const pingResult = await performHealthCheck(newClient);
     isHealthy = pingResult;
     initialConnectSettled = true;

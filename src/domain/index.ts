@@ -409,18 +409,14 @@ export class AuthService {
         return { success: false, error: 'Usuário já existe' };
       }
 
-      // Criptografar senha
       const hashedPassword = await this.crypto.hash(credentials.plainPassword);
 
-      // Criar entidade do usuário
       const user = new User(null, credentials.username, hashedPassword);
 
-      // Validar regras de negócio
       if (!user.isValid()) {
         return { success: false, error: 'Dados do usuário inválidos' };
       }
 
-      // Persistir
       const savedUser = await this.userRepository.save(user);
 
       this.logger.info('Usuário registrado', { username: savedUser.username });
@@ -473,7 +469,6 @@ export class AuthService {
         return AuthResult.failure('Usuário não encontrado');
       }
 
-      // Verificar senha
       const isValidPassword = await this.crypto.compare(
         credentials.plainPassword,
         user.hashedPassword
@@ -491,7 +486,6 @@ export class AuthService {
         await this.refreshHash(user, credentials.plainPassword);
       }
 
-      // Gerar token
       const tokens = await this.tokenGenerator.generateTokenPair({
         id: user.id as string,
         username: user.username
@@ -571,7 +565,6 @@ export class AuthService {
         return { success: false, error: 'Usuário não encontrado' };
       }
 
-      // Verificar se novo username já existe
       if (newUsername) {
         const normalizedUsername = normalizeUsername(newUsername);
         if (normalizedUsername !== user.username) {
@@ -582,12 +575,10 @@ export class AuthService {
         }
       }
 
-      // Aplicar regras de negócio através da entidade
       if (newUsername) {
         user.updateUsername(newUsername);
       }
 
-      // Persistir
       const updatedUser = await this.userRepository.save(user);
 
       this.logger.info('Perfil atualizado', { userId: user.id });

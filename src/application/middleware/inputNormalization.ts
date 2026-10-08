@@ -64,7 +64,6 @@ const stripControlCharacters = (value: string): string => {
 };
 
 export const normalizeInput = (req: Request, res: Response, next: NextFunction): void => {
-  // Normalizar strings recursivamente
   const normalizeValue = (value: unknown, key?: string): Normalizable => {
     if (key !== undefined && isOpaqueField(key)) {
       return value as Normalizable;

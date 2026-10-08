@@ -29,7 +29,6 @@ export class AuthWebController {
   private authService: AuthService;
 
   constructor(authenticationService: AuthService) {
-    // Recebe o serviço do CORE via injeção de dependência
     this.authService = authenticationService;
   }
 

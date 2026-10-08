@@ -412,7 +412,6 @@ export class JWTTokenService implements TokenService {
       // que o token não foi revogado: a operação é negada.
       this.assertRevocationAvailable();
 
-      // Verificar se o token está na blacklist
       if (this.redisClient) {
         const isBlacklisted = await this.isTokenBlacklisted(token);
         if (isBlacklisted) {
@@ -426,7 +425,6 @@ export class JWTTokenService implements TokenService {
       });
       this.assertTokenType(payload, 'access');
 
-      // Verificar revogação em nível de usuário (ex: logout/logout-all)
       if (await this.isUserRevoked(payload)) {
         const tokenError = new Error('Token foi revogado');
         (tokenError as Error & { code?: string }).code = 'TOKEN_INVALID';
@@ -464,7 +462,6 @@ export class JWTTokenService implements TokenService {
       });
       this.assertTokenType(payload, 'refresh');
 
-      // Verificar revogação em nível de usuário (ex: logout/logout-all)
       if (await this.isUserRevoked(payload)) {
         const tokenError = new Error('Refresh token foi revogado');
         (tokenError as Error & { code?: string }).code = 'REFRESH_TOKEN_INVALID';
@@ -548,7 +545,6 @@ export class JWTTokenService implements TokenService {
    */
   async refreshTokens(refreshToken: string, options: TokenGenerationOptions = {}): Promise<TokenPair> {
     try {
-      // Verificar refresh token
       const decoded = await this.verifyRefreshToken(refreshToken);
 
       // Consumo único ATÔMICO antes de emitir o novo par: o marcador entra na
@@ -557,7 +553,6 @@ export class JWTTokenService implements TokenService {
       // em 401, fechando a janela de corrida entre "verificar" e "revogar".
       await this.consumeRefreshToken(refreshToken, decoded);
 
-      // Gerar novo par de tokens
       const newTokens = await this.generateTokenPairAtSessionVersion(
         { id: decoded.id, username: decoded.username },
         options,

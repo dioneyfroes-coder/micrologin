@@ -100,7 +100,6 @@ class AuthService {
     // Bootstrap dos serviços antes de criar as rotas
     bootstrapServices();
 
-    // Criar rotas com dependências injetadas
     const authRoutes = createAuthRoutes();
     this.app.use('/', authRoutes);
     this.app.use('/', observabilityRoutes);
@@ -119,16 +118,13 @@ class AuthService {
    */
   async start(port = serverConfig.port): Promise<void> {
     try {
-      // Conecta ao banco de dados
       await connectDatabase();
 
-      // Inicializa Redis se habilitado
       const redisClient = await initRedis();
 
       // Promove rate limiters para Redis assim que a conexão estiver disponível
       await advancedRateLimit.init();
 
-      // Conecta a blacklist de JWT ao Redis
       if (redisClient) {
         const jwtService = resolve<{ setRedisClient: (client: typeof redisClient) => void }>('jwtService');
         jwtService?.setRedisClient(redisClient);
