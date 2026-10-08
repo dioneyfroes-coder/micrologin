@@ -13,8 +13,16 @@
 # =====================================
 FROM node:24-alpine AS base
 
-# Dependências do sistema (dumb-init como PID 1 + curl para healthcheck)
-RUN apk add --no-cache \
+# Dependências do sistema (dumb-init como PID 1 + curl para healthcheck).
+#
+# `apk upgrade` antes: a base flutua (`node:24-alpine`) e traz o zlib no estado
+# em que a tag da Alpine foi publicada — o gate Trivy da 1.0.0 reprovou a
+# imagem com zlib 1.3.2-r0 (CVE-2026-85091), correcao em 1.3.2-r1. Com
+# `--no-cache` a resolucao usa o indice do repositorio do proprio build, entao
+# a imagem final sai com o pacote corrigido em vez do que veio congelado na
+# tag. Roda em todos os stages, porque todos herdam de `base`.
+RUN apk upgrade --no-cache \
+    && apk add --no-cache \
     dumb-init \
     curl \
     && rm -rf /var/cache/apk/*
